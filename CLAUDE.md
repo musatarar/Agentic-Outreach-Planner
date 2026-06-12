@@ -28,3 +28,10 @@ All commands use the bundled virtualenv at `./venv` (no requirements.txt exists;
   2. Add DRF routes by creating `project/app/urls.py` and including it from `project/urls.py` (currently only routes `admin/`).
 - `rest_framework` is already in `INSTALLED_APPS` — build APIs with DRF (serializers + ViewSets/APIViews + router) rather than plain Django views.
 - Database is SQLite at `./db.sqlite3`; default Django migrations have already been applied.
+
+## Git Workflow
+
+- **Feature branch**: `feature/75-min-challenge` — primary working branch for the challenge
+- **PR strategy**: Create separate PRs for each logical piece of work, each with its own task/agent if needed. All PRs target `feature/75-min-challenge`, not `main`.
+- **Final merge**: Once all work PRs are merged into `feature/75-min-challenge`, create a final PR to merge the entire feature into `main`.
+- **Tickets**: Use Linear to track work and scope each PR to a ticket. Use the `to-issues` skill to convert plans into Linear issues.
