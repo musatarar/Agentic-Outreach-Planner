@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/bin/python manage.py *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git status)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Read",
+      "Edit",
+      "Write"
+    ]
+  }
+}
