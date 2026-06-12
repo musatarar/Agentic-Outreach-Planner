@@ -29,6 +29,12 @@ All commands use the bundled virtualenv at `./venv` (no requirements.txt exists;
 - `rest_framework` is already in `INSTALLED_APPS` — build APIs with DRF (serializers + ViewSets/APIViews + router) rather than plain Django views.
 - Database is SQLite at `./db.sqlite3`; default Django migrations have already been applied.
 
+## Testing & Database
+
+- **Fixtures, not live edits**: Write tests using Django fixtures (`project/app/fixtures/`) or `TestCase.setUpTestData()`. Never modify `db.sqlite3` directly during development.
+- **Demo script**: Create `scripts/populate_demo_data.py` to fill the database with realistic test data for live demos. Run via `./venv/bin/python scripts/populate_demo_data.py` after `python manage.py migrate`. This is the single source of truth for demo state.
+- **Test isolation**: Use `python manage.py test` (which creates a fresh test database each run) to verify all features work without side effects.
+
 ## Git Workflow
 
 - **Feature branch**: `feature/75-min-challenge` — primary working branch for the challenge
