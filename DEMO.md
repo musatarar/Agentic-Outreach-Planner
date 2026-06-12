@@ -44,12 +44,23 @@ per lead. AEs open one page each morning instead of digging through HubSpot and 
 The generated emails cite real specifics from call/demo notes (Ray's buy-in, the Q2
 budget, named clients like Pacific Rim Imports) — not generic templates.
 
+## Reports & Next Actions
+
+- **http://127.0.0.1:8000/reports/** — per-lead audit trail: every run's detected issue,
+  how it was handled (collapsible suggested copy, or "Reported to BD" for unclassified
+  leads), and any next action. Run the planner twice to show history accumulating.
+- **http://127.0.0.1:8000/next-actions/** — open follow-ups (needs-human items +
+  further_action notes) as a prioritized todo queue. Assign/Done/Snooze buttons are
+  intentionally stubbed ("coming soon") — talking point: this is where AE workflow
+  management lands next.
+
 ## API (the page is just a viewer over these)
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/outreach/run/   # run planner + generate copy
 curl http://127.0.0.1:8000/api/outreach/               # latest plan (no Claude calls)
 curl http://127.0.0.1:8000/api/leads/                  # raw pipeline
+curl http://127.0.0.1:8000/api/reports/                # full action history, newest first
 ```
 
 ## Tests

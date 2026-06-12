@@ -3,6 +3,7 @@ from django.urls import path
 from project.app.views import (
     LeadListView,
     OutreachListView,
+    OutreachReportView,
     OutreachRunView,
 )
 
@@ -12,4 +13,5 @@ urlpatterns = [
     path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
     path("outreach/", OutreachListView.as_view(), name="outreach-list"),
     path("leads/", LeadListView.as_view(), name="lead-list"),
+    path("reports/", OutreachReportView.as_view(), name="outreach-reports"),
 ]

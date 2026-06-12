@@ -168,3 +168,46 @@ class OutreachRunViewTests(APITestCase):
         self.assertEqual(resp.data[1]["id"], a_low.id)
         self.assertEqual(resp.data[0]["action_type"], "follow_up_after_hold")
         self.assertEqual(resp.data[0]["lead"]["agency_name"], "Alpha")
+
+
+class OutreachReportViewTests(APITestCase):
+    """GET /api/reports/ returns the FULL action history, newest first."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.lead = make_lead("lead_001", agency_name="Alpha")
+        cls.older = OutreachAction.objects.create(
+            lead=cls.lead,
+            priority=2,
+            action_type="nudge_usage",
+            reason="older run",
+            suggested_copy="old copy",
+        )
+        cls.newer = OutreachAction.objects.create(
+            lead=cls.lead,
+            priority=1,
+            action_type="follow_up_after_hold",
+            reason="newer run",
+            suggested_copy="new copy",
+        )
+
+    def test_returns_all_actions_not_deduped(self):
+        resp = self.client.get(reverse("outreach-reports"))
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 2)
+
+    def test_newest_first(self):
+        resp = self.client.get(reverse("outreach-reports"))
+        self.assertEqual([row["id"] for row in resp.data], [self.newer.id, self.older.id])
+
+    def test_item_shape_matches_contract(self):
+        resp = self.client.get(reverse("outreach-reports"))
+        item = resp.data[0]
+        self.assertEqual(
+            set(item.keys()),
+            {
+                "id", "lead", "priority", "action_type", "reason",
+                "suggested_copy", "needs_human", "further_action", "created_at",
+            },
+        )
+        self.assertEqual(item["lead"]["agency_name"], "Alpha")
