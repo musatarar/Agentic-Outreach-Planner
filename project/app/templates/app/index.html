@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outreach Planner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        header {
+            background: white;
+            border-bottom: 1px solid #ddd;
+            padding: 2rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 0.95rem;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-top: 1.5rem;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 1.2rem;
+            height: 1.2rem;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #007bff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .status {
+            color: #666;
+            font-size: 0.9rem;
+            margin-left: 1rem;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+            border: 1px solid #f5c6cb;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .cards {
+            display: grid;
+            gap: 1.5rem;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            border-left: 4px solid #ddd;
+        }
+
+        .card.p1 {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .card.p2 {
+            border-left-color: #ffc107;
+            background: #fffbf0;
+        }
+
+        .card.p3 {
+            border-left-color: #6c757d;
+            background: #f8f9fa;
+        }
+
+        .card-header {
+            margin-bottom: 1rem;
+        }
+
+        .who {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .contact-info {
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .meta {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-top: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .priority-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .priority-badge.p1 {
+            background: #dc3545;
+            color: white;
+        }
+
+        .priority-badge.p2 {
+            background: #ffc107;
+            color: #333;
+        }
+
+        .priority-badge.p3 {
+            background: #6c757d;
+            color: white;
+        }
+
+        .action-label {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: #e9ecef;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: #333;
+        }
+
+        .reason {
+            background: #f8f9fa;
+            padding: 0.75rem;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            margin: 1rem 0;
+            border-left: 3px solid #007bff;
+        }
+
+        .reason-label {
+            font-weight: 600;
+            color: #555;
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+
+        .suggested-copy-section {
+            margin: 1rem 0;
+        }
+
+        .suggested-copy-label {
+            font-weight: 600;
+            color: #555;
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        .suggested-copy {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border: 1px solid #dee2e6;
+            margin-bottom: 0.75rem;
+        }
+
+        .copy-button {
+            background: #28a745;
+            font-size: 0.85rem;
+            padding: 0.5rem 1rem;
+        }
+
+        .copy-button:hover {
+            background: #218838;
+        }
+
+        .copy-button.copied {
+            background: #17a2b8;
+        }
+
+        .needs-human {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 1rem;
+            border-radius: 4px;
+            margin-top: 1rem;
+        }
+
+        .needs-human-title {
+            font-weight: 600;
+            color: #856404;
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        .needs-human-action {
+            color: #856404;
+            font-size: 0.95rem;
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 3rem;
+            color: #666;
+        }
+
+        .no-results p {
+            margin-bottom: 1rem;
+        }
+
+        .timestamp {
+            font-size: 0.85rem;
+            color: #999;
+            margin-top: 1rem;
+            border-top: 1px solid #e9ecef;
+            padding-top: 0.75rem;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Outreach Planner</h1>
+        <p class="subtitle">Identify which leads need outreach today and generate suggested messaging</p>
+        <div class="controls">
+            <button id="runButton" type="button">Run Outreach Plan</button>
+            <span class="status" id="status"></span>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="error"></div>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        // Extract CSRF token from cookies
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        const runButton = document.getElementById('runButton');
+        const statusEl = document.getElementById('status');
+        const errorEl = document.getElementById('error');
+        const resultsEl = document.getElementById('results');
+
+        // Format action type to human-readable text
+        function formatActionType(actionType) {
+            const labels = {
+                'power_user_reward': 'Power User Reward',
+                'follow_up_after_hold': 'Follow Up After Hold',
+                'reengage_dormant': 'Reengage Dormant',
+                'nudge_usage': 'Nudge Usage',
+                'complete_onboarding': 'Complete Onboarding',
+                'unknown': 'Unknown Action'
+            };
+            return labels[actionType] || actionType;
+        }
+
+        // Render a single action card
+        function renderCard(action) {
+            const priorityClass = `p${action.priority}`;
+            const priorityLabel = action.priority === 1 ? 'P1' : action.priority === 2 ? 'P2' : 'P3';
+            const createdAt = new Date(action.created_at).toLocaleString();
+
+            let html = `
+                <div class="card ${priorityClass}">
+                    <div class="card-header">
+                        <div class="who">${action.lead.agency_name}</div>
+                        <div class="contact-info">
+                            ${action.lead.contact_name}
+                            <br>
+                            <a href="mailto:${action.lead.contact_email}">${action.lead.contact_email}</a>
+                        </div>
+                        <div class="meta">
+                            <span class="priority-badge ${priorityClass}">${priorityLabel}</span>
+                            <span class="action-label">${formatActionType(action.action_type)}</span>
+                        </div>
+                    </div>
+
+                    <div class="reason">
+                        <span class="reason-label">Why:</span>
+                        ${action.reason}
+                    </div>
+            `;
+
+            if (action.suggested_copy) {
+                html += `
+                    <div class="suggested-copy-section">
+                        <span class="suggested-copy-label">Suggested Copy:</span>
+                        <div class="suggested-copy">${escapeHtml(action.suggested_copy)}</div>
+                        <button class="copy-button" onclick="copySuggestedCopy(this, '${escapeHtml(action.suggested_copy)}')">Copy</button>
+                    </div>
+                `;
+            }
+
+            if (action.needs_human) {
+                html += `
+                    <div class="needs-human">
+                        <span class="needs-human-title">Needs Human Review</span>
+                        <div class="needs-human-action">${action.further_action || 'Please review this action manually.'}</div>
+                    </div>
+                `;
+            }
+
+            html += `
+                <div class="timestamp">Created: ${createdAt}</div>
+                </div>
+            `;
+
+            return html;
+        }
+
+        // Escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        // Copy suggested copy to clipboard
+        async function copySuggestedCopy(button, text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                const originalText = button.textContent;
+                button.textContent = 'Copied!';
+                button.classList.add('copied');
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                alert('Failed to copy: ' + err);
+            }
+        }
+
+        // Render results
+        function renderResults(actions) {
+            if (!actions || actions.length === 0) {
+                resultsEl.innerHTML = '<div class="no-results"><p>No outreach actions yet. Click "Run Outreach Plan" to generate actions.</p></div>';
+                return;
+            }
+
+            const html = '<div class="cards">' + actions.map(renderCard).join('') + '</div>';
+            resultsEl.innerHTML = html;
+        }
+
+        // Fetch and display latest plan on page load
+        async function loadLatestPlan() {
+            try {
+                const response = await fetch('/api/outreach/');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch latest plan');
+                }
+                const actions = await response.json();
+                renderResults(actions);
+            } catch (err) {
+                console.error('Error loading latest plan:', err);
+                resultsEl.innerHTML = '';
+            }
+        }
+
+        // Run outreach plan
+        async function runOutreachPlan() {
+            errorEl.innerHTML = '';
+            resultsEl.innerHTML = '';
+            runButton.disabled = true;
+            statusEl.innerHTML = '<span class="loading-spinner"></span> <span>Running outreach plan (this may take 15-30 seconds)...</span>';
+
+            try {
+                const csrfToken = getCookie('csrftoken');
+                const response = await fetch('/api/outreach/run/', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': csrfToken,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({})
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `API error: ${response.status}`);
+                }
+
+                const actions = await response.json();
+                renderResults(actions);
+                statusEl.innerHTML = '';
+            } catch (err) {
+                errorEl.innerHTML = `<div class="error-message">Error: ${escapeHtml(err.message)}</div>`;
+                statusEl.innerHTML = '';
+                console.error('Error running outreach plan:', err);
+            } finally {
+                runButton.disabled = false;
+            }
+        }
+
+        // Attach event listener
+        runButton.addEventListener('click', runOutreachPlan);
+
+        // Load latest plan on page load
+        document.addEventListener('DOMContentLoaded', loadLatestPlan);
+    </script>
+</body>
+</html>
