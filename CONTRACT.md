@@ -4,7 +4,7 @@ All agents build against this spec exactly. Do not deviate from names, shapes, o
 
 ## Goal
 
-Ingest `Technical Interview Task/leads.json` + `events.json`, decide which agency leads
+Ingest `raw_data/leads.json` + `events.json`, decide which agency leads
 need outreach today and why, generate suggested copy per lead with Claude
 (`claude-sonnet-4-6`), display results on a single demo page.
 
@@ -102,7 +102,7 @@ Minimal inline styles. Use `fetch` with `X-CSRFToken` from the `csrftoken` cooki
 ## Ingestion — `project/app/management/commands/ingest_data.py` + `scripts/populate_demo_data.py`
 
 Management command loads the two JSON files (defaults:
-`Technical Interview Task/leads.json` and `Technical Interview Task/events.json`)
+`raw_data/leads.json` and `raw_data/events.json`)
 into Lead/Event, idempotent via `update_or_create` (clear+recreate events per lead is fine).
 `scripts/populate_demo_data.py` bootstraps Django and calls the command.
 

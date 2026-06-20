@@ -9,8 +9,8 @@ from django.utils.timezone import is_naive, make_aware
 
 from project.app.models import Event, Lead
 
-DEFAULT_LEADS = "Technical Interview Task/leads.json"
-DEFAULT_EVENTS = "Technical Interview Task/events.json"
+DEFAULT_LEADS = "raw_data/leads.json"
+DEFAULT_EVENTS = "raw_data/events.json"
 
 # Lead fields parsed as dates (ISO YYYY-MM-DD, nullable)
 DATE_FIELDS = (

@@ -1,7 +1,7 @@
 """Pure-Python tests for the outreach business logic.
 
 No Django, no database: leads are SimpleNamespace stubs mirroring the real
-data in `Technical Interview Task/leads.json` + `events.json`, and the
+data in `raw_data/leads.json` + `events.json`, and the
 anthropic client is mocked.
 
 Run standalone:

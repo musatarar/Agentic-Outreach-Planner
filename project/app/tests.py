@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+
+from django.conf import settings
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils.timezone import is_aware
@@ -5,13 +9,25 @@ from django.utils.timezone import is_aware
 from project.app.models import Event, Lead, OutreachAction
 
 
+def _raw_json(name):
+    with open(Path(settings.BASE_DIR) / "raw_data" / name, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+# Expected counts derived from the real seed files, so the tests keep passing
+# as the dataset grows (new leads/events can be added without editing these).
+EXPECTED_LEADS = len(_raw_json("leads.json"))
+EXPECTED_EVENTS = sum(len(block.get("events", [])) for block in _raw_json("events.json"))
+
+
 class IngestDataCommandTests(TestCase):
     """Ingestion command loads the real JSON fixtures correctly."""
 
-    def test_loads_five_leads_and_their_events(self):
+    def test_loads_all_leads_and_their_events(self):
         call_command("ingest_data")
 
-        self.assertEqual(Lead.objects.count(), 5)
+        self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
+        self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
 
         # Spot-check lead_001 fields parse correctly.
         lead = Lead.objects.get(id="lead_001")
@@ -27,9 +43,6 @@ class IngestDataCommandTests(TestCase):
         self.assertEqual(lead.events.count(), 8)
         ts = lead.events.first().timestamp
         self.assertTrue(is_aware(ts))
-
-        # Total events across all leads (8 + 5 + 2 + 6 + 7).
-        self.assertEqual(Event.objects.count(), 28)
 
         # Meta JSON survives the round trip.
         deal = lead.events.filter(type="deal_closed").first()
@@ -47,8 +60,8 @@ class IngestDataCommandTests(TestCase):
         call_command("ingest_data")
         call_command("ingest_data")
 
-        self.assertEqual(Lead.objects.count(), 5)
-        self.assertEqual(Event.objects.count(), 28)
+        self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
+        self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
         self.assertEqual(Lead.objects.get(id="lead_001").events.count(), 8)
 
 
