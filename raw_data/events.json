@@ -1,0 +1,118 @@
+[
+  {
+    "lead_id": "lead_001",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-26T07:55:00Z" },
+      { "type": "login", "timestamp": "2026-05-23T08:10:00Z" },
+      { "type": "quote_created", "timestamp": "2026-05-26T08:04:00Z", "meta": { "client": "High Desert HVAC", "premium": 5500 } },
+      { "type": "quote_submitted", "timestamp": "2026-05-26T08:22:00Z", "meta": { "client": "High Desert HVAC", "premium": 5500 } },
+      { "type": "deal_closed", "timestamp": "2026-05-25T16:00:00Z", "meta": { "client": "Telluride Outfitters", "premium": 9200, "lock_term_months": 12 } },
+      { "type": "deal_closed", "timestamp": "2026-05-22T11:00:00Z", "meta": { "client": "Nair Family Dentistry", "premium": 3100, "lock_term_months": 24 } },
+      { "type": "deal_closed", "timestamp": "2026-05-19T14:30:00Z", "meta": { "client": "Front Range Logistics", "premium": 6800, "lock_term_months": 12 } },
+      { "type": "call_logged", "timestamp": "2026-05-15T10:00:00Z", "meta": { "duration_min": 18, "notes": "Priya asked about volume pricing again. She said she's telling other agencies about us. Mentioned specifically a contact at a Denver agency — I should ask her for the intro next time." } }
+    ]
+  },
+  {
+    "lead_id": "lead_002",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-08T08:30:00Z" },
+      { "type": "login", "timestamp": "2026-04-14T09:00:00Z" },
+      { "type": "quote_created", "timestamp": "2026-03-15T10:00:00Z", "meta": { "client": "Columbus Tile Works", "premium": 4200 } },
+      { "type": "call_logged", "timestamp": "2026-05-01T11:00:00Z", "meta": { "duration_min": 8, "notes": "Tom said Q2 budget is approved and he's planning to bring it to his team in the next few weeks. Seemed more engaged than last call." } },
+      { "type": "email_sent", "timestamp": "2026-05-14T09:00:00Z", "meta": { "subject": "Checking in — ready to loop in your team?", "outcome": "no_reply" } }
+    ]
+  },
+  {
+    "lead_id": "lead_003",
+    "events": [
+      { "type": "demo_completed", "timestamp": "2026-04-29T14:00:00Z", "meta": { "attendees": ["Dana Mosely"], "notes": "Dana engaged throughout. Her business partner Ray wasn't on the call. She said she'd brief him and get back to us within two weeks." } },
+      { "type": "email_sent", "timestamp": "2026-05-13T10:00:00Z", "meta": { "subject": "Following up from our demo", "outcome": "no_reply" } }
+    ]
+  },
+  {
+    "lead_id": "lead_004",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-27T09:05:00Z" },
+      { "type": "login", "timestamp": "2026-05-21T08:30:00Z" },
+      { "type": "login", "timestamp": "2026-05-12T07:45:00Z" },
+      { "type": "quote_created", "timestamp": "2026-05-12T08:00:00Z", "meta": { "client": "Seattle Specialty Foods", "premium": 6200 } },
+      { "type": "quote_created", "timestamp": "2026-05-21T08:45:00Z", "meta": { "client": "Pacific Rim Imports", "premium": 8900 } },
+      { "type": "onboarding_call", "timestamp": "2026-05-01T14:00:00Z", "meta": { "duration_min": 25, "notes": "Derek is sharp. He understood the product immediately and had good questions about how the lock pricing is calculated. Seemed excited. Said he had two clients in mind already." } }
+    ]
+  },
+  {
+    "lead_id": "lead_005",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-25T08:20:00Z" },
+      { "type": "login", "timestamp": "2026-05-20T09:00:00Z" },
+      { "type": "quote_created", "timestamp": "2026-05-20T09:15:00Z", "meta": { "client": "Lakewood Family Dental", "premium": 2800 } },
+      { "type": "quote_submitted", "timestamp": "2026-05-20T09:40:00Z", "meta": { "client": "Lakewood Family Dental", "premium": 2800 } },
+      { "type": "deal_closed", "timestamp": "2026-05-18T15:00:00Z", "meta": { "client": "Dearborn Auto Parts", "premium": 5400, "lock_term_months": 12 } },
+      { "type": "deal_closed", "timestamp": "2026-05-05T11:30:00Z", "meta": { "client": "Metro Tile & Stone", "premium": 3900, "lock_term_months": 24 } },
+      { "type": "call_logged", "timestamp": "2026-05-10T14:00:00Z", "meta": { "duration_min": 15, "notes": "Susan is tracking toward her 5-deal target. She said she's been happy with the product but wants to see a couple more renewals come through before she commits her whole team. I mentioned we could set up a team training session once she hits 5." } }
+    ]
+  },
+  {
+    "lead_id": "lead_006",
+    "events": [
+      { "type": "login", "timestamp": "2026-04-18T08:40:00Z" },
+      { "type": "login", "timestamp": "2026-04-02T09:15:00Z" },
+      { "type": "login", "timestamp": "2026-03-16T07:50:00Z" },
+      { "type": "quote_created", "timestamp": "2026-03-20T10:30:00Z", "meta": { "client": "Willamette Freight", "premium": 7400 } },
+      { "type": "quote_submitted", "timestamp": "2026-03-21T11:00:00Z", "meta": { "client": "Willamette Freight", "premium": 7400 } },
+      { "type": "onboarding_call", "timestamp": "2026-03-15T15:00:00Z", "meta": { "duration_min": 30, "notes": "Marcus was engaged on the onboarding call and had a clear use case for two of his larger commercial accounts. Said he'd start running quotes that week." } }
+    ]
+  },
+  {
+    "lead_id": "lead_008",
+    "events": [
+      { "type": "login", "timestamp": "2026-06-17T13:22:00Z" },
+      { "type": "login", "timestamp": "2026-06-09T10:05:00Z" }
+    ]
+  },
+  {
+    "lead_id": "lead_009",
+    "events": [
+      { "type": "login", "timestamp": "2026-06-18T08:10:00Z" },
+      { "type": "login", "timestamp": "2026-06-11T09:30:00Z" },
+      { "type": "quote_created", "timestamp": "2026-06-11T09:45:00Z", "meta": { "client": "Tampa Bay Eldercare", "premium": 2600 } },
+      { "type": "quote_submitted", "timestamp": "2026-06-11T10:05:00Z", "meta": { "client": "Tampa Bay Eldercare", "premium": 2600 } },
+      { "type": "deal_closed", "timestamp": "2026-06-13T14:20:00Z", "meta": { "client": "Tampa Bay Eldercare", "premium": 2600, "lock_term_months": 12 } },
+      { "type": "email_sent", "timestamp": "2026-06-16T09:00:00Z", "meta": { "subject": "Nice work on your first deal!", "outcome": "replied" } },
+      { "type": "email_sent", "timestamp": "2026-06-02T09:00:00Z", "meta": { "subject": "A quick tip for your next quote", "outcome": "bounced" } }
+    ]
+  },
+  {
+    "lead_id": "lead_010",
+    "events": [
+      { "type": "login", "timestamp": "2026-06-15T08:55:00Z" },
+      { "type": "webinar_attended", "timestamp": "2026-06-04T17:00:00Z", "meta": { "title": "Advanced Premium Lock strategies", "duration_min": 45 } },
+      { "type": "support_ticket", "timestamp": "2026-06-09T11:20:00Z", "meta": { "ticket_id": "SUP-4821", "notes": "Devon asked how to export a quote summary to PDF for a client. Resolved same day." } },
+      { "type": "feature_request", "timestamp": "2026-06-10T13:40:00Z", "meta": { "notes": "Would like bulk quote import from a CSV of his existing book." } },
+      { "type": "nps_survey", "timestamp": "2026-06-12T16:00:00Z", "meta": { "score": 9, "comment": "Really useful so far, team likes it." } },
+      { "type": "payment_failed", "timestamp": "2026-05-28T02:00:00Z", "meta": { "amount": 0, "reason": "trial — no card on file" } },
+      { "type": "quote_created", "timestamp": "2026-06-14T10:00:00Z", "meta": { "client": "Twin Cities Logistics" } },
+      { "type": "deal_closed", "timestamp": "2026-06-06T15:30:00Z", "meta": { "client": "Northside Auto Group", "premium": 5100 } }
+    ]
+  },
+  {
+    "lead_id": "lead_011",
+    "events": [
+      { "type": "demo_completed", "timestamp": "2026-05-08T14:00:00Z", "meta": { "attendees": ["Yusuf Demir"], "notes": "Yusuf liked the lock pricing model and signed up for a trial on the spot." } },
+      { "type": "login", "timestamp": "2026-06-16T09:20:00Z" },
+      { "type": "login", "timestamp": "2026-06-05T08:30:00Z" },
+      { "type": "quote_created", "timestamp": "2026-06-05T08:45:00Z", "meta": { "client": "Narragansett Marine", "premium": 6300 } },
+      { "type": "quote_created", "timestamp": "2026-06-16T09:35:00Z", "meta": { "client": "Providence Bakeries", "premium": 3200 } }
+    ]
+  },
+  {
+    "lead_id": "lead_012",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-25T10:10:00Z" },
+      { "type": "quote_submitted", "timestamp": "2026-05-20T11:00:00Z", "meta": { "client": "Lone Star Fabrication", "premium": 8800 } },
+      { "type": "deal_closed", "timestamp": "2026-04-15T16:00:00Z", "meta": { "client": "Hill Country Vineyards", "premium": 9400, "lock_term_months": 24 } },
+      { "type": "call_logged", "timestamp": "2026-04-28T13:00:00Z", "meta": { "duration_min": 20, "notes": "Rachel said she's swamped with renewal season and asked us to circle back next quarter once it wraps. Sounded genuine, not a brush-off." } },
+      { "type": "email_sent", "timestamp": "2026-05-30T09:00:00Z", "meta": { "subject": "Checking back in after renewal season", "outcome": "no_reply" } }
+    ]
+  }
+]

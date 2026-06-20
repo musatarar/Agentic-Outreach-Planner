@@ -51,3 +51,6 @@ manage.py
 
 # database
 db.sqlite3
+
+# secrets
+.env

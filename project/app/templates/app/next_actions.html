@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Next Actions</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5; color: #333; line-height: 1.6;
+        }
+        header {
+            background: white; border-bottom: 1px solid #ddd; padding: 2rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+        nav { margin-bottom: 0.75rem; font-size: 0.95rem; }
+        nav a { color: #007bff; text-decoration: none; }
+        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+        .subtitle { color: #666; font-size: 0.95rem; }
+        .container { max-width: 900px; margin: 0 auto; padding: 2rem; }
+        .stub-banner {
+            background: #cce5ff; border: 1px solid #b8daff; color: #004085;
+            border-radius: 4px; padding: 0.75rem 1rem; margin-bottom: 1.5rem; font-size: 0.92rem;
+        }
+        .todo {
+            background: white; border-radius: 8px; padding: 1.25rem 1.5rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08); margin-bottom: 1rem;
+            display: flex; gap: 1rem; align-items: flex-start;
+        }
+        .todo input[type="checkbox"] { margin-top: 0.35rem; transform: scale(1.2); }
+        .todo-body { flex: 1; }
+        .todo-title { font-weight: 600; }
+        .todo-detail { font-size: 0.92rem; color: #555; margin-top: 0.25rem; }
+        .badge {
+            padding: 0.15rem 0.6rem; border-radius: 10px; font-size: 0.78rem;
+            font-weight: 600; color: white; margin-left: 0.5rem;
+        }
+        .badge.p1 { background: #dc3545; }
+        .badge.p2 { background: #fd7e14; }
+        .badge.p3 { background: #6c757d; }
+        .todo-buttons { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+        .todo-buttons button {
+            background: #e9ecef; color: #6c757d; border: 1px solid #ced4da;
+            padding: 0.35rem 0.85rem; border-radius: 4px; font-size: 0.85rem;
+            cursor: not-allowed;
+        }
+        .empty, .error-message { background: white; border-radius: 8px; padding: 2rem; text-align: center; color: #666; }
+        .error-message { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <header>
+        <nav>
+            <a href="/">Planner</a>
+            &nbsp;|&nbsp; <a href="/reports/">Reports</a>
+            &nbsp;|&nbsp; <strong>Next Actions</strong>
+        </nav>
+        <h1>Next Actions</h1>
+        <p class="subtitle">Open follow-ups that need a human — one queue for the team</p>
+    </header>
+
+    <div class="container">
+        <div class="stub-banner">
+            <strong>Demo note:</strong> actions are stubbed for this demo — assigning, completing,
+            and snoozing will be wired up in a future iteration.
+        </div>
+        <div id="content"><div class="empty">Loading next actions…</div></div>
+    </div>
+
+    <script>
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s == null ? '' : String(s);
+            return d.innerHTML;
+        }
+
+        function render(actions) {
+            const content = document.getElementById('content');
+            // Latest action per lead (API returns newest first), keep open items only
+            const seen = new Set();
+            const open = [];
+            for (const a of actions) {
+                if (seen.has(a.lead.id)) continue;
+                seen.add(a.lead.id);
+                if (a.needs_human || (a.further_action && a.further_action.trim())) open.push(a);
+            }
+            open.sort((x, y) => x.priority - y.priority);
+            if (!open.length) {
+                content.innerHTML = '<div class="empty">No open next actions — every lead in the latest plan was handled automatically. 🎉</div>';
+                return;
+            }
+            content.innerHTML = open.map(a => `
+                <div class="todo">
+                    <input type="checkbox" disabled title="Coming soon">
+                    <div class="todo-body">
+                        <div class="todo-title">
+                            ${esc(a.lead.agency_name)} — ${esc(a.lead.contact_name)}
+                            <span class="badge p${a.priority}">P${a.priority}</span>
+                        </div>
+                        <div class="todo-detail">
+                            ${a.needs_human ? '<strong>Needs human review:</strong> ' : ''}
+                            ${esc(a.further_action || a.reason)}
+                        </div>
+                        <div class="todo-buttons">
+                            <button disabled title="Coming soon">Assign to AE</button>
+                            <button disabled title="Coming soon">Mark done</button>
+                            <button disabled title="Coming soon">Snooze</button>
+                        </div>
+                    </div>
+                </div>`).join('');
+        }
+
+        fetch('/api/reports/')
+            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(render)
+            .catch(err => {
+                document.getElementById('content').innerHTML =
+                    `<div class="error-message">Failed to load next actions: ${esc(err.message)}</div>`;
+            });
+    </script>
+</body>
+</html>
