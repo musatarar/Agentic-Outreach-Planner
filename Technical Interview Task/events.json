@@ -1,0 +1,55 @@
+[
+  {
+    "lead_id": "lead_001",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-26T07:55:00Z" },
+      { "type": "login", "timestamp": "2026-05-23T08:10:00Z" },
+      { "type": "quote_created", "timestamp": "2026-05-26T08:04:00Z", "meta": { "client": "High Desert HVAC", "premium": 5500 } },
+      { "type": "quote_submitted", "timestamp": "2026-05-26T08:22:00Z", "meta": { "client": "High Desert HVAC", "premium": 5500 } },
+      { "type": "deal_closed", "timestamp": "2026-05-25T16:00:00Z", "meta": { "client": "Telluride Outfitters", "premium": 9200, "lock_term_months": 12 } },
+      { "type": "deal_closed", "timestamp": "2026-05-22T11:00:00Z", "meta": { "client": "Nair Family Dentistry", "premium": 3100, "lock_term_months": 24 } },
+      { "type": "deal_closed", "timestamp": "2026-05-19T14:30:00Z", "meta": { "client": "Front Range Logistics", "premium": 6800, "lock_term_months": 12 } },
+      { "type": "call_logged", "timestamp": "2026-05-15T10:00:00Z", "meta": { "duration_min": 18, "notes": "Priya asked about volume pricing again. She said she's telling other agencies about us. Mentioned specifically a contact at a Denver agency — I should ask her for the intro next time." } }
+    ]
+  },
+  {
+    "lead_id": "lead_002",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-08T08:30:00Z" },
+      { "type": "login", "timestamp": "2026-04-14T09:00:00Z" },
+      { "type": "quote_created", "timestamp": "2026-03-15T10:00:00Z", "meta": { "client": "Columbus Tile Works", "premium": 4200 } },
+      { "type": "call_logged", "timestamp": "2026-05-01T11:00:00Z", "meta": { "duration_min": 8, "notes": "Tom said Q2 budget is approved and he's planning to bring it to his team in the next few weeks. Seemed more engaged than last call." } },
+      { "type": "email_sent", "timestamp": "2026-05-14T09:00:00Z", "meta": { "subject": "Checking in — ready to loop in your team?", "outcome": "no_reply" } }
+    ]
+  },
+  {
+    "lead_id": "lead_003",
+    "events": [
+      { "type": "demo_completed", "timestamp": "2026-04-29T14:00:00Z", "meta": { "attendees": ["Dana Mosely"], "notes": "Dana engaged throughout. Her business partner Ray wasn't on the call. She said she'd brief him and get back to us within two weeks." } },
+      { "type": "email_sent", "timestamp": "2026-05-13T10:00:00Z", "meta": { "subject": "Following up from our demo", "outcome": "no_reply" } }
+    ]
+  },
+  {
+    "lead_id": "lead_004",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-27T09:05:00Z" },
+      { "type": "login", "timestamp": "2026-05-21T08:30:00Z" },
+      { "type": "login", "timestamp": "2026-05-12T07:45:00Z" },
+      { "type": "quote_created", "timestamp": "2026-05-12T08:00:00Z", "meta": { "client": "Seattle Specialty Foods", "premium": 6200 } },
+      { "type": "quote_created", "timestamp": "2026-05-21T08:45:00Z", "meta": { "client": "Pacific Rim Imports", "premium": 8900 } },
+      { "type": "onboarding_call", "timestamp": "2026-05-01T14:00:00Z", "meta": { "duration_min": 25, "notes": "Derek is sharp. He understood the product immediately and had good questions about how the lock pricing is calculated. Seemed excited. Said he had two clients in mind already." } }
+    ]
+  },
+  {
+    "lead_id": "lead_005",
+    "events": [
+      { "type": "login", "timestamp": "2026-05-25T08:20:00Z" },
+      { "type": "login", "timestamp": "2026-05-20T09:00:00Z" },
+      { "type": "quote_created", "timestamp": "2026-05-20T09:15:00Z", "meta": { "client": "Lakewood Family Dental", "premium": 2800 } },
+      { "type": "quote_submitted", "timestamp": "2026-05-20T09:40:00Z", "meta": { "client": "Lakewood Family Dental", "premium": 2800 } },
+      { "type": "deal_closed", "timestamp": "2026-05-18T15:00:00Z", "meta": { "client": "Dearborn Auto Parts", "premium": 5400, "lock_term_months": 12 } },
+      { "type": "deal_closed", "timestamp": "2026-05-05T11:30:00Z", "meta": { "client": "Metro Tile & Stone", "premium": 3900, "lock_term_months": 24 } },
+      { "type": "call_logged", "timestamp": "2026-05-10T14:00:00Z", "meta": { "duration_min": 15, "notes": "Susan is tracking toward her 5-deal target. She said she's been happy with the product but wants to see a couple more renewals come through before she commits her whole team. I mentioned we could set up a team training session once she hits 5." } }
+    ]
+  }
+]
