@@ -322,34 +322,30 @@ class DetermineActionTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Copy generation (anthropic mocked)
+# Copy generation (LLM provider boundary mocked)
 # ---------------------------------------------------------------------------
+#
+# generate_copy is now provider-agnostic: it builds the prompt and delegates to
+# the configured LLM client. We mock get_llm_client so these tests stay
+# independent of which provider config.toml selects. Provider adapters
+# (Claude / OpenAI-compatible) are tested in tests_llm.py.
 
 class GenerateCopyTests(unittest.TestCase):
-    def _mock_response(self, text):
-        block = mock.Mock()
-        block.type = "text"
-        block.text = text
-        response = mock.Mock()
-        response.content = [block]
-        return response
-
-    def test_generate_copy_calls_claude_with_lead_context(self):
+    def test_generate_copy_builds_prompt_with_lead_context_and_delegates(self):
         lead = priya()
-        with mock.patch.object(outreach.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = self._mock_response(
-                "Subject: Volume pricing\n\nHi Priya, ..."
-            )
+        fake_client = mock.Mock()
+        fake_client.complete.return_value = "Subject: Volume pricing\n\nHi Priya, ..."
+
+        with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
             result = outreach.generate_copy(
                 lead, actions.POWER_USER_REWARD, "Priya is 14 deals from her milestone."
             )
 
         self.assertEqual(result, "Subject: Volume pricing\n\nHi Priya, ...")
-        kwargs = client.messages.create.call_args.kwargs
-        self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
-        self.assertEqual(kwargs["max_tokens"], 500)
-        prompt = kwargs["messages"][0]["content"]
+        # generate_copy passes the prompt positionally and the token cap by name.
+        args, kwargs = fake_client.complete.call_args
+        self.assertEqual(kwargs["max_tokens"], outreach.MAX_COPY_TOKENS)
+        prompt = args[0]
         self.assertIn(lead.hubspot_notes, prompt)                 # notes in prompt
         self.assertIn(lead.contact_name, prompt)
         self.assertIn("Summit Risk Advisors", prompt)
@@ -357,19 +353,14 @@ class GenerateCopyTests(unittest.TestCase):
         self.assertIn("Priya is 14 deals from her milestone.", prompt)  # reason
         self.assertIn("volume pricing", prompt)                   # event note text
 
-    def test_generate_copy_joins_only_text_blocks(self):
+    def test_generate_copy_returns_client_text(self):
         lead = tom()
-        with mock.patch.object(outreach.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            thinking = mock.Mock()
-            thinking.type = "thinking"
-            text_block = mock.Mock()
-            text_block.type = "text"
-            text_block.text = "Subject: Budget approved!\n\nHi Tom, ..."
-            response = mock.Mock()
-            response.content = [thinking, text_block]
-            client.messages.create.return_value = response
+        fake_client = mock.Mock()
+        fake_client.complete.return_value = "Subject: Budget approved!\n\nHi Tom, ..."
+
+        with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
             result = outreach.generate_copy(lead, actions.FOLLOW_UP_AFTER_HOLD, "hold passed")
+
         self.assertEqual(result, "Subject: Budget approved!\n\nHi Tom, ...")
 
 
