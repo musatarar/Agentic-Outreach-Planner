@@ -23,9 +23,9 @@ class Migration(migrations.Migration):
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 (
                     "outreach_action",
-                    models.ForeignKey(
+                    models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="review_decisions",
+                        related_name="review_decision",
                         to="app.outreachaction",
                     ),
                 ),

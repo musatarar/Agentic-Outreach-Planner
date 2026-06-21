@@ -56,8 +56,10 @@ class ReviewDecision(models.Model):
     STATUS_RESOLVED = "resolved"
     STATUS_PENDING = "pending_engineering"
 
-    outreach_action = models.ForeignKey(
-        OutreachAction, on_delete=models.CASCADE, related_name="review_decisions")
+    # OneToOne: an action is resolved by exactly one decision; the DB-level
+    # unique constraint blocks duplicate/racing submissions for the same action.
+    outreach_action = models.OneToOneField(
+        OutreachAction, on_delete=models.CASCADE, related_name="review_decision")
     kind = models.CharField(max_length=32)            # select_existing | propose_new
     status = models.CharField(max_length=32)          # resolved | pending_engineering
     selected_action_type = models.CharField(max_length=64, blank=True)

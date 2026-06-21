@@ -102,7 +102,7 @@
         </div>
 
         <section class="bucket">
-            <h2>Actions already taken <span class="count" id="count-taken">0</span></h2>
+            <h2>Outreach drafted <span class="count" id="count-taken">0</span></h2>
             <div id="taken"><div class="empty">Loading…</div></div>
         </section>
 
@@ -128,10 +128,14 @@
     </div>
 
     <script>
+        // Escapes &<>"' so the result is safe in both text and attribute contexts.
         function esc(s) {
-            const d = document.createElement('div');
-            d.textContent = s == null ? '' : String(s);
-            return d.innerHTML;
+            return (s == null ? '' : String(s))
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         // Extract CSRF token from cookies
@@ -170,7 +174,7 @@
             document.getElementById('count-taken').textContent = items.length;
             const el = document.getElementById('taken');
             if (!items.length) {
-                el.innerHTML = '<div class="empty">No automated outreach has been sent yet.</div>';
+                el.innerHTML = '<div class="empty">No outreach has been drafted yet.</div>';
                 return;
             }
             el.innerHTML = items.map(a => `
@@ -285,15 +289,9 @@
                     const err = await response.json().catch(() => ({}));
                     throw new Error(err.detail || JSON.stringify(err) || ('HTTP ' + response.status));
                 }
-                // Success: remove card, decrement count, refresh logs + queue
+                // Success: remove the card for instant feedback, then let
+                // refresh() repaint the queue + logs (and counts) from the server.
                 card.remove();
-                const countEl = document.getElementById('count-review');
-                const n = Math.max(0, parseInt(countEl.textContent, 10) - 1);
-                countEl.textContent = n;
-                if (n === 0) {
-                    document.getElementById('review').innerHTML =
-                        '<div class="empty">Nothing needs manual review right now. 🎉</div>';
-                }
                 refresh();
             } catch (err) {
                 showCardError(card, 'Could not save decision: ' + err.message);
@@ -350,15 +348,15 @@
         }
 
         // Refresh the live (queue + logs) sections; read-only "taken"/"followup" stay as loaded.
+        // resolved + pending are both derived client-side from the one decisions list.
         function refresh() {
             Promise.all([
                 fetchJson('/api/review-queue/'),
                 fetchJson('/api/review-decisions/'),
-                fetchJson('/api/review-decisions/?status=pending_engineering'),
-            ]).then(([queue, decisions, pending]) => {
+            ]).then(([queue, decisions]) => {
                 renderReview(queue.items || [], queue.action_options || []);
                 renderResolved(decisions || []);
-                renderPending(pending || []);
+                renderPending(decisions || []);
             }).catch(err => showGlobalError('Failed to refresh review data: ' + err.message));
         }
 
@@ -367,13 +365,12 @@
                 fetchJson('/api/outreach/'),
                 fetchJson('/api/review-queue/'),
                 fetchJson('/api/review-decisions/'),
-                fetchJson('/api/review-decisions/?status=pending_engineering'),
-            ]).then(([outreach, queue, decisions, pending]) => {
+            ]).then(([outreach, queue, decisions]) => {
                 renderTaken(outreach || []);
                 renderFollowup(outreach || []);
                 renderReview(queue.items || [], queue.action_options || []);
                 renderResolved(decisions || []);
-                renderPending(pending || []);
+                renderPending(decisions || []);
             }).catch(err => showGlobalError('Failed to load dashboard: ' + err.message));
         }
 

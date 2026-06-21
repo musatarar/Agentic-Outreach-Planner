@@ -1,3 +1,4 @@
+from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,7 +9,7 @@ from project.app.serializers import (
     OutreachActionSerializer,
     ReviewDecisionSerializer,
 )
-from project.app.services.actions import ACTION_META, UNKNOWN
+from project.app.services.actions import ACTION_META, SELECTABLE_ACTION_TYPES
 
 
 class OutreachRunView(APIView):
@@ -87,9 +88,8 @@ class ReviewQueueView(APIView):
         items.sort(key=lambda a: (a.priority, a.lead_id))
 
         action_options = [
-            {"value": k, "label": meta["label"], "urgency": meta["urgency"]}
-            for k, meta in ACTION_META.items()
-            if k != UNKNOWN
+            {"value": k, "label": ACTION_META[k]["label"], "urgency": ACTION_META[k]["urgency"]}
+            for k in SELECTABLE_ACTION_TYPES
         ]
 
         return Response(
@@ -115,7 +115,18 @@ class ReviewDecisionListCreateView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = ReviewDecisionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        try:
+            # Savepoint so the IntegrityError doesn't poison the surrounding
+            # transaction (ATOMIC_REQUESTS / TestCase) and we can return cleanly.
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            # OneToOne unique constraint: a decision already exists for this
+            # action (double-click / concurrent reviewers). It's already resolved.
+            return Response(
+                {"outreach_action": "A decision already exists for this action."},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 

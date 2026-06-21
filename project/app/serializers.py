@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from project.app.models import Lead, OutreachAction, ReviewDecision
-from project.app.services.actions import ACTION_TYPES
+from project.app.services.actions import SELECTABLE_ACTION_TYPES
 
 
 class LeadSerializer(serializers.ModelSerializer):
@@ -47,13 +47,22 @@ class ReviewDecisionSerializer(serializers.ModelSerializer):
         model = ReviewDecision
         fields = "__all__"
         read_only_fields = ["status", "created_at"]
+        # Drop DRF's auto UniqueValidator on the OneToOne field so a duplicate
+        # surfaces as the DB IntegrityError -> 409 (one code path, race-safe),
+        # rather than an inconsistent 400 that a true concurrent insert dodges.
+        extra_kwargs = {"outreach_action": {"validators": []}}
 
     def validate(self, data):
+        action = data.get("outreach_action")
+        if action is not None and not action.needs_human:
+            raise serializers.ValidationError(
+                {"outreach_action": "This action does not require human review."}
+            )
         kind = data.get("kind")
         if kind == ReviewDecision.KIND_SELECT:
-            if data.get("selected_action_type") not in ACTION_TYPES:
+            if data.get("selected_action_type") not in SELECTABLE_ACTION_TYPES:
                 raise serializers.ValidationError(
-                    {"selected_action_type": "Must be a known action type."}
+                    {"selected_action_type": "Must be a selectable action type."}
                 )
             data["status"] = ReviewDecision.STATUS_RESOLVED
         elif kind == ReviewDecision.KIND_PROPOSE:
