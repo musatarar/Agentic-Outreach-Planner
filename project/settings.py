@@ -25,6 +25,14 @@ if _env_file.exists():
             _k, _, _v = _line.partition('=')
             os.environ.setdefault(_k.strip(), _v.strip())
 
+# LLM provider keys. The active provider is selected in config.toml; each
+# adapter (project/app/services/llm/) reads its key from the environment:
+#   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, normalized below)
+#   chatgpt  -> OPENAI_API_KEY
+#   deepseek -> DEEPSEEK_API_KEY
+#   groq     -> GROQ_API_KEY   (free tier -- https://console.groq.com)
+# Keys stay in .env; config.toml never holds secrets.
+
 # The anthropic SDK reads ANTHROPIC_API_KEY; the .env uses CLAUDE_API_KEY
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('CLAUDE_API_KEY', '')
 if ANTHROPIC_API_KEY:

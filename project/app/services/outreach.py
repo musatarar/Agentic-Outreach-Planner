@@ -10,11 +10,9 @@ imported inside `plan_outreach()`.
 import datetime
 import re
 
-import anthropic
-
 from project.app.services import actions
+from project.app.services.llm import get_llm_client
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_COPY_TOKENS = 500
 
 # Phrases (lowercase) suggesting the lead asked to be contacted later /
@@ -311,7 +309,7 @@ def determine_action(lead, today=None):
 
 
 # --------------------------------------------------------------------------
-# copy generation (Claude)
+# copy generation (provider-agnostic; see project.app.services.llm)
 # --------------------------------------------------------------------------
 
 def _format_events_for_prompt(lead, limit=6):
@@ -363,19 +361,13 @@ Write the email now. Requirements:
 
 
 def generate_copy(lead, action_type, reason):
-    """Generate a personalized outreach email with Claude. Returns the text."""
-    client = anthropic.Anthropic()  # API key comes from the environment
+    """Generate a personalized outreach email via the configured LLM provider.
+
+    The provider (Claude, ChatGPT, DeepSeek, Groq, ...) is selected in
+    ``config.toml``; see :mod:`project.app.services.llm`. Returns the text.
+    """
     prompt = _build_copy_prompt(lead, action_type, reason)
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=MAX_COPY_TOKENS,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    parts = []
-    for block in response.content:
-        if getattr(block, "type", "") == "text":
-            parts.append(block.text)
-    return "".join(parts).strip()
+    return get_llm_client().complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
 
 # --------------------------------------------------------------------------
