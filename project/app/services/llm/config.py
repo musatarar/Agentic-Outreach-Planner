@@ -17,21 +17,29 @@ try:  # py3.11+
 except ModuleNotFoundError:  # py3.9 / 3.10 -- requires `pip install tomli`
     import tomli as tomllib
 
-# Repo root is three levels up from this file:
+# Repo root is four levels up from this file:
 # project/app/services/llm/config.py -> <repo root>
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config.toml"
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[4] / "config.toml"
 
-# Provider used when config.toml is missing or has no [llm] provider set, so
-# the app still boots without a config file.
+# Provider used when config.toml exists but has no [llm] provider set. A missing
+# config.toml is now a hard error (see _load_config), not a silent fallback.
 _FALLBACK_PROVIDER = "claude"
 
 
 @lru_cache(maxsize=1)
 def _load_config():
-    """Read and cache the parsed ``config.toml`` (empty dict if absent)."""
+    """Read and cache the parsed ``config.toml``.
+
+    Fails loudly if the file is missing: a silent fallback to defaults hides
+    misconfiguration (e.g. a wrong path) and sends every request to the
+    fallback provider regardless of what the operator selected.
+    """
     path = Path(os.environ.get("LLM_CONFIG_PATH", _DEFAULT_CONFIG_PATH))
     if not path.exists():
-        return {}
+        raise FileNotFoundError(
+            f"LLM config file not found at '{path}'. Create config.toml at the "
+            f"repo root (or set LLM_CONFIG_PATH to its location)."
+        )
     with open(path, "rb") as fh:
         return tomllib.load(fh)
 
