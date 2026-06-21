@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Next Actions</title>
+    <title>BD Dashboard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -19,19 +19,30 @@
         h1 { font-size: 2rem; margin-bottom: 0.5rem; }
         .subtitle { color: #666; font-size: 0.95rem; }
         .container { max-width: 900px; margin: 0 auto; padding: 2rem; }
-        .stub-banner {
-            background: #cce5ff; border: 1px solid #b8daff; color: #004085;
-            border-radius: 4px; padding: 0.75rem 1rem; margin-bottom: 1.5rem; font-size: 0.92rem;
+        .reviewer-bar {
+            background: white; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08); display: flex; align-items: center; gap: 0.75rem;
         }
-        .todo {
+        .reviewer-bar label { font-weight: 600; font-size: 0.9rem; }
+        .reviewer-bar input {
+            flex: 1; padding: 0.45rem 0.7rem; border: 1px solid #ced4da; border-radius: 4px; font-size: 0.9rem;
+        }
+        section.bucket { margin-bottom: 2rem; }
+        section.bucket > h2 {
+            font-size: 1.2rem; margin-bottom: 0.85rem; display: flex; align-items: center; gap: 0.5rem;
+        }
+        .count {
+            background: #007bff; color: white; font-size: 0.8rem; font-weight: 600;
+            border-radius: 10px; padding: 0.1rem 0.6rem;
+        }
+        .card {
             background: white; border-radius: 8px; padding: 1.25rem 1.5rem;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08); margin-bottom: 1rem;
-            display: flex; gap: 1rem; align-items: flex-start;
         }
-        .todo input[type="checkbox"] { margin-top: 0.35rem; transform: scale(1.2); }
-        .todo-body { flex: 1; }
-        .todo-title { font-weight: 600; }
-        .todo-detail { font-size: 0.92rem; color: #555; margin-top: 0.25rem; }
+        .card-title { font-weight: 600; }
+        .card-detail { font-size: 0.92rem; color: #555; margin-top: 0.35rem; }
+        .card-detail .label { font-weight: 600; color: #333; }
+        .snippet { font-style: italic; color: #555; }
         .badge {
             padding: 0.15rem 0.6rem; border-radius: 10px; font-size: 0.78rem;
             font-weight: 600; color: white; margin-left: 0.5rem;
@@ -39,12 +50,34 @@
         .badge.p1 { background: #dc3545; }
         .badge.p2 { background: #fd7e14; }
         .badge.p3 { background: #6c757d; }
-        .todo-buttons { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
-        .todo-buttons button {
-            background: #e9ecef; color: #6c757d; border: 1px solid #ced4da;
-            padding: 0.35rem 0.85rem; border-radius: 4px; font-size: 0.85rem;
-            cursor: not-allowed;
+        .review-controls { margin-top: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+        .review-controls select {
+            padding: 0.4rem 0.6rem; border: 1px solid #ced4da; border-radius: 4px; font-size: 0.88rem; flex: 1; min-width: 180px;
         }
+        button.action {
+            background: #007bff; color: white; border: none;
+            padding: 0.4rem 0.95rem; border-radius: 4px; font-size: 0.85rem; cursor: pointer;
+        }
+        button.action:hover { background: #0069d9; }
+        button.secondary { background: #e9ecef; color: #495057; border: 1px solid #ced4da; }
+        button.secondary:hover { background: #dde1e5; }
+        .propose-form {
+            margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px dashed #ddd;
+            display: none; flex-direction: column; gap: 0.5rem;
+        }
+        .propose-form.open { display: flex; }
+        .propose-form input {
+            padding: 0.45rem 0.7rem; border: 1px solid #ced4da; border-radius: 4px; font-size: 0.88rem;
+        }
+        .card-error {
+            margin-top: 0.6rem; background: #f8d7da; color: #721c24;
+            border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.85rem;
+        }
+        .log-item {
+            background: white; border-radius: 8px; padding: 0.85rem 1.25rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06); margin-bottom: 0.65rem; font-size: 0.9rem;
+        }
+        .log-item .who { color: #666; font-size: 0.82rem; margin-top: 0.2rem; }
         .empty, .error-message { background: white; border-radius: 8px; padding: 2rem; text-align: center; color: #666; }
         .error-message { background: #f8d7da; color: #721c24; }
     </style>
@@ -54,18 +87,44 @@
         <nav>
             <a href="/">Planner</a>
             &nbsp;|&nbsp; <a href="/reports/">Reports</a>
-            &nbsp;|&nbsp; <strong>Next Actions</strong>
+            &nbsp;|&nbsp; <strong>BD Dashboard</strong>
         </nav>
-        <h1>Next Actions</h1>
-        <p class="subtitle">Open follow-ups that need a human — one queue for the team</p>
+        <h1>BD Dashboard</h1>
+        <p class="subtitle">Outreach actions taken, follow-ups, and the manual review queue — one place for the team</p>
     </header>
 
     <div class="container">
-        <div class="stub-banner">
-            <strong>Demo note:</strong> actions are stubbed for this demo — assigning, completing,
-            and snoozing will be wired up in a future iteration.
+        <div id="error"></div>
+
+        <div class="reviewer-bar">
+            <label for="reviewer">Reviewer</label>
+            <input id="reviewer" type="text" placeholder="Your name (used when you pick or propose an action)">
         </div>
-        <div id="content"><div class="empty">Loading next actions…</div></div>
+
+        <section class="bucket">
+            <h2>Actions already taken <span class="count" id="count-taken">0</span></h2>
+            <div id="taken"><div class="empty">Loading…</div></div>
+        </section>
+
+        <section class="bucket">
+            <h2>Needs follow-up <span class="count" id="count-followup">0</span></h2>
+            <div id="followup"><div class="empty">Loading…</div></div>
+        </section>
+
+        <section class="bucket">
+            <h2>Needs manual review <span class="count" id="count-review">0</span></h2>
+            <div id="review"><div class="empty">Loading…</div></div>
+        </section>
+
+        <section class="bucket">
+            <h2>Resolved log <span class="count" id="count-resolved">0</span></h2>
+            <div id="resolved"><div class="empty">Loading…</div></div>
+        </section>
+
+        <section class="bucket">
+            <h2>Pending engineering <span class="count" id="count-pending">0</span></h2>
+            <div id="pending"><div class="empty">Loading…</div></div>
+        </section>
     </div>
 
     <script>
@@ -75,49 +134,250 @@
             return d.innerHTML;
         }
 
-        function render(actions) {
-            const content = document.getElementById('content');
-            // Latest action per lead (API returns newest first), keep open items only
-            const seen = new Set();
-            const open = [];
-            for (const a of actions) {
-                if (seen.has(a.lead.id)) continue;
-                seen.add(a.lead.id);
-                if (a.needs_human || (a.further_action && a.further_action.trim())) open.push(a);
+        // Extract CSRF token from cookies
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
             }
-            open.sort((x, y) => x.priority - y.priority);
-            if (!open.length) {
-                content.innerHTML = '<div class="empty">No open next actions — every lead in the latest plan was handled automatically. 🎉</div>';
+            return cookieValue;
+        }
+
+        // Shared state for label lookups
+        let actionOptions = [];
+        function labelFor(value) {
+            const opt = actionOptions.find(o => o.value === value);
+            return opt ? opt.label : value;
+        }
+
+        function snippet(s, n) {
+            if (!s) return '';
+            s = String(s);
+            return s.length > n ? s.slice(0, n).trimEnd() + '…' : s;
+        }
+
+        // ---- Read-only log buckets ----
+
+        function renderTaken(actions) {
+            const items = actions.filter(a => !a.needs_human && a.suggested_copy && a.suggested_copy.trim());
+            document.getElementById('count-taken').textContent = items.length;
+            const el = document.getElementById('taken');
+            if (!items.length) {
+                el.innerHTML = '<div class="empty">No automated outreach has been sent yet.</div>';
                 return;
             }
-            content.innerHTML = open.map(a => `
-                <div class="todo">
-                    <input type="checkbox" disabled title="Coming soon">
-                    <div class="todo-body">
-                        <div class="todo-title">
-                            ${esc(a.lead.agency_name)} — ${esc(a.lead.contact_name)}
-                            <span class="badge p${a.priority}">P${a.priority}</span>
-                        </div>
-                        <div class="todo-detail">
-                            ${a.needs_human ? '<strong>Needs human review:</strong> ' : ''}
-                            ${esc(a.further_action || a.reason)}
-                        </div>
-                        <div class="todo-buttons">
-                            <button disabled title="Coming soon">Assign to AE</button>
-                            <button disabled title="Coming soon">Mark done</button>
-                            <button disabled title="Coming soon">Snooze</button>
-                        </div>
+            el.innerHTML = items.map(a => `
+                <div class="card">
+                    <div class="card-title">
+                        ${esc(a.lead.agency_name)} — ${esc(a.lead.contact_name)}
+                        <span class="badge p${a.priority}">P${a.priority}</span>
                     </div>
+                    <div class="card-detail"><span class="label">Action:</span> ${esc(a.action_type)}</div>
+                    <div class="card-detail snippet">${esc(snippet(a.suggested_copy, 160))}</div>
                 </div>`).join('');
         }
 
-        fetch('/api/reports/')
-            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-            .then(render)
-            .catch(err => {
-                document.getElementById('content').innerHTML =
-                    `<div class="error-message">Failed to load next actions: ${esc(err.message)}</div>`;
+        function renderFollowup(actions) {
+            const items = actions.filter(a => !a.needs_human && a.further_action && a.further_action.trim());
+            document.getElementById('count-followup').textContent = items.length;
+            const el = document.getElementById('followup');
+            if (!items.length) {
+                el.innerHTML = '<div class="empty">No outstanding follow-ups. 🎉</div>';
+                return;
+            }
+            el.innerHTML = items.map(a => `
+                <div class="card">
+                    <div class="card-title">
+                        ${esc(a.lead.agency_name)} — ${esc(a.lead.contact_name)}
+                        <span class="badge p${a.priority}">P${a.priority}</span>
+                    </div>
+                    <div class="card-detail"><span class="label">Follow-up:</span> ${esc(a.further_action)}</div>
+                </div>`).join('');
+        }
+
+        // ---- Interactive review bucket ----
+
+        function renderReview(items, options) {
+            actionOptions = options || [];
+            document.getElementById('count-review').textContent = items.length;
+            const el = document.getElementById('review');
+            if (!items.length) {
+                el.innerHTML = '<div class="empty">Nothing needs manual review right now. 🎉</div>';
+                return;
+            }
+            const optionsHtml = actionOptions.map(o =>
+                `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+            el.innerHTML = items.map(a => `
+                <div class="card" data-id="${a.id}">
+                    <div class="card-title">
+                        ${esc(a.lead.agency_name)} — ${esc(a.lead.contact_name)}
+                        <span class="badge p${a.priority}">P${a.priority}</span>
+                    </div>
+                    <div class="card-detail"><span class="label">Why:</span> ${esc(a.reason)}</div>
+                    <div class="review-controls">
+                        <select class="action-select">${optionsHtml}</select>
+                        <button class="action pick-btn">Pick</button>
+                        <button class="secondary action propose-toggle">Propose new</button>
+                    </div>
+                    <div class="propose-form">
+                        <input class="prop-name" type="text" placeholder="Name (short label for the new action)">
+                        <input class="prop-what" type="text" placeholder="What should happen">
+                        <input class="prop-when" type="text" placeholder="When it should trigger">
+                        <button class="action propose-submit">Submit proposal</button>
+                    </div>
+                    <div class="card-error" style="display:none"></div>
+                </div>`).join('');
+
+            el.querySelectorAll('.card').forEach(card => {
+                const id = parseInt(card.dataset.id, 10);
+                card.querySelector('.propose-toggle').addEventListener('click', () => {
+                    card.querySelector('.propose-form').classList.toggle('open');
+                });
+                card.querySelector('.pick-btn').addEventListener('click', () => {
+                    const sel = card.querySelector('.action-select').value;
+                    submitDecision(card, {
+                        outreach_action: id, kind: 'select_existing',
+                        selected_action_type: sel, reviewer: reviewerValue()
+                    });
+                });
+                card.querySelector('.propose-submit').addEventListener('click', () => {
+                    submitDecision(card, {
+                        outreach_action: id, kind: 'propose_new',
+                        proposed_name: card.querySelector('.prop-name').value,
+                        proposed_what: card.querySelector('.prop-what').value,
+                        proposed_when: card.querySelector('.prop-when').value,
+                        reviewer: reviewerValue()
+                    });
+                });
             });
+        }
+
+        function reviewerValue() {
+            return document.getElementById('reviewer').value.trim();
+        }
+
+        function showCardError(card, msg) {
+            const e = card.querySelector('.card-error');
+            e.innerHTML = esc(msg);
+            e.style.display = 'block';
+        }
+
+        async function submitDecision(card, body) {
+            const e = card.querySelector('.card-error');
+            e.style.display = 'none';
+            try {
+                const response = await fetch('/api/review-decisions/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': getCookie('csrftoken'),
+                    },
+                    body: JSON.stringify(body),
+                });
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || JSON.stringify(err) || ('HTTP ' + response.status));
+                }
+                // Success: remove card, decrement count, refresh logs + queue
+                card.remove();
+                const countEl = document.getElementById('count-review');
+                const n = Math.max(0, parseInt(countEl.textContent, 10) - 1);
+                countEl.textContent = n;
+                if (n === 0) {
+                    document.getElementById('review').innerHTML =
+                        '<div class="empty">Nothing needs manual review right now. 🎉</div>';
+                }
+                refresh();
+            } catch (err) {
+                showCardError(card, 'Could not save decision: ' + err.message);
+            }
+        }
+
+        // ---- Decision logs ----
+
+        function renderResolved(decisions) {
+            const items = decisions.filter(d => d.status === 'resolved');
+            document.getElementById('count-resolved').textContent = items.length;
+            const el = document.getElementById('resolved');
+            if (!items.length) {
+                el.innerHTML = '<div class="empty">No resolved decisions yet.</div>';
+                return;
+            }
+            el.innerHTML = items.map(d => `
+                <div class="log-item">
+                    <div><span class="label">${esc(labelFor(d.selected_action_type))}</span>
+                        — action #${esc(d.outreach_action)}</div>
+                    <div class="who">Resolved by ${esc(d.reviewer || 'unknown')}</div>
+                </div>`).join('');
+        }
+
+        function renderPending(decisions) {
+            // Already filtered by query, but guard anyway
+            const items = decisions.filter(d => d.status === 'pending_engineering');
+            document.getElementById('count-pending').textContent = items.length;
+            const el = document.getElementById('pending');
+            if (!items.length) {
+                el.innerHTML = '<div class="empty">No proposals waiting on engineering.</div>';
+                return;
+            }
+            el.innerHTML = items.map(d => `
+                <div class="log-item">
+                    <div><span class="label">${esc(d.proposed_name)}</span> — action #${esc(d.outreach_action)}</div>
+                    <div class="card-detail"><span class="label">What:</span> ${esc(d.proposed_what)}</div>
+                    <div class="card-detail"><span class="label">When:</span> ${esc(d.proposed_when)}</div>
+                    <div class="who">Proposed by ${esc(d.reviewer || 'unknown')}</div>
+                </div>`).join('');
+        }
+
+        // ---- Loading ----
+
+        function showGlobalError(msg) {
+            document.getElementById('error').innerHTML =
+                `<div class="error-message">${esc(msg)}</div>`;
+        }
+
+        async function fetchJson(url) {
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('HTTP ' + r.status + ' from ' + url);
+            return r.json();
+        }
+
+        // Refresh the live (queue + logs) sections; read-only "taken"/"followup" stay as loaded.
+        function refresh() {
+            Promise.all([
+                fetchJson('/api/review-queue/'),
+                fetchJson('/api/review-decisions/'),
+                fetchJson('/api/review-decisions/?status=pending_engineering'),
+            ]).then(([queue, decisions, pending]) => {
+                renderReview(queue.items || [], queue.action_options || []);
+                renderResolved(decisions || []);
+                renderPending(pending || []);
+            }).catch(err => showGlobalError('Failed to refresh review data: ' + err.message));
+        }
+
+        function init() {
+            Promise.all([
+                fetchJson('/api/outreach/'),
+                fetchJson('/api/review-queue/'),
+                fetchJson('/api/review-decisions/'),
+                fetchJson('/api/review-decisions/?status=pending_engineering'),
+            ]).then(([outreach, queue, decisions, pending]) => {
+                renderTaken(outreach || []);
+                renderFollowup(outreach || []);
+                renderReview(queue.items || [], queue.action_options || []);
+                renderResolved(decisions || []);
+                renderPending(pending || []);
+            }).catch(err => showGlobalError('Failed to load dashboard: ' + err.message));
+        }
+
+        init();
     </script>
 </body>
 </html>
