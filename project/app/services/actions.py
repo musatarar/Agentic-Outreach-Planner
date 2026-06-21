@@ -16,6 +16,10 @@ ACTION_TYPES = [
     UNKNOWN,                # no pattern matched -> needs_human=True, report to BD
 ]
 
+# Action types a BD reviewer may actually pick to resolve a review item.
+# UNKNOWN is the non-decision that *put* the item in the queue, so it's excluded.
+SELECTABLE_ACTION_TYPES = [t for t in ACTION_TYPES if t != UNKNOWN]
+
 # Per-action metadata: human-readable label + default urgency.
 ACTION_META = {
     POWER_USER_REWARD: {

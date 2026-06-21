@@ -5,6 +5,8 @@ from project.app.views import (
     OutreachListView,
     OutreachReportView,
     OutreachRunView,
+    ReviewDecisionListCreateView,
+    ReviewQueueView,
 )
 
 # Included at the `api/` prefix by project/urls.py:
@@ -14,4 +16,6 @@ urlpatterns = [
     path("outreach/", OutreachListView.as_view(), name="outreach-list"),
     path("leads/", LeadListView.as_view(), name="lead-list"),
     path("reports/", OutreachReportView.as_view(), name="outreach-reports"),
+    path("review-queue/", ReviewQueueView.as_view(), name="review-queue"),
+    path("review-decisions/", ReviewDecisionListCreateView.as_view(), name="review-decisions"),
 ]

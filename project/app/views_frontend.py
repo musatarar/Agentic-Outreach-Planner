@@ -13,6 +13,7 @@ def reports(request):
     return render(request, 'app/reports.html')
 
 
+@ensure_csrf_cookie
 def next_actions(request):
-    """Render the stubbed Next Actions page (open follow-up queue)."""
+    """Render the BD Dashboard (manual review queue)."""
     return render(request, 'app/next_actions.html')

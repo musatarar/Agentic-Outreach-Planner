@@ -21,7 +21,7 @@ class FrontendTestCase(TestCase):
         self.assertContains(response, 'Outreach Reports')
 
     def test_next_actions_page_returns_200_with_title(self):
-        """Test that the next actions page loads and contains its title."""
+        """Test that the BD Dashboard page loads and contains its title."""
         response = self.client.get('/next-actions/')
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Next Actions')
+        self.assertContains(response, 'BD Dashboard')
