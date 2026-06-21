@@ -48,3 +48,21 @@ class OutreachAction(models.Model):          # what the planner decided/did
 
     def __str__(self):
         return f"{self.lead_id} - {self.action_type} (p{self.priority})"
+
+
+class ReviewDecision(models.Model):
+    KIND_SELECT = "select_existing"
+    KIND_PROPOSE = "propose_new"
+    STATUS_RESOLVED = "resolved"
+    STATUS_PENDING = "pending_engineering"
+
+    outreach_action = models.ForeignKey(
+        OutreachAction, on_delete=models.CASCADE, related_name="review_decisions")
+    kind = models.CharField(max_length=32)            # select_existing | propose_new
+    status = models.CharField(max_length=32)          # resolved | pending_engineering
+    selected_action_type = models.CharField(max_length=64, blank=True)
+    proposed_name = models.CharField(max_length=255, blank=True)
+    proposed_what = models.TextField(blank=True)
+    proposed_when = models.TextField(blank=True)
+    reviewer = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)

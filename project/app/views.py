@@ -2,11 +2,13 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from project.app.models import Lead, OutreachAction
+from project.app.models import Lead, OutreachAction, ReviewDecision
 from project.app.serializers import (
     LeadSerializer,
     OutreachActionSerializer,
+    ReviewDecisionSerializer,
 )
+from project.app.services.actions import ACTION_META, UNKNOWN
 
 
 class OutreachRunView(APIView):
@@ -56,6 +58,65 @@ class OutreachReportView(APIView):
         )
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ReviewQueueView(APIView):
+    """GET /api/review-queue/ — needs_human actions awaiting a decision."""
+
+    def get(self, request, *args, **kwargs):
+        decided_ids = set(
+            ReviewDecision.objects.values_list("outreach_action_id", flat=True)
+        )
+
+        latest = (
+            OutreachAction.objects.select_related("lead")
+            .order_by("lead_id", "-created_at", "-id")
+        )
+        seen = set()
+        items = []
+        for action in latest:
+            if action.lead_id in seen:
+                continue
+            seen.add(action.lead_id)
+            if not action.needs_human:
+                continue
+            if action.id in decided_ids:
+                continue
+            items.append(action)
+
+        items.sort(key=lambda a: (a.priority, a.lead_id))
+
+        action_options = [
+            {"value": k, "label": meta["label"], "urgency": meta["urgency"]}
+            for k, meta in ACTION_META.items()
+            if k != UNKNOWN
+        ]
+
+        return Response(
+            {
+                "items": OutreachActionSerializer(items, many=True).data,
+                "action_options": action_options,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ReviewDecisionListCreateView(APIView):
+    """GET/POST /api/review-decisions/."""
+
+    def get(self, request, *args, **kwargs):
+        qs = ReviewDecision.objects.all().order_by("-created_at", "-id")
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        serializer = ReviewDecisionSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        serializer = ReviewDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class LeadListView(APIView):
