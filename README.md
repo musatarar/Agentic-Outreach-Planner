@@ -4,8 +4,6 @@ A Django + DRF backend that reads an agency's sales pipeline, decides which lead
 outreach *today* and *why*, and drafts personalized follow-up copy with an LLM — instead
 of an account exec digging through HubSpot and Slack every morning.
 
-Built for a 75-minute take-home technical challenge and pushed a bit further afterward.
-
 ## Why it's interesting
 
 - **Rules decide, LLM writes.** Priority and action classification are deterministic,
