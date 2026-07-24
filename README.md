@@ -44,14 +44,34 @@ with AI-drafted emails render in ~20–30s. Full walkthrough with sample results
 | Logic | `project/app/services/outreach.py` | Priority scoring + action classification — pure Python, no LLM |
 | LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via `config.toml` |
 | API | `project/app/views.py`, `urls.py` | DRF APIViews at `/api/*` |
-| Frontend | `project/app/templates/app/`, `views_frontend.py` | Vanilla-JS pages: outreach board, reports, next-actions queue |
+| Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: planner board, reports, BD dashboard — consumes the `/api/*` endpoints |
+
+The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
+(`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`
+alone runs the whole app — **no Node required** to demo or review.
 
 ## Stack
 
-Python 3.9 · Django 4.2 · Django REST Framework · SQLite · vanilla JS (no frontend build step)
+Python 3.9 · Django 4.2 · Django REST Framework · SQLite · React 18 · TypeScript · Vite
 
 ## Tests
 
 ```bash
 ./venv/bin/python manage.py test project.app
 ```
+
+## Frontend development
+
+Node is only needed to change the frontend. The source lives in `frontend/`; the Django shells load the
+committed bundle via `{% static %}`.
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173 — hot reload, proxies /api to Django on :8000
+npm run typecheck  # tsc --noEmit
+npm run build      # emits the committed bundle into project/app/static/frontend/
+```
+
+Run `npm run dev` alongside `manage.py runserver` (port 8000) for local development, then `npm run build`
+and commit `project/app/static/frontend/` before opening a PR so the plain-Django path stays current.
