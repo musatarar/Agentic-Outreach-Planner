@@ -1,0 +1,46 @@
+{
+  "_comment": "Baseline for evals/run_rules_eval.py (MUS-20). Ground-truth labels: values may be <1.0 where the rules are imperfect. Regenerate with `python evals/run_rules_eval.py --update-baseline` after an intended change.",
+  "generated_at": "2026-07-25T19:52:20+00:00",
+  "today": "2026-06-12",
+  "n": 41,
+  "action_accuracy": 0.9512,
+  "priority_accuracy": 0.9512,
+  "per_action": {
+    "power_user_reward": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 3
+    },
+    "follow_up_after_hold": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 4
+    },
+    "reengage_dormant": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 4
+    },
+    "nudge_usage": {
+      "precision": 1.0,
+      "recall": 0.913,
+      "f1": 0.9545,
+      "support": 23
+    },
+    "complete_onboarding": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 4
+    },
+    "unknown": {
+      "precision": 0.6,
+      "recall": 1.0,
+      "f1": 0.75,
+      "support": 3
+    }
+  }
+}
