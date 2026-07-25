@@ -66,6 +66,7 @@ def _dt(y, m, d, h=9):
 # Stubs mirroring the five real leads
 # ---------------------------------------------------------------------------
 
+
 def priya():
     return _lead(
         id="lead_001",
@@ -88,12 +89,20 @@ def priya():
             "her close rate is high. She mentioned wanting to understand volume "
             "pricing if she hits 20 closed deals. She's close."
         ),
-        events=_EventSet([
-            _event("deal_closed", _dt(2026, 5, 25), client="Telluride Outfitters", premium=9200),
-            _event("call_logged", _dt(2026, 5, 15), duration_min=18,
-                   notes="Priya asked about volume pricing again. She said she's "
-                         "telling other agencies about us."),
-        ]),
+        events=_EventSet(
+            [
+                _event(
+                    "deal_closed", _dt(2026, 5, 25), client="Telluride Outfitters", premium=9200
+                ),
+                _event(
+                    "call_logged",
+                    _dt(2026, 5, 15),
+                    duration_min=18,
+                    notes="Priya asked about volume pricing again. She said she's "
+                    "telling other agencies about us.",
+                ),
+            ]
+        ),
     )
 
 
@@ -119,14 +128,23 @@ def tom():
             "Said in March he was waiting on Q2 budget approval to push it to "
             "his team. Q2 started. Haven't heard back."
         ),
-        events=_EventSet([
-            _event("call_logged", _dt(2026, 5, 1), duration_min=8,
-                   notes="Tom said Q2 budget is approved and he's planning to "
-                         "bring it to his team in the next few weeks."),
-            _event("email_sent", _dt(2026, 5, 14),
-                   subject="Checking in — ready to loop in your team?",
-                   outcome="no_reply"),
-        ]),
+        events=_EventSet(
+            [
+                _event(
+                    "call_logged",
+                    _dt(2026, 5, 1),
+                    duration_min=8,
+                    notes="Tom said Q2 budget is approved and he's planning to "
+                    "bring it to his team in the next few weeks.",
+                ),
+                _event(
+                    "email_sent",
+                    _dt(2026, 5, 14),
+                    subject="Checking in — ready to loop in your team?",
+                    outcome="no_reply",
+                ),
+            ]
+        ),
     )
 
 
@@ -152,13 +170,21 @@ def dana():
             "from her business partner Ray before moving forward. Said she'd "
             "follow up in May. Haven't heard back."
         ),
-        events=_EventSet([
-            _event("demo_completed", _dt(2026, 4, 29),
-                   notes="Dana engaged throughout. Her business partner Ray "
-                         "wasn't on the call."),
-            _event("email_sent", _dt(2026, 5, 13),
-                   subject="Following up from our demo", outcome="no_reply"),
-        ]),
+        events=_EventSet(
+            [
+                _event(
+                    "demo_completed",
+                    _dt(2026, 4, 29),
+                    notes="Dana engaged throughout. Her business partner Ray wasn't on the call.",
+                ),
+                _event(
+                    "email_sent",
+                    _dt(2026, 5, 13),
+                    subject="Following up from our demo",
+                    outcome="no_reply",
+                ),
+            ]
+        ),
     )
 
 
@@ -184,11 +210,19 @@ def derek():
             "logged in a few times but hasn't submitted anything yet. No "
             "contact since onboarding call."
         ),
-        events=_EventSet([
-            _event("quote_created", _dt(2026, 5, 21), client="Pacific Rim Imports", premium=8900),
-            _event("onboarding_call", _dt(2026, 5, 1), duration_min=25,
-                   notes="Derek is sharp. Said he had two clients in mind already."),
-        ]),
+        events=_EventSet(
+            [
+                _event(
+                    "quote_created", _dt(2026, 5, 21), client="Pacific Rim Imports", premium=8900
+                ),
+                _event(
+                    "onboarding_call",
+                    _dt(2026, 5, 1),
+                    duration_min=25,
+                    notes="Derek is sharp. Said he had two clients in mind already.",
+                ),
+            ]
+        ),
     )
 
 
@@ -215,17 +249,24 @@ def susan():
             "paid plan. She's at 2. Seems like she just needs time and maybe a "
             "nudge."
         ),
-        events=_EventSet([
-            _event("deal_closed", _dt(2026, 5, 18), client="Dearborn Auto Parts", premium=5400),
-            _event("call_logged", _dt(2026, 5, 10), duration_min=15,
-                   notes="Susan is tracking toward her 5-deal target."),
-        ]),
+        events=_EventSet(
+            [
+                _event("deal_closed", _dt(2026, 5, 18), client="Dearborn Auto Parts", premium=5400),
+                _event(
+                    "call_logged",
+                    _dt(2026, 5, 10),
+                    duration_min=15,
+                    notes="Susan is tracking toward her 5-deal target.",
+                ),
+            ]
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # Priority
 # ---------------------------------------------------------------------------
+
 
 class DeterminePriorityTests(unittest.TestCase):
     def test_tom_is_priority_1(self):
@@ -261,12 +302,13 @@ class DeterminePriorityTests(unittest.TestCase):
 # Action classification
 # ---------------------------------------------------------------------------
 
+
 class DetermineActionTests(unittest.TestCase):
     def test_priya_power_user_reward(self):
         action, reason = outreach.determine_action(priya(), today=TODAY)
         self.assertEqual(action, actions.POWER_USER_REWARD)
-        self.assertIn("20", reason)              # milestone from the notes
-        self.assertIn("6", reason)               # deals closed
+        self.assertIn("20", reason)  # milestone from the notes
+        self.assertIn("6", reason)  # deals closed
         self.assertIn("volume pricing", reason.lower())
 
     def test_tom_follow_up_after_hold(self):
@@ -278,20 +320,20 @@ class DetermineActionTests(unittest.TestCase):
     def test_dana_complete_onboarding(self):
         action, reason = outreach.determine_action(dana(), today=TODAY)
         self.assertEqual(action, actions.COMPLETE_ONBOARDING)
-        self.assertIn("8,100,000", reason)       # big book is the why-now
+        self.assertIn("8,100,000", reason)  # big book is the why-now
         self.assertIn("never signed up", reason)
 
     def test_derek_nudge_usage(self):
         action, reason = outreach.determine_action(derek(), today=TODAY)
         self.assertEqual(action, actions.NUDGE_USAGE)
         self.assertIn("never submitted", reason)
-        self.assertIn("2", reason)               # quotes created
+        self.assertIn("2", reason)  # quotes created
 
     def test_susan_nudge_usage_toward_commitment(self):
         action, reason = outreach.determine_action(susan(), today=TODAY)
         self.assertEqual(action, actions.NUDGE_USAGE)
-        self.assertIn("5-deal", reason)          # commitment target from notes
-        self.assertIn("3", reason)               # 3 deals short
+        self.assertIn("5-deal", reason)  # commitment target from notes
+        self.assertIn("3", reason)  # 3 deals short
 
     def test_dormant_lead_reengaged(self):
         lead = _lead(
@@ -330,6 +372,7 @@ class DetermineActionTests(unittest.TestCase):
 # independent of which provider config.toml selects. Provider adapters
 # (Claude / OpenAI-compatible) are tested in tests_llm.py.
 
+
 class GenerateCopyTests(unittest.TestCase):
     def test_generate_copy_builds_prompt_with_lead_context_and_delegates(self):
         lead = priya()
@@ -346,12 +389,12 @@ class GenerateCopyTests(unittest.TestCase):
         args, kwargs = fake_client.complete.call_args
         self.assertEqual(kwargs["max_tokens"], outreach.MAX_COPY_TOKENS)
         prompt = args[0]
-        self.assertIn(lead.hubspot_notes, prompt)                 # notes in prompt
+        self.assertIn(lead.hubspot_notes, prompt)  # notes in prompt
         self.assertIn(lead.contact_name, prompt)
         self.assertIn("Summit Risk Advisors", prompt)
-        self.assertIn(actions.POWER_USER_REWARD, prompt)          # action type
+        self.assertIn(actions.POWER_USER_REWARD, prompt)  # action type
         self.assertIn("Priya is 14 deals from her milestone.", prompt)  # reason
-        self.assertIn("volume pricing", prompt)                   # event note text
+        self.assertIn("volume pricing", prompt)  # event note text
 
     def test_generate_copy_returns_client_text(self):
         lead = tom()

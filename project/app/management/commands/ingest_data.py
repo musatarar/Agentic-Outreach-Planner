@@ -103,7 +103,5 @@ class Command(BaseCommand):
                 event_count += 1
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Ingested {lead_count} leads and {event_count} events."
-            )
+            self.style.SUCCESS(f"Ingested {lead_count} leads and {event_count} events.")
         )

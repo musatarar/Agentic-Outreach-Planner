@@ -31,8 +31,7 @@ def _build_client(provider):
         client_cls = _REGISTRY[provider]
     except KeyError:
         raise ValueError(
-            f"Unknown LLM provider '{provider}'. "
-            f"Valid options: {', '.join(sorted(_REGISTRY))}."
+            f"Unknown LLM provider '{provider}'. Valid options: {', '.join(sorted(_REGISTRY))}."
         )
 
     provider_cfg = config.get_provider_config(provider)

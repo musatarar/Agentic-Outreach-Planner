@@ -67,13 +67,9 @@ class ReviewDecisionSerializer(serializers.ModelSerializer):
             data["status"] = ReviewDecision.STATUS_RESOLVED
         elif kind == ReviewDecision.KIND_PROPOSE:
             if not (data.get("proposed_name") or "").strip():
-                raise serializers.ValidationError(
-                    {"proposed_name": "This field is required."}
-                )
+                raise serializers.ValidationError({"proposed_name": "This field is required."})
             if not (data.get("proposed_what") or "").strip():
-                raise serializers.ValidationError(
-                    {"proposed_what": "This field is required."}
-                )
+                raise serializers.ValidationError({"proposed_what": "This field is required."})
             data["status"] = ReviewDecision.STATUS_PENDING
         else:
             raise serializers.ValidationError({"kind": "Unknown decision kind."})

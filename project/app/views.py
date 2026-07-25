@@ -32,9 +32,8 @@ class OutreachListView(APIView):
     def get(self, request, *args, **kwargs):
         # Most recent OutreachAction per lead: order so the newest action for a
         # lead comes first, then keep the first occurrence per lead.
-        latest = (
-            OutreachAction.objects.select_related("lead")
-            .order_by("lead_id", "-created_at", "-id")
+        latest = OutreachAction.objects.select_related("lead").order_by(
+            "lead_id", "-created_at", "-id"
         )
         seen = set()
         actions = []
@@ -53,10 +52,7 @@ class OutreachReportView(APIView):
     """GET /api/reports/ — full outreach action history, newest first."""
 
     def get(self, request, *args, **kwargs):
-        actions = (
-            OutreachAction.objects.select_related("lead")
-            .order_by("-created_at", "-id")
-        )
+        actions = OutreachAction.objects.select_related("lead").order_by("-created_at", "-id")
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -65,13 +61,10 @@ class ReviewQueueView(APIView):
     """GET /api/review-queue/ — needs_human actions awaiting a decision."""
 
     def get(self, request, *args, **kwargs):
-        decided_ids = set(
-            ReviewDecision.objects.values_list("outreach_action_id", flat=True)
-        )
+        decided_ids = set(ReviewDecision.objects.values_list("outreach_action_id", flat=True))
 
-        latest = (
-            OutreachAction.objects.select_related("lead")
-            .order_by("lead_id", "-created_at", "-id")
+        latest = OutreachAction.objects.select_related("lead").order_by(
+            "lead_id", "-created_at", "-id"
         )
         seen = set()
         items = []

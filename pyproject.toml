@@ -1,0 +1,23 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = ["*/migrations/*", "frontend/*", "project/app/static/*", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+# Long lines are mostly LLM prompt strings; ruff format doesn't wrap string
+# literals, so enforcing E501 here would just be manual busywork.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.coverage.run]
+source = ["project.app"]
+omit = ["*/migrations/*", "*/tests*.py"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
