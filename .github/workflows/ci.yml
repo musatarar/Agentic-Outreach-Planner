@@ -75,6 +75,10 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Run tests with coverage
         run: |
+          # dj_database_url treats a *present-but-empty* DATABASE_URL as
+          # malformed (not "unset"), so drop it for the sqlite leg rather
+          # than leaving it set to "".
+          [ -z "$DATABASE_URL" ] && unset DATABASE_URL
           coverage run manage.py test project.app
           coverage report
 
