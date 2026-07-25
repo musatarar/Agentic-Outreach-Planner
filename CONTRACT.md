@@ -108,7 +108,7 @@ into Lead/Event, idempotent via `update_or_create` (clear+recreate events per le
 
 ## Rules for all agents
 
-- Venv (absolute path): `/Users/musatarar/Documents/Work/Project Practice/Eventual Technical Challenge/venv/bin/python`
+- Run Python inside the project virtualenv (`python -m venv .venv && pip install -r requirements.txt`; see README Quickstart). With it active, invoke commands as `python manage.py ...`.
 - Only the models agent runs `makemigrations`.
 - Never hardcode the API key; it comes from the environment (settings already map
   CLAUDE_API_KEY -> ANTHROPIC_API_KEY from `.env`).

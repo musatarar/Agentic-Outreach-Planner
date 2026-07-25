@@ -7,18 +7,18 @@ per lead. AEs open one page each morning instead of digging through HubSpot and 
 ## Setup (once)
 
 ```bash
-# 1. API key — .env at repo root (already present, gitignored):
-#    CLAUDE_API_KEY=sk-ant-...
+# 1. Environment + API key (see README Quickstart for the venv setup):
+#    cp .env.example .env   # then set a provider key, e.g. GROQ_API_KEY=...
 
-# 2. Migrate and load the pipeline data
-./venv/bin/python manage.py migrate
-./venv/bin/python scripts/populate_demo_data.py   # ingests 5 leads, 28 events
+# 2. Migrate and load the pipeline data (with the venv active)
+python manage.py migrate
+python scripts/populate_demo_data.py   # ingests 5 leads, 28 events
 ```
 
 ## Run the demo
 
 ```bash
-./venv/bin/python manage.py runserver
+python manage.py runserver
 ```
 
 1. Open **http://127.0.0.1:8000/**
@@ -66,7 +66,7 @@ curl http://127.0.0.1:8000/api/reports/                # full action history, ne
 ## Tests
 
 ```bash
-./venv/bin/python manage.py test project.app   # 27 tests: models/ingestion, API, logic (mocked Claude), frontend
+python manage.py test project.app   # 27 tests: models/ingestion, API, logic (mocked Claude), frontend
 ```
 
 ## Architecture (60-second version)

@@ -20,21 +20,40 @@ of an account exec digging through HubSpot and Slack every morning.
 
 ## Quickstart
 
+Requires **Python 3.9+**. From a fresh clone:
+
 ```bash
-git clone <repo-url> && cd "Eventual Technical Challenge"
+# 1. Isolated environment + dependencies
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 
-# .env at repo root (gitignored) needs one key for whichever provider config.toml selects:
-#   GROQ_API_KEY=...      (default provider — free tier, no credit card: console.groq.com)
-#   ANTHROPIC_API_KEY=... (or CLAUDE_API_KEY, for provider = "claude")
+# 2. API key for whichever provider config.toml selects (default: groq — free
+#    tier, no credit card at console.groq.com). Only one key is needed.
+cp .env.example .env               # then edit .env and fill in the key
 
-./venv/bin/python manage.py migrate
-./venv/bin/python scripts/populate_demo_data.py   # loads the sample pipeline
-./venv/bin/python manage.py runserver
+# 3. Migrate, seed the demo pipeline, and run
+python manage.py migrate
+python scripts/populate_demo_data.py   # loads the sample pipeline
+python manage.py runserver
 ```
 
 Open **http://127.0.0.1:8000/**, click **"Run Outreach Plan"**, watch prioritized cards
 with AI-drafted emails render in ~20–30s. Full walkthrough with sample results in
 [DEMO.md](DEMO.md).
+
+### Or with Docker
+
+No local Python needed — just Docker:
+
+```bash
+cp .env.example .env   # optional: set a provider key to enable the LLM copy step
+docker compose up
+```
+
+This builds the image, applies migrations, seeds the demo pipeline, and serves the app at
+**http://127.0.0.1:8000/**. The server starts even without a key — you just can't run the
+LLM copy step until one is set.
 
 ## Architecture, 30 seconds
 
@@ -57,7 +76,7 @@ Python 3.9 · Django 4.2 · Django REST Framework · SQLite · React 18 · TypeS
 ## Tests
 
 ```bash
-./venv/bin/python manage.py test project.app
+python manage.py test project.app
 ```
 
 ## Frontend development

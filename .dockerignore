@@ -1,0 +1,20 @@
+# Keep the build context small and keep secrets / local state out of the image.
+.git
+.claude
+.cursor
+venv
+.venv
+*.sqlite3
+db.sqlite3
+
+# Secrets — never bake a real .env into the image.
+.env
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Frontend dev artifacts (the built bundle in project/app/static/ IS copied).
+frontend/node_modules
+frontend/dist
+node_modules
