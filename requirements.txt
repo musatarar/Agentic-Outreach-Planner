@@ -1,9 +1,14 @@
 # Runtime dependencies for the Agentic Outreach Planner.
-# Pinned to the versions the project was built and tested against (Python 3.9).
+# Pinned to the versions the project was built and tested against (Python 3.12+).
 #   pip install -r requirements.txt
 
 Django==4.2.30
 djangorestframework==3.16.1
+
+# Database. SQLite is the zero-setup local default (see project/settings.py);
+# Postgres is used via DATABASE_URL (docker-compose.yml sets this for you).
+dj-database-url==3.1.2
+psycopg2-binary==2.9.12
 
 # LLM providers.
 #   claude              -> anthropic SDK
@@ -12,8 +17,7 @@ djangorestframework==3.16.1
 anthropic==0.109.1
 httpx==0.28.1
 
-# TOML config parsing. Python 3.11+ has tomllib in the stdlib; 3.9/3.10 need tomli.
-tomli==2.4.1 ; python_version < "3.11"
+# TOML config parsing uses the stdlib tomllib (Python 3.11+); no extra package needed.
 
 # The OpenAI-compatible providers above talk HTTP directly, so their vendor SDKs
 # are NOT required to run the app. Uncomment only if you swap the adapters to use

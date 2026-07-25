@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Context
 
-This is a starter scaffold for a 75-minute technical challenge: a bare Django 4.2 project (Python 3.9, SQLite) with Django REST Framework installed. Prioritize speed and working features over polish — avoid refactoring the scaffold, adding tooling, or gold-plating.
+This is a starter scaffold for a 75-minute technical challenge: a bare Django 4.2 project (Python 3.12+, SQLite locally / Postgres via Docker) with Django REST Framework installed. Prioritize speed and working features over polish — avoid refactoring the scaffold, adding tooling, or gold-plating.
 
 ## Commands
 
@@ -15,7 +15,7 @@ python -m venv .venv && source .venv/bin/activate && pip install -r requirements
 ```
 
 Dependencies are pinned in `requirements.txt` (Django 4.2, djangorestframework, anthropic,
-httpx, tomli). With the venv active:
+httpx, dj-database-url, psycopg2-binary). With the venv active:
 
 ```bash
 python manage.py runserver          # run dev server (http://127.0.0.1:8000)
@@ -34,7 +34,8 @@ python manage.py shell              # Django shell
   1. Because the app lives at `project/app/` (not top-level `app/`), register it as `'project.app'` in `INSTALLED_APPS` and change `name = 'app'` to `name = 'project.app'` in `project/app/apps.py`. Registering plain `'app'` will fail with an import error.
   2. Add DRF routes by creating `project/app/urls.py` and including it from `project/urls.py` (currently only routes `admin/`).
 - `rest_framework` is already in `INSTALLED_APPS` — build APIs with DRF (serializers + ViewSets/APIViews + router) rather than plain Django views.
-- Database is SQLite at `./db.sqlite3`; default Django migrations have already been applied.
+- `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, and `DATABASE_URL` are read from the environment in `project/settings.py` (see `.env.example`); `DJANGO_SECRET_KEY` is required, everything else has a safe default.
+- Database defaults to SQLite at `./db.sqlite3` (zero setup, default Django migrations already applied); set `DATABASE_URL` to use Postgres instead. `docker compose up` runs Postgres via the `db` service and points the app at it automatically.
 
 ## Testing & Database
 

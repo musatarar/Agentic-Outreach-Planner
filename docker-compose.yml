@@ -1,15 +1,42 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   web:
     build: .
     ports:
       - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
     # Compose automatically reads a .env file in this directory for ${VAR}
-    # interpolation. Copy .env.example -> .env and set the key for whichever
-    # provider config.toml selects to enable the "Run Outreach Plan" LLM call.
-    # Without a key the server still starts and serves the seeded demo data.
+    # interpolation. Copy .env.example -> .env first -- DJANGO_SECRET_KEY is
+    # required (a working local/demo key ships in .env.example); DATABASE_URL
+    # below points at the Postgres service regardless of what's in .env (the
+    # SQLite fallback in project/settings.py is only used outside Docker).
+    # Set an LLM provider key too, to enable the "Run Outreach Plan" LLM call
+    # -- without one the server still starts and serves the seeded demo data.
     environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY -- copy .env.example to .env}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+
+volumes:
+  postgres_data:

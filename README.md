@@ -20,7 +20,7 @@ of an account exec digging through HubSpot and Slack every morning.
 
 ## Quickstart
 
-Requires **Python 3.9+**. From a fresh clone:
+Requires **Python 3.12+**. From a fresh clone:
 
 ```bash
 # 1. Isolated environment + dependencies
@@ -28,15 +28,19 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 2. API key for whichever provider config.toml selects (default: groq — free
-#    tier, no credit card at console.groq.com). Only one key is needed.
-cp .env.example .env               # then edit .env and fill in the key
+# 2. Copy the env file: DJANGO_SECRET_KEY is required (a fresh local/demo key
+#    is already filled in). Also set the key for whichever provider
+#    config.toml selects (default: groq — free tier, no credit card at
+#    console.groq.com) if you want the LLM copy step.
+cp .env.example .env               # then edit .env and fill in the LLM key
 
 # 3. Migrate, seed the demo pipeline, and run
 python manage.py migrate
 python scripts/populate_demo_data.py   # loads the sample pipeline
 python manage.py runserver
 ```
+
+No `DATABASE_URL` is needed for this path — it falls back to SQLite at `./db.sqlite3`.
 
 Open **http://127.0.0.1:8000/**, click **"Run Outreach Plan"**, watch prioritized cards
 with AI-drafted emails render in ~20–30s. Full walkthrough with sample results in
@@ -47,13 +51,13 @@ with AI-drafted emails render in ~20–30s. Full walkthrough with sample results
 No local Python needed — just Docker:
 
 ```bash
-cp .env.example .env   # optional: set a provider key to enable the LLM copy step
+cp .env.example .env   # required: DJANGO_SECRET_KEY. Optionally set a provider key too.
 docker compose up
 ```
 
-This builds the image, applies migrations, seeds the demo pipeline, and serves the app at
-**http://127.0.0.1:8000/**. The server starts even without a key — you just can't run the
-LLM copy step until one is set.
+This starts Postgres, builds the app image, applies migrations, seeds the demo pipeline, and
+serves the app at **http://127.0.0.1:8000/**. The server starts even without an LLM provider
+key — you just can't run the LLM copy step until one is set.
 
 ## Architecture, 30 seconds
 
@@ -71,7 +75,7 @@ alone runs the whole app — **no Node required** to demo or review.
 
 ## Stack
 
-Python 3.9 · Django 4.2 · Django REST Framework · SQLite · React 18 · TypeScript · Vite
+Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres (Docker) · React 18 · TypeScript · Vite
 
 ## Tests
 
