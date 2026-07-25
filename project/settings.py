@@ -13,6 +13,9 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 
+import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -39,16 +42,29 @@ if ANTHROPIC_API_KEY:
     os.environ.setdefault('ANTHROPIC_API_KEY', ANTHROPIC_API_KEY)
 
 
-# Quick-start development settings - unsuitable for production
+# Settings are read from the environment (see .env.example). `.env` is loaded
+# above for local/demo convenience; production should set these directly.
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-0nnzes&5_52vo!)ub%6rs$l-cjfsm9dl&z#&1rd5#q-#eb9rku'
+# The key that used to be hardcoded here was committed to git and is burned
+# -- it must never be reused anywhere.
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    raise ImproperlyConfigured(
+        'DJANGO_SECRET_KEY is not set. Copy .env.example to .env (it ships a '
+        'freshly generated key for local/demo use) or set your own via the '
+        'environment for production.'
+    )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -96,12 +112,15 @@ WSGI_APPLICATION = 'project.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+# DATABASE_URL selects the backend, e.g. postgres://user:pass@host:5432/dbname
+# (docker-compose.yml sets this for the Postgres service). Unset falls back to
+# SQLite so the app still runs with zero setup for local dev.
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        default=f'sqlite:///{BASE_DIR / "db.sqlite3"}',
+        conn_max_age=600,
+    )
 }
 
 

@@ -4,18 +4,13 @@
 active provider plus per-provider model overrides. API keys are NOT stored here
 -- they stay in ``.env`` and are read from the environment by each adapter.
 
-Python 3.11+ has ``tomllib`` in the stdlib; on 3.9/3.10 we fall back to the
-pure-Python ``tomli`` package (``pip install tomli``).
+Uses ``tomllib`` from the stdlib (Python 3.11+).
 """
 
 import os
+import tomllib
 from functools import lru_cache
 from pathlib import Path
-
-try:  # py3.11+
-    import tomllib
-except ModuleNotFoundError:  # py3.9 / 3.10 -- requires `pip install tomli`
-    import tomli as tomllib
 
 # Repo root is four levels up from this file:
 # project/app/services/llm/config.py -> <repo root>
