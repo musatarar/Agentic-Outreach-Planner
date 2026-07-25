@@ -119,7 +119,8 @@ export function PlannerPage() {
             ))}
           </div>
         ) : (
-          !running && (
+          !running &&
+          !error && (
             <div className="no-results">
               <p>
                 No outreach actions yet. Click "Run Outreach Plan" to generate

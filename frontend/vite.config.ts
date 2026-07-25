@@ -29,7 +29,13 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/index.js',
         chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/index[extname]',
+        // The entry stylesheet is pinned so spa_base.html can {% static %} it
+        // by a fixed name; any other asset (image/font) keeps a content hash so
+        // a second same-extension asset can't silently overwrite index.css.
+        assetFileNames: (asset) =>
+          asset.names?.some((name) => name.endsWith('.css'))
+            ? 'assets/index[extname]'
+            : 'assets/[name]-[hash][extname]',
       },
     },
   },
