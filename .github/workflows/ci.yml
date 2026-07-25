@@ -9,6 +9,8 @@ env:
   # The test suite mocks every LLM provider call, so no real API key is
   # needed here. Real-provider evals are a separate, gated workflow.
   DJANGO_SETTINGS_MODULE: project.settings
+  # Required by settings.py; a throwaway value is fine, CI never serves traffic.
+  DJANGO_SECRET_KEY: ci-only-not-a-real-secret
 
 jobs:
   lint:
@@ -42,7 +44,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        # Django 4.2.30 only advertises 3.9-3.12 support, but the runtime was
+        # bumped to require 3.12+ (MUS-18); 3.13 is included here because the
+        # full suite has been verified to pass on it.
+        python-version: ["3.12", "3.13"]
         database: ["sqlite", "postgres"]
     services:
       postgres:
@@ -59,11 +64,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      POSTGRES_HOST: ${{ matrix.database == 'postgres' && 'localhost' || '' }}
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+      # settings.py falls back to SQLite when DATABASE_URL is unset.
+      DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgres://postgres:postgres@localhost:5432/postgres' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -89,13 +91,17 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements-dev.txt coverage-badge
+      - run: pip install -r requirements-dev.txt
       - run: coverage run manage.py test project.app
-      - run: coverage-badge -f -o badges/coverage.svg
+      - name: Update coverage badge in README
+        run: |
+          PCT=$(coverage report --format=total)
+          if [ "$PCT" -ge 90 ]; then COLOR=brightgreen; elif [ "$PCT" -ge 75 ]; then COLOR=yellow; else COLOR=red; fi
+          sed -i -E "s#coverage-[0-9]+%25-[a-z]+#coverage-${PCT}%25-${COLOR}#" README.md
       - name: Commit badge if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add badges/coverage.svg
+          git add README.md
           git diff --staged --quiet || git commit -m "chore: update coverage badge [skip ci]"
           git push
