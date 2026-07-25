@@ -2,7 +2,13 @@
 #   pip install -r requirements-dev.txt
 #
 # The test suite runs on Django's built-in test runner with unittest.mock
-# (the anthropic/HTTP clients are mocked), so no extra packages are required
-# today. This file exists as the home for future dev-only tooling.
+# (the anthropic/HTTP clients are mocked), so no extra runtime packages are
+# required beyond the base requirements (which already include psycopg2-binary
+# for the Postgres leg of the CI matrix). These are CI tooling: lint, format
+# check, type check, coverage.
 
 -r requirements.txt
+
+ruff==0.16.0
+mypy==1.19.1
+coverage==7.10.7

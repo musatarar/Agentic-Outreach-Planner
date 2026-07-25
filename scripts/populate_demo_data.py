@@ -6,6 +6,7 @@ Single source of truth for demo state. Run after `manage.py migrate`:
 
 Idempotent: re-running refreshes leads and their events without duplicating.
 """
+
 import os
 import sys
 
