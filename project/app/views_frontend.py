@@ -8,8 +8,14 @@ def index(request):
     return render(request, 'app/index.html')
 
 
+@ensure_csrf_cookie
 def reports(request):
-    """Render the Outreach Reports page (per-lead audit trail)."""
+    """Render the Outreach Reports page (per-lead audit trail).
+
+    Decorated (like the other two shells) so the csrftoken cookie is set even
+    when Reports is the first page loaded: the SPA may then client-side navigate
+    to Planner/Dashboard and POST without a full reload that would set it.
+    """
     return render(request, 'app/reports.html')
 
 
