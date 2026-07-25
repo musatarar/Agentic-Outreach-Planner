@@ -1,6 +1,6 @@
 # Agentic Outreach Planner
 
-[![CI](https://github.com/musatarar/eventual-technical-challenge/actions/workflows/ci.yml/badge.svg)](https://github.com/musatarar/eventual-technical-challenge/actions/workflows/ci.yml)
+[![CI](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml)
 ![Coverage](badges/coverage.svg)
 
 A Django + DRF backend that reads an agency's sales pipeline, decides which leads need
