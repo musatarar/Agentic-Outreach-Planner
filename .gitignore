@@ -46,7 +46,6 @@ venv
 
 # Developers
 *.sw*
-manage.py
 .DS_Store
 
 # database

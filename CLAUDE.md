@@ -8,15 +8,22 @@ This is a starter scaffold for a 75-minute technical challenge: a bare Django 4.
 
 ## Commands
 
-All commands use the bundled virtualenv at `./venv` (no requirements.txt exists; key packages: Django 4.2.30, djangorestframework 3.16.1, django-excel-response2/xlwt for Excel export).
+Commands assume the project virtualenv is active. Set it up once from a clean clone:
 
 ```bash
-./venv/bin/python manage.py runserver          # run dev server (http://127.0.0.1:8000)
-./venv/bin/python manage.py makemigrations app # create migrations after model changes
-./venv/bin/python manage.py migrate            # apply migrations
-./venv/bin/python manage.py test project.app   # run tests
-./venv/bin/python manage.py test project.app.tests.SomeTestCase.test_name  # single test
-./venv/bin/python manage.py shell              # Django shell
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+```
+
+Dependencies are pinned in `requirements.txt` (Django 4.2, djangorestframework, anthropic,
+httpx, tomli). With the venv active:
+
+```bash
+python manage.py runserver          # run dev server (http://127.0.0.1:8000)
+python manage.py makemigrations app # create migrations after model changes
+python manage.py migrate            # apply migrations
+python manage.py test project.app   # run tests
+python manage.py test project.app.tests.SomeTestCase.test_name  # single test
+python manage.py shell              # Django shell
 ```
 
 ## Architecture & current state
@@ -32,7 +39,7 @@ All commands use the bundled virtualenv at `./venv` (no requirements.txt exists;
 ## Testing & Database
 
 - **Fixtures, not live edits**: Write tests using Django fixtures (`project/app/fixtures/`) or `TestCase.setUpTestData()`. Never modify `db.sqlite3` directly during development.
-- **Demo script**: Create `scripts/populate_demo_data.py` to fill the database with realistic test data for live demos. Run via `./venv/bin/python scripts/populate_demo_data.py` after `python manage.py migrate`. This is the single source of truth for demo state.
+- **Demo script**: Create `scripts/populate_demo_data.py` to fill the database with realistic test data for live demos. Run via `python scripts/populate_demo_data.py` after `python manage.py migrate`. This is the single source of truth for demo state.
 - **Test isolation**: Use `python manage.py test` (which creates a fresh test database each run) to verify all features work without side effects.
 
 ## Git Workflow

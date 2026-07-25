@@ -1,0 +1,15 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    # Compose automatically reads a .env file in this directory for ${VAR}
+    # interpolation. Copy .env.example -> .env and set the key for whichever
+    # provider config.toml selects to enable the "Run Outreach Plan" LLM call.
+    # Without a key the server still starts and serves the seeded demo data.
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}

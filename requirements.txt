@@ -1,0 +1,22 @@
+# Runtime dependencies for the Agentic Outreach Planner.
+# Pinned to the versions the project was built and tested against (Python 3.9).
+#   pip install -r requirements.txt
+
+Django==4.2.30
+djangorestframework==3.16.1
+
+# LLM providers.
+#   claude              -> anthropic SDK
+#   chatgpt / deepseek / groq -> plain REST over httpx (no vendor SDK needed;
+#                                see project/app/services/llm/openai_compatible.py)
+anthropic==0.109.1
+httpx==0.28.1
+
+# TOML config parsing. Python 3.11+ has tomllib in the stdlib; 3.9/3.10 need tomli.
+tomli==2.4.1 ; python_version < "3.11"
+
+# The OpenAI-compatible providers above talk HTTP directly, so their vendor SDKs
+# are NOT required to run the app. Uncomment only if you swap the adapters to use
+# the official SDKs:
+#   openai==1.109.1
+#   groq==0.11.0

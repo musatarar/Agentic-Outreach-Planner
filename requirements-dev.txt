@@ -1,0 +1,8 @@
+# Development / test dependencies.
+#   pip install -r requirements-dev.txt
+#
+# The test suite runs on Django's built-in test runner with unittest.mock
+# (the anthropic/HTTP clients are mocked), so no extra packages are required
+# today. This file exists as the home for future dev-only tooling.
+
+-r requirements.txt
