@@ -52,9 +52,7 @@ class OutreachReportView(APIView):
     """GET /api/reports/ — full outreach action history, newest first."""
 
     def get(self, request, *args, **kwargs):
-        actions = OutreachAction.objects.select_related("lead").order_by(
-            "-created_at", "-id"
-        )
+        actions = OutreachAction.objects.select_related("lead").order_by("-created_at", "-id")
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

@@ -178,8 +178,7 @@ def dana():
                 _event(
                     "demo_completed",
                     _dt(2026, 4, 29),
-                    notes="Dana engaged throughout. Her business partner Ray "
-                    "wasn't on the call.",
+                    notes="Dana engaged throughout. Her business partner Ray wasn't on the call.",
                 ),
                 _event(
                     "email_sent",
@@ -414,9 +413,7 @@ class GenerateCopyTests(unittest.TestCase):
         fake_client.complete.return_value = "Subject: Budget approved!\n\nHi Tom, ..."
 
         with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
-            result = outreach.generate_copy(
-                lead, actions.FOLLOW_UP_AFTER_HOLD, "hold passed"
-            )
+            result = outreach.generate_copy(lead, actions.FOLLOW_UP_AFTER_HOLD, "hold passed")
 
         self.assertEqual(result, "Subject: Budget approved!\n\nHi Tom, ...")
 

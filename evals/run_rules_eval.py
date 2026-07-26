@@ -131,9 +131,7 @@ def _build_event(raw, ctx):
         # Classifiers never read event timestamps (only the copy path does), but
         # keep the attribute present so any accidental access doesn't blow up.
         ts = datetime.datetime.combine(TODAY, datetime.time(9))
-    return SimpleNamespace(
-        type=raw.get("type", ""), timestamp=ts, meta=raw.get("meta") or {}
-    )
+    return SimpleNamespace(type=raw.get("type", ""), timestamp=ts, meta=raw.get("meta") or {})
 
 
 def build_lead(record):
@@ -189,9 +187,7 @@ def _validate_record(rec, where):
         raise SystemExit(f"{where}: expected_action {action!r} not in {ACTION_TYPES}")
     priority = rec.get("expected_priority")
     if priority not in VALID_PRIORITIES:
-        raise SystemExit(
-            f"{where}: expected_priority {priority!r} not in {VALID_PRIORITIES}"
-        )
+        raise SystemExit(f"{where}: expected_priority {priority!r} not in {VALID_PRIORITIES}")
     # Surface lead-construction problems (typo'd fields, bad dates) up front.
     build_lead(rec)
 
@@ -233,9 +229,7 @@ def per_action_metrics(rows):
     metrics = {}
     for label in ACTION_TYPES:
         tp = sum(
-            1
-            for r in rows
-            if r["expected_action"] == label and r["predicted_action"] == label
+            1 for r in rows if r["expected_action"] == label and r["predicted_action"] == label
         )
         predicted = sum(1 for r in rows if r["predicted_action"] == label)
         support = sum(1 for r in rows if r["expected_action"] == label)
@@ -280,9 +274,7 @@ def priority_confusion(rows):
 
 def build_results(rows):
     action_acc, action_hits, n = accuracy(rows, "expected_action", "predicted_action")
-    priority_acc, priority_hits, _ = accuracy(
-        rows, "expected_priority", "predicted_priority"
-    )
+    priority_acc, priority_hits, _ = accuracy(rows, "expected_priority", "predicted_priority")
     return {
         "today": TODAY.isoformat(),
         "n": n,
@@ -323,8 +315,7 @@ def write_baseline(path, results):
         "priority_accuracy": results["priority_accuracy"],
         "per_action": {
             label: {
-                k: results["per_action"][label][k]
-                for k in ("precision", "recall", "f1", "support")
+                k: results["per_action"][label][k] for k in ("precision", "recall", "f1", "support")
             }
             for label in ACTION_TYPES
         },
@@ -371,18 +362,14 @@ def _fmt(value):
 def print_report(records, rows, results, baseline):
     out = print
     out()
-    out(
-        f"Rules regression eval  —  golden: {results['n']} leads, today={results['today']}"
-    )
+    out(f"Rules regression eval  —  golden: {results['n']} leads, today={results['today']}")
     out("=" * 74)
 
     # Per-action score table.
     out()
     out("Per-action-type scores")
     out("-" * 74)
-    out(
-        f"{'action_type':<22}{'support':>8}{'pred':>6}{'precision':>11}{'recall':>9}{'f1':>8}"
-    )
+    out(f"{'action_type':<22}{'support':>8}{'pred':>6}{'precision':>11}{'recall':>9}{'f1':>8}")
     for label in ACTION_TYPES:
         m = results["per_action"][label]
         out(
@@ -422,9 +409,7 @@ def _print_action_confusion(rows):
 def _print_priority_confusion(rows):
     mat = priority_confusion(rows)
     print()
-    print(
-        "Priority confusion matrix  (rows = expected, cols = predicted)  [report-only]"
-    )
+    print("Priority confusion matrix  (rows = expected, cols = predicted)  [report-only]")
     corner = "exp\\pred"
     print(f"{corner:<10}" + "".join(f"{p:>5}" for p in VALID_PRIORITIES))
     for exp in VALID_PRIORITIES:
@@ -439,9 +424,7 @@ def _print_mismatches(rows):
     print()
     print(f"Action-type mismatches ({len(misses)})")
     for r in misses:
-        print(
-            f"  {r['id']:<32} expected {r['expected_action']:<20} got {r['predicted_action']}"
-        )
+        print(f"  {r['id']:<32} expected {r['expected_action']:<20} got {r['predicted_action']}")
 
 
 def _print_coverage(records, rows):
@@ -449,8 +432,7 @@ def _print_coverage(records, rows):
     print("Coverage")
     print("-" * 74)
     counts = {
-        label: sum(1 for r in rows if r["expected_action"] == label)
-        for label in ACTION_TYPES
+        label: sum(1 for r in rows if r["expected_action"] == label) for label in ACTION_TYPES
     }
     for label in ACTION_TYPES:
         flag = "" if counts[label] else "   <-- NO EXAMPLES"
@@ -472,9 +454,7 @@ def _print_coverage(records, rows):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Rules regression eval for the lead classifier."
-    )
+    parser = argparse.ArgumentParser(description="Rules regression eval for the lead classifier.")
     parser.add_argument(
         "--golden", type=Path, default=GOLDEN_PATH, help="Path to the golden JSONL set."
     )
@@ -515,13 +495,9 @@ def main(argv=None):
 
     failures = check_gate(results, baseline)
     if failures:
-        print(
-            f"Gate: FAIL — {len(failures)} action metric(s) regressed below baseline:"
-        )
+        print(f"Gate: FAIL — {len(failures)} action metric(s) regressed below baseline:")
         for label, metric, base_val, cur_val in failures:
-            print(
-                f"  {label:<22} {metric:<10} baseline {base_val:.3f} -> now {cur_val:.3f}"
-            )
+            print(f"  {label:<22} {metric:<10} baseline {base_val:.3f} -> now {cur_val:.3f}")
         print("If this change is intentional, rerun with --update-baseline.")
         return 1
 

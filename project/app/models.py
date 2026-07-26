@@ -37,9 +37,7 @@ class Event(models.Model):
 
 
 class OutreachAction(models.Model):  # what the planner decided/did
-    lead = models.ForeignKey(
-        Lead, on_delete=models.CASCADE, related_name="outreach_actions"
-    )
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="outreach_actions")
     created_at = models.DateTimeField(auto_now_add=True)
     priority = models.IntegerField()  # 1 highest, 3 lowest
     action_type = models.CharField(max_length=64)  # see ACTION_TYPES

@@ -74,9 +74,7 @@ class OpenAICompatibleClientTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_complete_posts_chat_completion_and_returns_content(self):
-        with mock.patch(
-            "project.app.services.llm.openai_compatible.httpx.post"
-        ) as post:
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
             post.return_value = self._mock_post("Generated copy")
             result = GroqClient(model="some-model").complete("a prompt", max_tokens=42)
 

@@ -37,9 +37,7 @@ if _env_file.exists():
 # Keys stay in .env; config.toml never holds secrets.
 
 # The anthropic SDK reads ANTHROPIC_API_KEY; the .env uses CLAUDE_API_KEY
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get(
-    "CLAUDE_API_KEY", ""
-)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY", "")
 if ANTHROPIC_API_KEY:
     os.environ.setdefault("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
 
@@ -63,9 +61,7 @@ if not SECRET_KEY:
 DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
-    if host.strip()
+    host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
 ]
 
 
