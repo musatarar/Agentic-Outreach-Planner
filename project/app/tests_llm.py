@@ -14,6 +14,7 @@ from project.app.services.llm.groq import GroqClient
 # Claude adapter (anthropic SDK mocked)
 # ---------------------------------------------------------------------------
 
+
 class ClaudeClientTests(unittest.TestCase):
     def _mock_response(self, *blocks):
         response = mock.Mock()
@@ -66,18 +67,19 @@ class ClaudeClientTests(unittest.TestCase):
 # OpenAI-compatible adapter (httpx mocked) -- exercised via GroqClient
 # ---------------------------------------------------------------------------
 
+
 class OpenAICompatibleClientTests(unittest.TestCase):
     def _mock_post(self, content="Generated copy"):
         response = mock.Mock()
-        response.json.return_value = {
-            "choices": [{"message": {"content": content}}]
-        }
+        response.json.return_value = {"choices": [{"message": {"content": content}}]}
         response.raise_for_status.return_value = None
         return response
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_complete_posts_chat_completion_and_returns_content(self):
-        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+        with mock.patch(
+            "project.app.services.llm.openai_compatible.httpx.post"
+        ) as post:
             post.return_value = self._mock_post("Generated copy")
             result = GroqClient(model="some-model").complete("a prompt", max_tokens=42)
 
@@ -102,6 +104,7 @@ class OpenAICompatibleClientTests(unittest.TestCase):
 # Factory (provider selection from config)
 # ---------------------------------------------------------------------------
 
+
 class GetLLMClientTests(unittest.TestCase):
     def setUp(self):
         llm._build_client.cache_clear()
@@ -110,11 +113,14 @@ class GetLLMClientTests(unittest.TestCase):
         llm._build_client.cache_clear()
 
     def test_selects_provider_class_and_applies_config(self):
-        with mock.patch.object(config, "get_provider", return_value="groq"), \
-                mock.patch.object(
-                    config, "get_provider_config",
-                    return_value={"model": "configured-model", "max_tokens": 256},
-                ):
+        with (
+            mock.patch.object(config, "get_provider", return_value="groq"),
+            mock.patch.object(
+                config,
+                "get_provider_config",
+                return_value={"model": "configured-model", "max_tokens": 256},
+            ),
+        ):
             client = llm.get_llm_client()
 
         self.assertIsInstance(client, GroqClient)
@@ -122,8 +128,10 @@ class GetLLMClientTests(unittest.TestCase):
         self.assertEqual(client.default_max_tokens, 256)
 
     def test_unknown_provider_raises(self):
-        with mock.patch.object(config, "get_provider", return_value="bogus"), \
-                mock.patch.object(config, "get_provider_config", return_value={}):
+        with (
+            mock.patch.object(config, "get_provider", return_value="bogus"),
+            mock.patch.object(config, "get_provider_config", return_value={}),
+        ):
             with self.assertRaises(ValueError) as ctx:
                 llm.get_llm_client()
         self.assertIn("bogus", str(ctx.exception))

@@ -8,12 +8,12 @@ COMPLETE_ONBOARDING = "complete_onboarding"
 UNKNOWN = "unknown"
 
 ACTION_TYPES = [
-    POWER_USER_REWARD,      # near milestone, offer volume pricing/discount (medium)
-    FOLLOW_UP_AFTER_HOLD,   # asked to be contacted later; date passed (high)
-    REENGAGE_DORMANT,       # onboarded but stopped using portal (high)
-    NUDGE_USAGE,            # active but underusing, needs encouragement (medium)
-    COMPLETE_ONBOARDING,    # demo done but never signed up; weight by book size (high)
-    UNKNOWN,                # no pattern matched -> needs_human=True, report to BD
+    POWER_USER_REWARD,  # near milestone, offer volume pricing/discount (medium)
+    FOLLOW_UP_AFTER_HOLD,  # asked to be contacted later; date passed (high)
+    REENGAGE_DORMANT,  # onboarded but stopped using portal (high)
+    NUDGE_USAGE,  # active but underusing, needs encouragement (medium)
+    COMPLETE_ONBOARDING,  # demo done but never signed up; weight by book size (high)
+    UNKNOWN,  # no pattern matched -> needs_human=True, report to BD
 ]
 
 # Action types a BD reviewer may actually pick to resolve a review item.

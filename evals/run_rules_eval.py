@@ -93,6 +93,7 @@ ALLOWED_LEAD_KEYS = set(LEAD_DEFAULTS) | {"events"}
 # lead construction (duck-typed, mirrors project/app/tests_logic.py)
 # ---------------------------------------------------------------------------
 
+
 class _EventSet:
     """Duck-types a Django related manager (``lead.events.all()``)."""
 
@@ -130,7 +131,9 @@ def _build_event(raw, ctx):
         # Classifiers never read event timestamps (only the copy path does), but
         # keep the attribute present so any accidental access doesn't blow up.
         ts = datetime.datetime.combine(TODAY, datetime.time(9))
-    return SimpleNamespace(type=raw.get("type", ""), timestamp=ts, meta=raw.get("meta") or {})
+    return SimpleNamespace(
+        type=raw.get("type", ""), timestamp=ts, meta=raw.get("meta") or {}
+    )
 
 
 def build_lead(record):
@@ -158,6 +161,7 @@ def build_lead(record):
 # golden dataset
 # ---------------------------------------------------------------------------
 
+
 def load_golden(path):
     """Read the JSONL golden set, validating each record."""
     if not path.exists():
@@ -182,9 +186,7 @@ def load_golden(path):
 def _validate_record(rec, where):
     action = rec.get("expected_action")
     if action not in ACTION_TYPES:
-        raise SystemExit(
-            f"{where}: expected_action {action!r} not in {ACTION_TYPES}"
-        )
+        raise SystemExit(f"{where}: expected_action {action!r} not in {ACTION_TYPES}")
     priority = rec.get("expected_priority")
     if priority not in VALID_PRIORITIES:
         raise SystemExit(
@@ -198,20 +200,23 @@ def _validate_record(rec, where):
 # scoring
 # ---------------------------------------------------------------------------
 
+
 def evaluate(records):
     rows = []
     for rec in records:
         lead = build_lead(rec)
         predicted_action, _reason = outreach.determine_action(lead, today=TODAY)
         predicted_priority = outreach.determine_priority(lead, today=TODAY)
-        rows.append({
-            "id": rec.get("id"),
-            "tags": rec.get("tags", []),
-            "expected_action": rec["expected_action"],
-            "predicted_action": predicted_action,
-            "expected_priority": rec["expected_priority"],
-            "predicted_priority": predicted_priority,
-        })
+        rows.append(
+            {
+                "id": rec.get("id"),
+                "tags": rec.get("tags", []),
+                "expected_action": rec["expected_action"],
+                "predicted_action": predicted_action,
+                "expected_priority": rec["expected_priority"],
+                "predicted_priority": predicted_priority,
+            }
+        )
     return rows
 
 
@@ -227,7 +232,11 @@ def per_action_metrics(rows):
     """
     metrics = {}
     for label in ACTION_TYPES:
-        tp = sum(1 for r in rows if r["expected_action"] == label and r["predicted_action"] == label)
+        tp = sum(
+            1
+            for r in rows
+            if r["expected_action"] == label and r["predicted_action"] == label
+        )
         predicted = sum(1 for r in rows if r["predicted_action"] == label)
         support = sum(1 for r in rows if r["expected_action"] == label)
         precision = (tp / predicted) if predicted else None
@@ -271,7 +280,9 @@ def priority_confusion(rows):
 
 def build_results(rows):
     action_acc, action_hits, n = accuracy(rows, "expected_action", "predicted_action")
-    priority_acc, priority_hits, _ = accuracy(rows, "expected_priority", "predicted_priority")
+    priority_acc, priority_hits, _ = accuracy(
+        rows, "expected_priority", "predicted_priority"
+    )
     return {
         "today": TODAY.isoformat(),
         "n": n,
@@ -286,6 +297,7 @@ def build_results(rows):
 # ---------------------------------------------------------------------------
 # baseline + gate
 # ---------------------------------------------------------------------------
+
 
 def load_baseline(path):
     if not path.exists():
@@ -302,13 +314,18 @@ def write_baseline(path, results):
             "values may be <1.0 where the rules are imperfect. Regenerate with "
             "`python evals/run_rules_eval.py --update-baseline` after an intended change."
         ),
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat(),
         "today": results["today"],
         "n": results["n"],
         "action_accuracy": results["action_accuracy"],
         "priority_accuracy": results["priority_accuracy"],
         "per_action": {
-            label: {k: results["per_action"][label][k] for k in ("precision", "recall", "f1", "support")}
+            label: {
+                k: results["per_action"][label][k]
+                for k in ("precision", "recall", "f1", "support")
+            }
             for label in ACTION_TYPES
         },
     }
@@ -346,6 +363,7 @@ def check_gate(results, baseline):
 # reporting
 # ---------------------------------------------------------------------------
 
+
 def _fmt(value):
     return " n/a " if value is None else f"{value:.3f}"
 
@@ -353,23 +371,33 @@ def _fmt(value):
 def print_report(records, rows, results, baseline):
     out = print
     out()
-    out(f"Rules regression eval  —  golden: {results['n']} leads, today={results['today']}")
+    out(
+        f"Rules regression eval  —  golden: {results['n']} leads, today={results['today']}"
+    )
     out("=" * 74)
 
     # Per-action score table.
     out()
     out("Per-action-type scores")
     out("-" * 74)
-    out(f"{'action_type':<22}{'support':>8}{'pred':>6}{'precision':>11}{'recall':>9}{'f1':>8}")
+    out(
+        f"{'action_type':<22}{'support':>8}{'pred':>6}{'precision':>11}{'recall':>9}{'f1':>8}"
+    )
     for label in ACTION_TYPES:
         m = results["per_action"][label]
-        out(f"{label:<22}{m['support']:>8}{m['predicted']:>6}"
-            f"{_fmt(m['precision']):>11}{_fmt(m['recall']):>9}{_fmt(m['f1']):>8}")
+        out(
+            f"{label:<22}{m['support']:>8}{m['predicted']:>6}"
+            f"{_fmt(m['precision']):>11}{_fmt(m['recall']):>9}{_fmt(m['f1']):>8}"
+        )
     out("-" * 74)
-    out(f"action-type accuracy : {results['action_accuracy']:.3f}  "
-        f"({results['action_hits']}/{results['n']})")
-    out(f"priority accuracy    : {results['priority_accuracy']:.3f}  "
-        f"({results['priority_hits']}/{results['n']})   [report-only, not gated]")
+    out(
+        f"action-type accuracy : {results['action_accuracy']:.3f}  "
+        f"({results['action_hits']}/{results['n']})"
+    )
+    out(
+        f"priority accuracy    : {results['priority_accuracy']:.3f}  "
+        f"({results['priority_hits']}/{results['n']})   [report-only, not gated]"
+    )
 
     _print_action_confusion(rows)
     _print_priority_confusion(rows)
@@ -394,7 +422,9 @@ def _print_action_confusion(rows):
 def _print_priority_confusion(rows):
     mat = priority_confusion(rows)
     print()
-    print("Priority confusion matrix  (rows = expected, cols = predicted)  [report-only]")
+    print(
+        "Priority confusion matrix  (rows = expected, cols = predicted)  [report-only]"
+    )
     corner = "exp\\pred"
     print(f"{corner:<10}" + "".join(f"{p:>5}" for p in VALID_PRIORITIES))
     for exp in VALID_PRIORITIES:
@@ -409,20 +439,29 @@ def _print_mismatches(rows):
     print()
     print(f"Action-type mismatches ({len(misses)})")
     for r in misses:
-        print(f"  {r['id']:<32} expected {r['expected_action']:<20} got {r['predicted_action']}")
+        print(
+            f"  {r['id']:<32} expected {r['expected_action']:<20} got {r['predicted_action']}"
+        )
 
 
 def _print_coverage(records, rows):
     print()
     print("Coverage")
     print("-" * 74)
-    counts = {label: sum(1 for r in rows if r["expected_action"] == label) for label in ACTION_TYPES}
+    counts = {
+        label: sum(1 for r in rows if r["expected_action"] == label)
+        for label in ACTION_TYPES
+    }
     for label in ACTION_TYPES:
         flag = "" if counts[label] else "   <-- NO EXAMPLES"
         print(f"  {label:<22} {counts[label]:>3} labeled{flag}")
-    boundary_tags = sorted({t for rec in records for t in rec.get("tags", []) if t.startswith("boundary:")})
-    print(f"  boundary tags present ({len(boundary_tags)}): "
-          + (", ".join(t.split(':', 1)[1] for t in boundary_tags) or "none"))
+    boundary_tags = sorted(
+        {t for rec in records for t in rec.get("tags", []) if t.startswith("boundary:")}
+    )
+    print(
+        f"  boundary tags present ({len(boundary_tags)}): "
+        + (", ".join(t.split(":", 1)[1] for t in boundary_tags) or "none")
+    )
     if len(records) < 30:
         print(f"  WARNING: only {len(records)} leads (<30 requested by MUS-20)")
 
@@ -431,12 +470,25 @@ def _print_coverage(records, rows):
 # entry point
 # ---------------------------------------------------------------------------
 
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Rules regression eval for the lead classifier.")
-    parser.add_argument("--golden", type=Path, default=GOLDEN_PATH, help="Path to the golden JSONL set.")
-    parser.add_argument("--baseline", type=Path, default=BASELINE_PATH, help="Path to the baseline JSON.")
-    parser.add_argument("--update-baseline", action="store_true",
-                        help="Recompute and (re)write the baseline, then exit 0.")
+    parser = argparse.ArgumentParser(
+        description="Rules regression eval for the lead classifier."
+    )
+    parser.add_argument(
+        "--golden", type=Path, default=GOLDEN_PATH, help="Path to the golden JSONL set."
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=BASELINE_PATH,
+        help="Path to the baseline JSON.",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="Recompute and (re)write the baseline, then exit 0.",
+    )
     args = parser.parse_args(argv)
 
     records = load_golden(args.golden)
@@ -455,15 +507,21 @@ def main(argv=None):
     baseline = load_baseline(args.baseline)
     print()
     if baseline is None:
-        print(f"Gate: NO BASELINE at {args.baseline}. "
-              f"Run `python evals/run_rules_eval.py --update-baseline` to record one.")
+        print(
+            f"Gate: NO BASELINE at {args.baseline}. "
+            f"Run `python evals/run_rules_eval.py --update-baseline` to record one."
+        )
         return 1
 
     failures = check_gate(results, baseline)
     if failures:
-        print(f"Gate: FAIL — {len(failures)} action metric(s) regressed below baseline:")
+        print(
+            f"Gate: FAIL — {len(failures)} action metric(s) regressed below baseline:"
+        )
         for label, metric, base_val, cur_val in failures:
-            print(f"  {label:<22} {metric:<10} baseline {base_val:.3f} -> now {cur_val:.3f}")
+            print(
+                f"  {label:<22} {metric:<10} baseline {base_val:.3f} -> now {cur_val:.3f}"
+            )
         print("If this change is intentional, rerun with --update-baseline.")
         return 1
 

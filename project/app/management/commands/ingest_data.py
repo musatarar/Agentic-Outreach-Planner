@@ -57,8 +57,12 @@ class Command(BaseCommand):
     help = "Ingest leads.json and events.json into Lead/Event models (idempotent)."
 
     def add_arguments(self, parser):
-        parser.add_argument("--leads", default=DEFAULT_LEADS, help="Path to leads JSON file.")
-        parser.add_argument("--events", default=DEFAULT_EVENTS, help="Path to events JSON file.")
+        parser.add_argument(
+            "--leads", default=DEFAULT_LEADS, help="Path to leads JSON file."
+        )
+        parser.add_argument(
+            "--events", default=DEFAULT_EVENTS, help="Path to events JSON file."
+        )
 
     def _resolve(self, path):
         """Resolve a path relative to BASE_DIR when not absolute."""
@@ -103,7 +107,5 @@ class Command(BaseCommand):
                 event_count += 1
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Ingested {lead_count} leads and {event_count} events."
-            )
+            self.style.SUCCESS(f"Ingested {lead_count} leads and {event_count} events.")
         )

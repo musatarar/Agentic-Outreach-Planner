@@ -3,7 +3,6 @@ import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("app", "0001_initial"),
     ]
@@ -12,7 +11,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ReviewDecision",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("kind", models.CharField(max_length=32)),
                 ("status", models.CharField(max_length=32)),
                 ("selected_action_type", models.CharField(blank=True, max_length=64)),

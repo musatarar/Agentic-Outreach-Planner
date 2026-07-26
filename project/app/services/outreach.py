@@ -40,17 +40,18 @@ STALL_PHRASES = [
     "gone quiet",
 ]
 
-DORMANT_DAYS = 21          # no login for this long => dormant
-QUIET_CONTACT_DAYS = 14    # gone-quiet only counts if last contact >= this old
-STALE_CONTACT_DAYS = 21    # contact older than this is overdue
-TRIAL_AT_RISK_DAYS = 30    # signed up this long with zero deals => at risk
-POWER_USER_DEALS = 5       # deals closed to count as a power user
+DORMANT_DAYS = 21  # no login for this long => dormant
+QUIET_CONTACT_DAYS = 14  # gone-quiet only counts if last contact >= this old
+STALE_CONTACT_DAYS = 21  # contact older than this is overdue
+TRIAL_AT_RISK_DAYS = 30  # signed up this long with zero deals => at risk
+POWER_USER_DEALS = 5  # deals closed to count as a power user
 POWER_USER_SUBMISSIONS = 10  # quote submissions to count as a power user
 
 
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
 
 def _events_list(lead):
     """Return lead events as a list, accepting a manager (.all()) or a list."""
@@ -139,6 +140,7 @@ def _gone_quiet(lead, today):
 # priority
 # --------------------------------------------------------------------------
 
+
 def determine_priority(lead, today=None):
     """Score a lead and map to priority 1 (highest) .. 3 (lowest).
 
@@ -157,7 +159,9 @@ def determine_priority(lead, today=None):
         score += 1
 
     # Demo completed but never signed up: high-value conversion opportunity.
-    if getattr(lead, "stage", "") == "demo_completed" and not getattr(lead, "signed_up_date", None):
+    if getattr(lead, "stage", "") == "demo_completed" and not getattr(
+        lead, "signed_up_date", None
+    ):
         score += 2
 
     # We reached out, time passed, and they went quiet (stall notes / no-reply).
@@ -171,12 +175,17 @@ def determine_priority(lead, today=None):
 
     # Trial at risk: signed up a while ago, zero deals closed.
     days_signed = _days_since(getattr(lead, "signed_up_date", None), today)
-    if days_signed is not None and days_signed > TRIAL_AT_RISK_DAYS and (getattr(lead, "deals_closed", 0) or 0) == 0:
+    if (
+        days_signed is not None
+        and days_signed > TRIAL_AT_RISK_DAYS
+        and (getattr(lead, "deals_closed", 0) or 0) == 0
+    ):
         score += 1
 
     # Hot revenue engagement: heavy submitters/closers deserve attention too.
-    if (getattr(lead, "deals_closed", 0) or 0) >= POWER_USER_DEALS or \
-            (getattr(lead, "quotes_submitted", 0) or 0) >= POWER_USER_SUBMISSIONS:
+    if (getattr(lead, "deals_closed", 0) or 0) >= POWER_USER_DEALS or (
+        getattr(lead, "quotes_submitted", 0) or 0
+    ) >= POWER_USER_SUBMISSIONS:
         score += 1
 
     if score >= 5:
@@ -189,6 +198,7 @@ def determine_priority(lead, today=None):
 # --------------------------------------------------------------------------
 # action classification
 # --------------------------------------------------------------------------
+
 
 def determine_action(lead, today=None):
     """Classify the right outreach action for a lead.
@@ -210,18 +220,24 @@ def determine_action(lead, today=None):
     milestone = _milestone_from_notes(lead)
 
     # 1. Demo completed but never signed up -> complete onboarding.
-    if getattr(lead, "stage", "") == "demo_completed" and not getattr(lead, "signed_up_date", None):
+    if getattr(lead, "stage", "") == "demo_completed" and not getattr(
+        lead, "signed_up_date", None
+    ):
         reason = (
             f"{name} completed a demo but never signed up, and the agency's "
             f"estimated book is ${book:,.0f}."
         )
         stall = _matched_phrase(blob, STALL_PHRASES)
-        promise = _sentence_containing(notes, "follow up") or _sentence_containing(notes, "get back")
+        promise = _sentence_containing(notes, "follow up") or _sentence_containing(
+            notes, "get back"
+        )
         if promise:
-            reason += f" Notes say: \"{promise}\""
+            reason += f' Notes say: "{promise}"'
         if days_contact is not None:
             reason += f" Last contact was {days_contact} days ago"
-            reason += " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
+            reason += (
+                " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
+            )
         return actions.COMPLETE_ONBOARDING, reason
 
     # 2. Power user near a reward/volume-pricing milestone.
@@ -238,7 +254,7 @@ def determine_action(lead, today=None):
             )
         snippet = _sentence_containing(notes, "volume pricing")
         if snippet:
-            reason += f" Notes: \"{snippet}\""
+            reason += f' Notes: "{snippet}"'
         return actions.POWER_USER_REWARD, reason
 
     # 3. On hold ("contact me later" / waiting on budget) and the hold passed.
@@ -253,19 +269,27 @@ def determine_action(lead, today=None):
                 if snippet:
                     break
         if snippet:
-            reason += f" Notes: \"{snippet}\""
+            reason += f' Notes: "{snippet}"'
         if days_contact is not None:
             reason += f" Last contacted {days_contact} days ago"
-            reason += " and a follow-up email got no reply." if _had_no_reply_email(lead) else "."
+            reason += (
+                " and a follow-up email got no reply."
+                if _had_no_reply_email(lead)
+                else "."
+            )
         if days_login is not None:
             reason += f" Last portal login was {days_login} days ago ({last_login})."
         return actions.FOLLOW_UP_AFTER_HOLD, reason
 
     # 4. Onboarded but stopped using the portal entirely.
-    if getattr(lead, "signed_up_date", None) and (days_login is None or days_login > DORMANT_DAYS):
+    if getattr(lead, "signed_up_date", None) and (
+        days_login is None or days_login > DORMANT_DAYS
+    ):
         signed = _as_date(getattr(lead, "signed_up_date", None))
         if days_login is None:
-            reason = f"{name} signed up on {signed} but has never logged in to the portal."
+            reason = (
+                f"{name} signed up on {signed} but has never logged in to the portal."
+            )
         else:
             reason = (
                 f"{name} signed up on {signed} but hasn't logged in for "
@@ -312,6 +336,7 @@ def determine_action(lead, today=None):
 # copy generation (provider-agnostic; see project.app.services.llm)
 # --------------------------------------------------------------------------
 
+
 def _format_events_for_prompt(lead, limit=6):
     events = _events_list(lead)
     events = sorted(events, key=lambda e: getattr(e, "timestamp"), reverse=True)
@@ -324,7 +349,7 @@ def _format_events_for_prompt(lead, limit=6):
         if meta.get("notes"):
             line += f": {meta['notes']}"
         elif meta.get("subject"):
-            line += f": \"{meta['subject']}\" (outcome: {meta.get('outcome', 'unknown')})"
+            line += f': "{meta["subject"]}" (outcome: {meta.get("outcome", "unknown")})'
         elif meta.get("client"):
             line += f" — client {meta['client']}, premium ${meta.get('premium', '?')}"
         lines.append(line)
@@ -336,20 +361,20 @@ def _build_copy_prompt(lead, action_type, reason):
     return f"""You are an account executive at Eventual. Eventual sells Premium Lock — insurance premium protection for homeowners — through independent insurance agencies. Write a short, personalized outreach email to the agency contact below.
 
 Lead:
-- Contact: {getattr(lead, 'contact_name', '')} ({getattr(lead, 'contact_email', '')})
-- Agency: {getattr(lead, 'agency_name', '')} ({getattr(lead, 'state', '')}, {getattr(lead, 'num_producers', '?')} producers, {getattr(lead, 'years_in_business', '?')} years in business)
-- Stage: {getattr(lead, 'stage', '')}
-- Estimated book size: ${getattr(lead, 'estimated_book_size_usd', 0) or 0:,.0f}
-- Signed up: {getattr(lead, 'signed_up_date', None)} | Last login: {getattr(lead, 'last_login_date', None)} | Last contacted: {getattr(lead, 'last_contacted_date', None)}
-- Usage: {getattr(lead, 'quotes_created', 0)} quotes created, {getattr(lead, 'quotes_submitted', 0)} submitted, {getattr(lead, 'deals_closed', 0)} deals closed
+- Contact: {getattr(lead, "contact_name", "")} ({getattr(lead, "contact_email", "")})
+- Agency: {getattr(lead, "agency_name", "")} ({getattr(lead, "state", "")}, {getattr(lead, "num_producers", "?")} producers, {getattr(lead, "years_in_business", "?")} years in business)
+- Stage: {getattr(lead, "stage", "")}
+- Estimated book size: ${getattr(lead, "estimated_book_size_usd", 0) or 0:,.0f}
+- Signed up: {getattr(lead, "signed_up_date", None)} | Last login: {getattr(lead, "last_login_date", None)} | Last contacted: {getattr(lead, "last_contacted_date", None)}
+- Usage: {getattr(lead, "quotes_created", 0)} quotes created, {getattr(lead, "quotes_submitted", 0)} submitted, {getattr(lead, "deals_closed", 0)} deals closed
 
 HubSpot notes:
-{getattr(lead, 'hubspot_notes', '') or '(none)'}
+{getattr(lead, "hubspot_notes", "") or "(none)"}
 
 Recent activity and call/email/demo notes (most recent first):
 {_format_events_for_prompt(lead)}
 
-Planned action: {action_type} ({meta.get('label', action_type)}, urgency: {meta.get('urgency', 'medium')})
+Planned action: {action_type} ({meta.get("label", action_type)}, urgency: {meta.get("urgency", "medium")})
 Why now: {reason}
 
 Write the email now. Requirements:
@@ -373,6 +398,7 @@ def generate_copy(lead, action_type, reason):
 # --------------------------------------------------------------------------
 # planner
 # --------------------------------------------------------------------------
+
 
 def plan_outreach():
     """Plan outreach for every lead: decide priority + action, generate copy,

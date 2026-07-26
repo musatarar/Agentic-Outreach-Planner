@@ -100,9 +100,7 @@ class OutreachListViewTests(APITestCase):
         self.assertIn(self.recent.id, ids)
 
         # Ordered by priority ascending: lead2 (priority 2) before lead1 (priority 3).
-        self.assertEqual(
-            [row["priority"] for row in resp.data], [2, 3]
-        )
+        self.assertEqual([row["priority"] for row in resp.data], [2, 3])
         self.assertEqual(resp.data[0]["id"], self.action2.id)
         self.assertEqual(resp.data[1]["id"], self.recent.id)
 
@@ -198,7 +196,9 @@ class OutreachReportViewTests(APITestCase):
 
     def test_newest_first(self):
         resp = self.client.get(reverse("outreach-reports"))
-        self.assertEqual([row["id"] for row in resp.data], [self.newer.id, self.older.id])
+        self.assertEqual(
+            [row["id"] for row in resp.data], [self.newer.id, self.older.id]
+        )
 
     def test_item_shape_matches_contract(self):
         resp = self.client.get(reverse("outreach-reports"))
@@ -206,8 +206,15 @@ class OutreachReportViewTests(APITestCase):
         self.assertEqual(
             set(item.keys()),
             {
-                "id", "lead", "priority", "action_type", "reason",
-                "suggested_copy", "needs_human", "further_action", "created_at",
+                "id",
+                "lead",
+                "priority",
+                "action_type",
+                "reason",
+                "suggested_copy",
+                "needs_human",
+                "further_action",
+                "created_at",
             },
         )
         self.assertEqual(item["lead"]["agency_name"], "Alpha")
@@ -222,17 +229,26 @@ class ReviewQueueViewTests(APITestCase):
 
         # lead1: older (non-human) then newer needs_human -> newest wins, in queue.
         cls.lead1_old = OutreachAction.objects.create(
-            lead=cls.lead1, priority=2, action_type="nudge_usage",
-            reason="old", needs_human=False,
+            lead=cls.lead1,
+            priority=2,
+            action_type="nudge_usage",
+            reason="old",
+            needs_human=False,
         )
         cls.lead1_new = OutreachAction.objects.create(
-            lead=cls.lead1, priority=1, action_type="unknown",
-            reason="needs review", needs_human=True,
+            lead=cls.lead1,
+            priority=1,
+            action_type="unknown",
+            reason="needs review",
+            needs_human=True,
         )
         # lead2: needs_human but already has a resolved decision -> excluded.
         cls.lead2_action = OutreachAction.objects.create(
-            lead=cls.lead2, priority=1, action_type="unknown",
-            reason="needs review", needs_human=True,
+            lead=cls.lead2,
+            priority=1,
+            action_type="unknown",
+            reason="needs review",
+            needs_human=True,
         )
         ReviewDecision.objects.create(
             outreach_action=cls.lead2_action,
@@ -242,8 +258,11 @@ class ReviewQueueViewTests(APITestCase):
         )
         # lead3: not needs_human -> excluded.
         cls.lead3_action = OutreachAction.objects.create(
-            lead=cls.lead3, priority=1, action_type="nudge_usage",
-            reason="fine", needs_human=False,
+            lead=cls.lead3,
+            priority=1,
+            action_type="nudge_usage",
+            reason="fine",
+            needs_human=False,
         )
 
     def test_queue_only_needs_human_without_decision(self):
@@ -271,60 +290,87 @@ class ReviewDecisionCreateTests(APITestCase):
     def setUpTestData(cls):
         cls.lead = make_lead("lead_001")
         cls.action = OutreachAction.objects.create(
-            lead=cls.lead, priority=1, action_type="unknown",
-            reason="needs review", needs_human=True,
+            lead=cls.lead,
+            priority=1,
+            action_type="unknown",
+            reason="needs review",
+            needs_human=True,
         )
 
     def test_select_existing_valid_returns_201_resolved(self):
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": self.action.id,
-            "kind": "select_existing",
-            "selected_action_type": "nudge_usage",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": self.action.id,
+                "kind": "select_existing",
+                "selected_action_type": "nudge_usage",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertEqual(resp.data["status"], "resolved")
 
     def test_select_existing_invalid_action_type_400(self):
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": self.action.id,
-            "kind": "select_existing",
-            "selected_action_type": "not_a_real_type",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": self.action.id,
+                "kind": "select_existing",
+                "selected_action_type": "not_a_real_type",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_propose_new_valid_returns_201_pending(self):
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": self.action.id,
-            "kind": "propose_new",
-            "proposed_name": "Renewal outreach",
-            "proposed_what": "Reach out about renewal",
-            "proposed_when": "Within 2 weeks",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": self.action.id,
+                "kind": "propose_new",
+                "proposed_name": "Renewal outreach",
+                "proposed_what": "Reach out about renewal",
+                "proposed_when": "Within 2 weeks",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertEqual(resp.data["status"], "pending_engineering")
 
     def test_propose_new_missing_what_400(self):
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": self.action.id,
-            "kind": "propose_new",
-            "proposed_name": "Renewal outreach",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": self.action.id,
+                "kind": "propose_new",
+                "proposed_name": "Renewal outreach",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_unknown_kind_400(self):
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": self.action.id,
-            "kind": "bogus",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": self.action.id,
+                "kind": "bogus",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_select_existing_unknown_type_400(self):
         # "unknown" is what *put* the item in the queue; it isn't a selectable pick.
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": self.action.id,
-            "kind": "select_existing",
-            "selected_action_type": "unknown",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": self.action.id,
+                "kind": "select_existing",
+                "selected_action_type": "unknown",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_duplicate_decision_returns_409(self):
@@ -344,14 +390,21 @@ class ReviewDecisionCreateTests(APITestCase):
 
     def test_decision_on_non_review_action_400(self):
         not_human = OutreachAction.objects.create(
-            lead=self.lead, priority=2, action_type="nudge_usage",
-            reason="handled automatically", needs_human=False,
+            lead=self.lead,
+            priority=2,
+            action_type="nudge_usage",
+            reason="handled automatically",
+            needs_human=False,
         )
-        resp = self.client.post(reverse("review-decisions"), {
-            "outreach_action": not_human.id,
-            "kind": "select_existing",
-            "selected_action_type": "nudge_usage",
-        }, format="json")
+        resp = self.client.post(
+            reverse("review-decisions"),
+            {
+                "outreach_action": not_human.id,
+                "kind": "select_existing",
+                "selected_action_type": "nudge_usage",
+            },
+            format="json",
+        )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
@@ -361,12 +414,18 @@ class ReviewDecisionListTests(APITestCase):
         cls.lead = make_lead("lead_001")
         # One action per decision: outreach_action is OneToOne.
         cls.action = OutreachAction.objects.create(
-            lead=cls.lead, priority=1, action_type="unknown",
-            reason="needs review", needs_human=True,
+            lead=cls.lead,
+            priority=1,
+            action_type="unknown",
+            reason="needs review",
+            needs_human=True,
         )
         cls.action2 = OutreachAction.objects.create(
-            lead=cls.lead, priority=1, action_type="unknown",
-            reason="needs review", needs_human=True,
+            lead=cls.lead,
+            priority=1,
+            action_type="unknown",
+            reason="needs review",
+            needs_human=True,
         )
         cls.resolved = ReviewDecision.objects.create(
             outreach_action=cls.action,
@@ -378,7 +437,8 @@ class ReviewDecisionListTests(APITestCase):
             outreach_action=cls.action2,
             kind=ReviewDecision.KIND_PROPOSE,
             status=ReviewDecision.STATUS_PENDING,
-            proposed_name="X", proposed_what="Y",
+            proposed_name="X",
+            proposed_what="Y",
         )
 
     def test_list_newest_first(self):
