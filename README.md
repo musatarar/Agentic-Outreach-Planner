@@ -1,5 +1,8 @@
 # Agentic Outreach Planner
 
+[![CI](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)
+
 A Django + DRF backend that reads an agency's sales pipeline, decides which leads need
 outreach *today* and *why*, and drafts personalized follow-up copy with an LLM — instead
 of an account exec digging through HubSpot and Slack every morning.
@@ -80,8 +83,15 @@ Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres 
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt   # adds ruff, mypy, coverage on top of runtime deps
 python manage.py test project.app
+ruff check . && ruff format --check .
+mypy project/app/services/
+coverage run manage.py test project.app && coverage report
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR, across the
+supported Python versions and against both SQLite and a Postgres service container.
 
 ## Frontend development
 

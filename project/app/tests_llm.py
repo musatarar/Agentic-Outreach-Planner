@@ -9,7 +9,6 @@ from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import config
 from project.app.services.llm.groq import GroqClient
 
-
 # ---------------------------------------------------------------------------
 # Claude adapter (anthropic SDK mocked)
 # ---------------------------------------------------------------------------
@@ -55,9 +54,7 @@ class ClaudeClientTests(unittest.TestCase):
     def test_complete_falls_back_to_default_max_tokens(self):
         with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
             client = mock_cls.return_value
-            client.messages.create.return_value = self._mock_response(
-                self._block("text", "x")
-            )
+            client.messages.create.return_value = self._mock_response(self._block("text", "x"))
             claude_mod.ClaudeClient(default_max_tokens=123).complete("p")
 
         self.assertEqual(client.messages.create.call_args.kwargs["max_tokens"], 123)
@@ -89,9 +86,7 @@ class OpenAICompatibleClientTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(kwargs["json"]["model"], "some-model")
         self.assertEqual(kwargs["json"]["max_tokens"], 42)
-        self.assertEqual(
-            kwargs["json"]["messages"], [{"role": "user", "content": "a prompt"}]
-        )
+        self.assertEqual(kwargs["json"]["messages"], [{"role": "user", "content": "a prompt"}])
 
     @mock.patch.dict(os.environ, {}, clear=True)
     def test_complete_raises_when_api_key_missing(self):

@@ -17,8 +17,8 @@ _TIMEOUT_SECONDS = 60.0
 
 class OpenAICompatibleClient(LLMClient):
     # Subclasses must override these.
-    base_url = None
-    api_key_env = None
+    base_url: str
+    api_key_env: str
     provider_label = "OpenAI-compatible"
 
     def complete(self, prompt, max_tokens=None):

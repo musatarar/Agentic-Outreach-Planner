@@ -63,9 +63,7 @@ class ReviewQueueView(APIView):
     """GET /api/review-queue/ — needs_human actions awaiting a decision."""
 
     def get(self, request, *args, **kwargs):
-        decided_ids = set(
-            ReviewDecision.objects.values_list("outreach_action_id", flat=True)
-        )
+        decided_ids = set(ReviewDecision.objects.values_list("outreach_action_id", flat=True))
 
         latest = OutreachAction.objects.select_related("lead").order_by(
             "lead_id", "-created_at", "-id"

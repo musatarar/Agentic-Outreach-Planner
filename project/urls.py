@@ -17,6 +17,7 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import include, path
+
 from project.app.views_frontend import index, next_actions, reports
 
 urlpatterns = [

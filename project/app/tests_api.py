@@ -384,9 +384,7 @@ class ReviewDecisionCreateTests(APITestCase):
         # Second decision for the same action (double-click / racing reviewer).
         second = self.client.post(reverse("review-decisions"), payload, format="json")
         self.assertEqual(second.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(
-            ReviewDecision.objects.filter(outreach_action=self.action).count(), 1
-        )
+        self.assertEqual(ReviewDecision.objects.filter(outreach_action=self.action).count(), 1)
 
     def test_decision_on_non_review_action_400(self):
         not_human = OutreachAction.objects.create(
@@ -448,8 +446,6 @@ class ReviewDecisionListTests(APITestCase):
         self.assertEqual(ids, [self.pending.id, self.resolved.id])
 
     def test_list_status_filter(self):
-        resp = self.client.get(
-            reverse("review-decisions"), {"status": "pending_engineering"}
-        )
+        resp = self.client.get(reverse("review-decisions"), {"status": "pending_engineering"})
         ids = [row["id"] for row in resp.data]
         self.assertEqual(ids, [self.pending.id])

@@ -63,9 +63,13 @@ if not SECRET_KEY:
 DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = [
+<<<<<<< HEAD
     host.strip()
     for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
     if host.strip()
+=======
+    host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
+>>>>>>> master
 ]
 
 
