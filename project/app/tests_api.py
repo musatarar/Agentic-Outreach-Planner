@@ -196,7 +196,9 @@ class OutreachReportViewTests(APITestCase):
 
     def test_newest_first(self):
         resp = self.client.get(reverse("outreach-reports"))
-        self.assertEqual([row["id"] for row in resp.data], [self.newer.id, self.older.id])
+        self.assertEqual(
+            [row["id"] for row in resp.data], [self.newer.id, self.older.id]
+        )
 
     def test_item_shape_matches_contract(self):
         resp = self.client.get(reverse("outreach-reports"))

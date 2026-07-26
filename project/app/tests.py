@@ -17,7 +17,9 @@ def _raw_json(name):
 # Expected counts derived from the real seed files, so the tests keep passing
 # as the dataset grows (new leads/events can be added without editing these).
 EXPECTED_LEADS = len(_raw_json("leads.json"))
-EXPECTED_EVENTS = sum(len(block.get("events", [])) for block in _raw_json("events.json"))
+EXPECTED_EVENTS = sum(
+    len(block.get("events", [])) for block in _raw_json("events.json")
+)
 
 
 class IngestDataCommandTests(TestCase):

@@ -12,7 +12,7 @@ need outreach today and why, generate suggested copy per lead with Claude
 
 ```python
 class Lead(models.Model):
-    id = models.CharField(max_length=32, primary_key=True)   # "lead_001"
+    id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
     agency_name = models.CharField(max_length=255)
     contact_name = models.CharField(max_length=255)
     contact_email = models.EmailField()
@@ -21,7 +21,7 @@ class Lead(models.Model):
     num_producers = models.IntegerField()
     years_in_business = models.IntegerField()
     estimated_book_size_usd = models.BigIntegerField()
-    stage = models.CharField(max_length=32)   # "active_trial" | "demo_completed"
+    stage = models.CharField(max_length=32)  # "active_trial" | "demo_completed"
     signed_up_date = models.DateField(null=True)
     last_login_date = models.DateField(null=True)
     quotes_created = models.IntegerField(default=0)
@@ -30,35 +30,39 @@ class Lead(models.Model):
     last_contacted_date = models.DateField(null=True)
     hubspot_notes = models.TextField(blank=True)
 
+
 class Event(models.Model):
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="events")
-    type = models.CharField(max_length=32)    # login, quote_created, quote_submitted,
-                                              # deal_closed, call_logged, email_sent,
-                                              # demo_completed, onboarding_call
+    type = models.CharField(max_length=32)  # login, quote_created, quote_submitted,
+    # deal_closed, call_logged, email_sent,
+    # demo_completed, onboarding_call
     timestamp = models.DateTimeField()
     meta = models.JSONField(default=dict, blank=True)
 
-class OutreachAction(models.Model):          # what the planner decided/did
-    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="outreach_actions")
+
+class OutreachAction(models.Model):  # what the planner decided/did
+    lead = models.ForeignKey(
+        Lead, on_delete=models.CASCADE, related_name="outreach_actions"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-    priority = models.IntegerField()          # 1 highest, 3 lowest
+    priority = models.IntegerField()  # 1 highest, 3 lowest
     action_type = models.CharField(max_length=64)  # see ACTION_TYPES
-    reason = models.TextField()               # why this lead, why now
+    reason = models.TextField()  # why this lead, why now
     suggested_copy = models.TextField(blank=True)  # Claude-generated email/message
     needs_human = models.BooleanField(default=False)  # unknown action -> report to BD
-    further_action = models.TextField(blank=True)     # what ops/AE should do next
+    further_action = models.TextField(blank=True)  # what ops/AE should do next
 ```
 
 ## Action types — `project/app/services/actions.py`
 
 ```python
 ACTION_TYPES = [
-    "power_user_reward",      # near milestone, offer volume pricing/discount (medium)
-    "follow_up_after_hold",   # asked to be contacted later; date passed (high)
-    "reengage_dormant",       # onboarded but stopped using portal (high)
-    "nudge_usage",            # active but underusing, needs encouragement (medium)
-    "complete_onboarding",    # demo done but never signed up; weight by book size (high)
-    "unknown",                # no pattern matched -> needs_human=True, report to BD
+    "power_user_reward",  # near milestone, offer volume pricing/discount (medium)
+    "follow_up_after_hold",  # asked to be contacted later; date passed (high)
+    "reengage_dormant",  # onboarded but stopped using portal (high)
+    "nudge_usage",  # active but underusing, needs encouragement (medium)
+    "complete_onboarding",  # demo done but never signed up; weight by book size (high)
+    "unknown",  # no pattern matched -> needs_human=True, report to BD
 ]
 ```
 

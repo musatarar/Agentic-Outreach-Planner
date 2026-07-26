@@ -92,7 +92,10 @@ def priya():
         events=_EventSet(
             [
                 _event(
-                    "deal_closed", _dt(2026, 5, 25), client="Telluride Outfitters", premium=9200
+                    "deal_closed",
+                    _dt(2026, 5, 25),
+                    client="Telluride Outfitters",
+                    premium=9200,
                 ),
                 _event(
                     "call_logged",
@@ -175,7 +178,8 @@ def dana():
                 _event(
                     "demo_completed",
                     _dt(2026, 4, 29),
-                    notes="Dana engaged throughout. Her business partner Ray wasn't on the call.",
+                    notes="Dana engaged throughout. Her business partner Ray "
+                    "wasn't on the call.",
                 ),
                 _event(
                     "email_sent",
@@ -213,7 +217,10 @@ def derek():
         events=_EventSet(
             [
                 _event(
-                    "quote_created", _dt(2026, 5, 21), client="Pacific Rim Imports", premium=8900
+                    "quote_created",
+                    _dt(2026, 5, 21),
+                    client="Pacific Rim Imports",
+                    premium=8900,
                 ),
                 _event(
                     "onboarding_call",
@@ -251,7 +258,12 @@ def susan():
         ),
         events=_EventSet(
             [
-                _event("deal_closed", _dt(2026, 5, 18), client="Dearborn Auto Parts", premium=5400),
+                _event(
+                    "deal_closed",
+                    _dt(2026, 5, 18),
+                    client="Dearborn Auto Parts",
+                    premium=5400,
+                ),
                 _event(
                     "call_logged",
                     _dt(2026, 5, 10),
@@ -402,7 +414,9 @@ class GenerateCopyTests(unittest.TestCase):
         fake_client.complete.return_value = "Subject: Budget approved!\n\nHi Tom, ..."
 
         with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
-            result = outreach.generate_copy(lead, actions.FOLLOW_UP_AFTER_HOLD, "hold passed")
+            result = outreach.generate_copy(
+                lead, actions.FOLLOW_UP_AFTER_HOLD, "hold passed"
+            )
 
         self.assertEqual(result, "Subject: Budget approved!\n\nHi Tom, ...")
 

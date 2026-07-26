@@ -159,7 +159,9 @@ def determine_priority(lead, today=None):
         score += 1
 
     # Demo completed but never signed up: high-value conversion opportunity.
-    if getattr(lead, "stage", "") == "demo_completed" and not getattr(lead, "signed_up_date", None):
+    if getattr(lead, "stage", "") == "demo_completed" and not getattr(
+        lead, "signed_up_date", None
+    ):
         score += 2
 
     # We reached out, time passed, and they went quiet (stall notes / no-reply).
@@ -218,7 +220,9 @@ def determine_action(lead, today=None):
     milestone = _milestone_from_notes(lead)
 
     # 1. Demo completed but never signed up -> complete onboarding.
-    if getattr(lead, "stage", "") == "demo_completed" and not getattr(lead, "signed_up_date", None):
+    if getattr(lead, "stage", "") == "demo_completed" and not getattr(
+        lead, "signed_up_date", None
+    ):
         reason = (
             f"{name} completed a demo but never signed up, and the agency's "
             f"estimated book is ${book:,.0f}."
@@ -231,7 +235,9 @@ def determine_action(lead, today=None):
             reason += f' Notes say: "{promise}"'
         if days_contact is not None:
             reason += f" Last contact was {days_contact} days ago"
-            reason += " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
+            reason += (
+                " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
+            )
         return actions.COMPLETE_ONBOARDING, reason
 
     # 2. Power user near a reward/volume-pricing milestone.
@@ -266,16 +272,24 @@ def determine_action(lead, today=None):
             reason += f' Notes: "{snippet}"'
         if days_contact is not None:
             reason += f" Last contacted {days_contact} days ago"
-            reason += " and a follow-up email got no reply." if _had_no_reply_email(lead) else "."
+            reason += (
+                " and a follow-up email got no reply."
+                if _had_no_reply_email(lead)
+                else "."
+            )
         if days_login is not None:
             reason += f" Last portal login was {days_login} days ago ({last_login})."
         return actions.FOLLOW_UP_AFTER_HOLD, reason
 
     # 4. Onboarded but stopped using the portal entirely.
-    if getattr(lead, "signed_up_date", None) and (days_login is None or days_login > DORMANT_DAYS):
+    if getattr(lead, "signed_up_date", None) and (
+        days_login is None or days_login > DORMANT_DAYS
+    ):
         signed = _as_date(getattr(lead, "signed_up_date", None))
         if days_login is None:
-            reason = f"{name} signed up on {signed} but has never logged in to the portal."
+            reason = (
+                f"{name} signed up on {signed} but has never logged in to the portal."
+            )
         else:
             reason = (
                 f"{name} signed up on {signed} but hasn't logged in for "

@@ -52,7 +52,9 @@ class OutreachReportView(APIView):
     """GET /api/reports/ — full outreach action history, newest first."""
 
     def get(self, request, *args, **kwargs):
-        actions = OutreachAction.objects.select_related("lead").order_by("-created_at", "-id")
+        actions = OutreachAction.objects.select_related("lead").order_by(
+            "-created_at", "-id"
+        )
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -81,7 +83,11 @@ class ReviewQueueView(APIView):
         items.sort(key=lambda a: (a.priority, a.lead_id))
 
         action_options = [
-            {"value": k, "label": ACTION_META[k]["label"], "urgency": ACTION_META[k]["urgency"]}
+            {
+                "value": k,
+                "label": ACTION_META[k]["label"],
+                "urgency": ACTION_META[k]["urgency"],
+            }
             for k in SELECTABLE_ACTION_TYPES
         ]
 
