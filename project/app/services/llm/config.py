@@ -1,54 +1,101 @@
-"""Load LLM provider selection from ``config.toml``.
+"""Resolve the active LLM provider/model/key configuration from the database.
 
-``config.toml`` lives at the repo root (committed, no secrets) and selects the
-active provider plus per-provider model overrides. API keys are NOT stored here
--- they stay in ``.env`` and are read from the environment by each adapter.
+Replaces the old ``config.toml`` file. Precedence, per provider:
 
-Uses ``tomllib`` from the stdlib (Python 3.11+).
+1. An :class:`~project.app.models.LLMConfiguration` row exists, is set to
+   this provider, and has a stored (encrypted) key -> ``"database"``.
+2. A row exists but has no stored key, and the provider's own env var is
+   set -> ``"environment"``.
+3. No row (or the row is for a different provider) -> the provider's env var
+   if set (``"environment"``), else its catalog default model with no key
+   (``"none"``).
+
+``get_provider()`` / ``get_provider_config(name)`` keep the same names and
+call signature the old ``config.toml`` loader had, so callers elsewhere in
+the repo (the LLM client factory, the copy-eval harness) didn't need to
+change -- only the resolution logic underneath did.
 """
 
 import os
-import tomllib
-from functools import lru_cache
-from pathlib import Path
 
-# Repo root is four levels up from this file:
-# project/app/services/llm/config.py -> <repo root>
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[4] / "config.toml"
+from project.app.services.crypto import decrypt_key
 
-# Provider used when config.toml exists but has no [llm] provider set. A missing
-# config.toml is now a hard error (see _load_config), not a silent fallback.
-_FALLBACK_PROVIDER = "claude"
+# Provider -> env var name(s) its adapter accepts, in priority order. "claude"
+# keeps the CLAUDE_API_KEY alias that used to be normalized in
+# project/settings.py; that normalization is gone now that adapters take an
+# explicit api_key, so the alias is handled here instead.
+PROVIDER_ENV_VARS = {
+    "claude": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
+    "chatgpt": ("OPENAI_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "groq": ("GROQ_API_KEY",),
+}
+
+# Used only when no LLMConfiguration row exists at all (fresh DB, nothing
+# saved via the API yet). Groq matches the free, no-credit-card-required
+# provider this repo has always defaulted new setups to.
+_DEFAULT_PROVIDER = "groq"
+_DEFAULT_MAX_TOKENS = 500
 
 
-@lru_cache(maxsize=1)
-def _load_config():
-    """Read and cache the parsed ``config.toml``.
+def _env_key_for(provider):
+    for env_var in PROVIDER_ENV_VARS.get(provider, ()):
+        value = os.environ.get(env_var)
+        if value:
+            return value
+    return None
 
-    Fails loudly if the file is missing: a silent fallback to defaults hides
-    misconfiguration (e.g. a wrong path) and sends every request to the
-    fallback provider regardless of what the operator selected.
-    """
-    path = Path(os.environ.get("LLM_CONFIG_PATH", _DEFAULT_CONFIG_PATH))
-    if not path.exists():
-        raise FileNotFoundError(
-            f"LLM config file not found at '{path}'. Create config.toml at the "
-            f"repo root (or set LLM_CONFIG_PATH to its location)."
-        )
-    with open(path, "rb") as fh:
-        return tomllib.load(fh)
+
+def _active_row():
+    from project.app.models import LLMConfiguration
+
+    return LLMConfiguration.objects.select_related("model").filter(pk=1).first()
 
 
 def get_provider():
     """Name of the active provider, e.g. ``"claude"`` or ``"groq"``."""
-    llm = _load_config().get("llm", {})
-    return llm.get("provider", _FALLBACK_PROVIDER)
+    row = _active_row()
+    return row.provider_id if row else _DEFAULT_PROVIDER
 
 
 def get_provider_config(name):
-    """Per-provider settings block (``model``, ``max_tokens``, ...).
+    """Model/max_tokens for ``name`` (not necessarily the active provider).
 
-    Returns an empty dict when the provider has no section, so adapters fall
-    back to their own built-in defaults.
+    Returns the active configuration's model/max_tokens when ``name`` is the
+    active provider; otherwise ``name``'s catalog default model (lowest
+    ``sort_order`` among its enabled models). Empty dict when ``name`` has no
+    catalog entries at all -- e.g. an unconfigured/unknown provider name, same
+    as the old "no section in config.toml" behavior.
     """
-    return _load_config().get("llm", {}).get(name, {})
+    from project.app.models import LLMModel
+
+    row = _active_row()
+    if row and row.provider_id == name:
+        return {"model": row.model.model_id, "max_tokens": row.max_tokens}
+
+    model = (
+        LLMModel.objects.filter(provider_id=name, enabled=True)
+        .order_by("sort_order", "model_id")
+        .first()
+    )
+    if model is None:
+        return {}
+    return {"model": model.model_id, "max_tokens": model.default_max_tokens}
+
+
+def resolve_active_key(provider=None):
+    """Resolve ``(api_key, key_source)`` for ``provider`` (default: the
+    active provider).
+
+    ``api_key`` is the plaintext key or ``None``; ``key_source`` is one of
+    ``"database"``, ``"environment"``, ``"none"``.
+    """
+    provider = provider or get_provider()
+    row = _active_row()
+    if row and row.provider_id == provider and row.encrypted_api_key:
+        return decrypt_key(bytes(row.encrypted_api_key)), "database"
+
+    env_key = _env_key_for(provider)
+    if env_key:
+        return env_key, "environment"
+    return None, "none"

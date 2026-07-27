@@ -3,7 +3,9 @@
 OpenAI (ChatGPT), DeepSeek, and Groq all expose the same
 ``POST {base_url}/chat/completions`` wire format, so one ``httpx``-based client
 covers all three. Subclasses set ``base_url``, ``api_key_env``, and a default
-``model``. The API key is read from the environment (never from config.toml).
+``model``. The API key comes from the explicit ``api_key`` passed in by the
+factory (:mod:`project.app.services.llm`); ``api_key_env`` is read directly
+only as a fallback when ``api_key`` is ``None``.
 """
 
 import os
@@ -21,8 +23,8 @@ class OpenAICompatibleClient(LLMClient):
     api_key_env: str
     provider_label = "OpenAI-compatible"
 
-    def complete(self, prompt, max_tokens=None):
-        api_key = os.environ.get(self.api_key_env)
+    def complete(self, prompt, max_tokens=None, timeout=None):
+        api_key = self.api_key or os.environ.get(self.api_key_env)
         if not api_key:
             raise RuntimeError(
                 f"{self.provider_label} provider selected but {self.api_key_env} "
@@ -40,7 +42,7 @@ class OpenAICompatibleClient(LLMClient):
                 "max_tokens": max_tokens or self.default_max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=_TIMEOUT_SECONDS,
+            timeout=timeout if timeout is not None else _TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         data = response.json()

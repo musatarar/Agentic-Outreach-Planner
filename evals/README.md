@@ -118,12 +118,13 @@ The provider's API key must be in the environment (e.g. `GROQ_API_KEY`).
 
 ### LLM-agnostic, one provider per run
 
-The harness only ever calls the provider you configured — the active `[llm]
-provider` in `config.toml`, or an explicit `--provider` that must name an
-existing `[llm.<provider>]` block. It never fans out to providers you didn't
-configure. The judge is equally agnostic: it uses `config.toml`'s optional
-`[llm.judge]` provider if set (handy to avoid a model grading its own output),
-otherwise the generation provider. Nothing is hardcoded to any vendor.
+The harness only ever calls the provider you configured — the active,
+database-configured provider (see `/api/llm/config/`), or an explicit
+`--provider` that must name a provider in the seeded catalog. It never fans
+out to providers you didn't configure. The judge is equally agnostic: pass
+`--judge-provider` to grade with a different configured provider (handy to
+avoid a model grading its own output), otherwise it uses the generation
+provider. Nothing is hardcoded to any vendor.
 
 The provider **comparison table** is therefore assembled from *separate*
 single-provider runs — run once per provider you want to compare, then

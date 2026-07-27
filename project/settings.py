@@ -28,22 +28,29 @@ if _env_file.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-# LLM provider keys. The active provider is selected in config.toml; each
-# adapter (project/app/services/llm/) reads its key from the environment:
-#   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, normalized below)
+# LLM provider/model/key selection lives in the database (LLMConfiguration,
+# see project/app/models.py), managed via the /api/llm/* endpoints. Each
+# adapter (project/app/services/llm/) is handed its key explicitly rather than
+# reading the environment itself; the env vars below remain the fallback when
+# no key is stored in the DB (see project/app/services/llm/config.py):
+#   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, aliased in config.py)
 #   chatgpt  -> OPENAI_API_KEY
 #   deepseek -> DEEPSEEK_API_KEY
 #   groq     -> GROQ_API_KEY   (free tier -- https://console.groq.com)
-# Keys stay in .env; config.toml never holds secrets.
-
-# The anthropic SDK reads ANTHROPIC_API_KEY; the .env uses CLAUDE_API_KEY
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY", "")
-if ANTHROPIC_API_KEY:
-    os.environ.setdefault("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
 
 # Grounding verifier strictness for generated outreach copy (MUS-22):
 #   off | standard (default) | strict. See project/app/services/verify.py.
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
+
+# HTTP Basic Auth credentials guarding the 3 LLM configuration endpoints
+# (/api/llm/catalog/, /api/llm/config/, /api/llm/config/test/) -- see
+# project/app/authentication.py. Unlike DJANGO_SECRET_KEY, this is NOT
+# required at Django boot: every other endpoint in this app is intentionally
+# AllowAny (see SECURITY.md), and these narrower admin endpoints only need
+# credentials configured once someone actually calls them. The auth class
+# raises a clear 401 if either is unset when a request hits one of the 3 views.
+LLM_ADMIN_USERNAME = os.environ.get("LLM_ADMIN_USERNAME", "")
+LLM_ADMIN_PASSWORD = os.environ.get("LLM_ADMIN_PASSWORD", "")
 
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
