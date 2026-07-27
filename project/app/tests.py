@@ -1,12 +1,14 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from django.conf import settings
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils.timezone import is_aware
 
 from project.app.models import Event, Lead, OutreachAction
+from project.app.services.outreach import plan_outreach
 
 
 def _raw_json(name):
@@ -124,3 +126,67 @@ class ModelBasicsTests(TestCase):
         self.assertFalse(action.needs_human)
         self.assertEqual(action.suggested_copy, "")
         self.assertEqual(str(action), "lead_997 - nudge_usage (p1)")
+
+
+class PlanOutreachGroundingTests(TestCase):
+    """plan_outreach runs the deterministic grounding verifier on generated
+    copy and fails closed: a contradicted draft is kept but routed to the BD
+    review queue (needs_human=True) with the specific problems spelled out."""
+
+    def _make_lead(self, **kwargs):
+        # demo_completed + no signup -> complete_onboarding (date-independent),
+        # so classification stays deterministic regardless of the wall clock.
+        defaults = dict(
+            id="lead_ground",
+            agency_name="Summit Risk Advisors",
+            contact_name="Priya Nair",
+            contact_email="priya.nair@summitrisk.com",
+            contact_phone="555-0000",
+            state="CO",
+            num_producers=4,
+            years_in_business=12,
+            estimated_book_size_usd=5_000_000,
+            stage="demo_completed",
+            signed_up_date=None,
+            deals_closed=4,
+        )
+        defaults.update(kwargs)
+        return Lead.objects.create(**defaults)
+
+    def test_contradicted_copy_is_flagged_and_draft_kept(self):
+        self._make_lead(deals_closed=4)
+        bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Eventual team"
+        with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
+            planned = plan_outreach()
+
+        self.assertEqual(len(planned), 1)
+        action = OutreachAction.objects.get()
+        self.assertTrue(action.needs_human)
+        self.assertEqual(action.suggested_copy, bad_copy)  # draft is kept, not blanked
+        self.assertIn("47 closed deals", action.further_action)
+        self.assertIn("record shows 4", action.further_action)
+
+    def test_grounded_copy_passes(self):
+        self._make_lead()
+        good_copy = (
+            "Subject: Let's finish setting up\n\nHi Priya,\n\nSummit Risk Advisors "
+            "has a strong $5M book — let's get your account live.\n\nBest,\nThe Eventual team"
+        )
+        with patch("project.app.services.outreach.generate_copy", return_value=good_copy):
+            plan_outreach()
+
+        action = OutreachAction.objects.get()
+        self.assertFalse(action.needs_human)
+        self.assertEqual(action.suggested_copy, good_copy)
+        self.assertEqual(action.further_action, "")
+
+    @override_settings(COPY_VERIFY_LEVEL="off")
+    def test_verification_can_be_disabled_via_setting(self):
+        self._make_lead(deals_closed=4)
+        bad_copy = "Hi Priya,\n\nYour 47 closed deals are incredible.\n"
+        with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
+            plan_outreach()
+
+        action = OutreachAction.objects.get()
+        self.assertFalse(action.needs_human)  # verification off -> nothing flagged
+        self.assertEqual(action.further_action, "")

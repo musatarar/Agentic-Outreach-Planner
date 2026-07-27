@@ -10,7 +10,7 @@ imported inside `plan_outreach()`.
 import datetime
 import re
 
-from project.app.services import actions
+from project.app.services import actions, verify
 from project.app.services.llm import get_llm_client
 
 MAX_COPY_TOKENS = 500
@@ -390,7 +390,12 @@ def plan_outreach():
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority."""
     # Imported here so this module stays importable without Django configured.
+    from django.conf import settings
+
     from project.app.models import Lead, OutreachAction
+
+    # Copy grounding strictness (off | standard | strict); see verify.py.
+    level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
 
     planned = []
     for lead in Lead.objects.all():
@@ -415,6 +420,14 @@ def plan_outreach():
                     f"Copy generation failed ({exc}). AE should draft the "
                     f"{action_type} email manually using the reason above."
                 )
+            else:
+                # Ground the draft against the record. Fail closed: on any
+                # contradiction, keep the copy but route it to a human with the
+                # specific problems spelled out (see verify.py).
+                violations = verify.verify_copy(lead, suggested_copy, action_type, level=level)
+                if violations:
+                    needs_human = True
+                    further_action = verify.format_violations(violations)
 
         action = OutreachAction.objects.create(
             lead=lead,
