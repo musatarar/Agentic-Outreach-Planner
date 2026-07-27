@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from project.app.models import Event, Lead, OutreachAction
+from project.app.models import (
+    Event,
+    Lead,
+    LLMConfiguration,
+    LLMModel,
+    LLMProvider,
+    OutreachAction,
+)
 
 
 @admin.register(Lead)
@@ -42,3 +49,38 @@ class OutreachActionAdmin(admin.ModelAdmin):
     )
     list_filter = ("priority", "action_type", "needs_human")
     search_fields = ("lead__id", "lead__agency_name", "reason")
+
+
+@admin.register(LLMProvider)
+class LLMProviderAdmin(admin.ModelAdmin):
+    list_display = ("key", "label", "sort_order", "enabled")
+    list_filter = ("enabled",)
+    search_fields = ("key", "label")
+
+
+@admin.register(LLMModel)
+class LLMModelAdmin(admin.ModelAdmin):
+    list_display = (
+        "model_id",
+        "provider",
+        "label",
+        "tier",
+        "context_window",
+        "input_price_per_mtok_usd",
+        "output_price_per_mtok_usd",
+        "enabled",
+    )
+    list_filter = ("provider", "tier", "enabled")
+    search_fields = ("model_id", "label")
+
+
+@admin.register(LLMConfiguration)
+class LLMConfigurationAdmin(admin.ModelAdmin):
+    """The stored (or plaintext) API key must never render here."""
+
+    list_display = ("provider", "model", "max_tokens", "key_last_four", "updated_at")
+    # encrypted_api_key is deliberately excluded from every admin form/list --
+    # this is the only thing standing between "safe" and "leaks a ciphertext
+    # blob (or worse, gets accidentally decrypted in a custom admin action)".
+    exclude = ("encrypted_api_key",)
+    readonly_fields = ("key_last_four", "updated_at")
