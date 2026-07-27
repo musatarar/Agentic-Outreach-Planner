@@ -13,8 +13,9 @@ of an account exec digging through HubSpot and Slack every morning.
   testable Python (book size, lifecycle stage, "gone quiet" detection, recency) — the LLM
   is only used for copywriting, never for the judgment call. See
   [`services/outreach.py`](project/app/services/outreach.py).
-- **Provider-agnostic LLM layer.** Swap Claude / OpenAI / DeepSeek / Groq via one line in
-  [`config.toml`](config.toml) — no code changes, no vendor lock-in. See
+- **Provider-agnostic LLM layer.** Swap Claude / OpenAI / DeepSeek / Groq via the
+  Basic Auth-protected `/api/llm/config/` endpoint (backed by the `LLMConfiguration`
+  model, encrypted key storage, no code changes, no vendor lock-in). See
   [`services/llm/`](project/app/services/llm/).
 - **Safe default for the unknown.** Leads the rules can't classify are flagged
   `needs_human=True` and routed to a BD review queue instead of getting an
@@ -41,14 +42,14 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # 2. Copy the env file: DJANGO_SECRET_KEY is required (a fresh local/demo key
-#    is already filled in). Also set the key for whichever provider
-#    config.toml selects (default: groq — free tier, no credit card at
-#    console.groq.com) if you want the LLM copy step.
+#    is already filled in). Also set a provider key (default: groq — free
+#    tier, no credit card at console.groq.com) if you want the LLM copy step;
+#    it's picked up as a fallback until you save one via /api/llm/config/.
 cp .env.example .env               # then edit .env and fill in the LLM key
 
-# 3. Migrate, seed the demo pipeline, and run
+# 3. Migrate, seed the demo pipeline + LLM catalog, and run
 python manage.py migrate
-python scripts/populate_demo_data.py   # loads the sample pipeline
+python scripts/populate_demo_data.py   # loads the sample pipeline + LLM catalog
 python manage.py runserver
 ```
 
@@ -77,7 +78,7 @@ key — you just can't run the LLM copy step until one is set.
 |---|---|---|
 | Models | `project/app/models.py` | `Lead`, `Event`, `OutreachAction` (decision audit log), `ReviewDecision` |
 | Logic | `project/app/services/outreach.py` | Priority scoring + action classification — pure Python, no LLM |
-| LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via `config.toml` |
+| LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via the DB-backed `LLMConfiguration` (see `/api/llm/config/`) |
 | API | `project/app/views.py`, `urls.py` | DRF APIViews at `/api/*` |
 | Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: planner board, reports, BD dashboard — consumes the `/api/*` endpoints |
 
@@ -138,8 +139,9 @@ Add a row by running `--provider <name> --update-baseline` for any configured pr
 its API key), then `--table`. Notes on this run:
 
 - **Judge = the same provider (self-grading) here**, which is lenient — tone and CTA saturate
-  at 5.0. Set `[llm.judge]` in `config.toml` to grade with a different (stronger) model for more
-  discriminating scores; the harness stays agnostic either way.
+  at 5.0. Pass `--judge-provider <name>` to `run_copy_eval.py` to grade with a different
+  (stronger) configured provider for more discriminating scores; the harness stays agnostic
+  either way.
 - **Cost is $0** on Groq's free tier. Latency is the **median** API call time; a full 38-lead
   judge pass on the free tier is heavily rate-limited (the recorded run spent most of its
   wall-clock waiting on `Retry-After`), so use a paid tier or `--limit` for fast iteration.

@@ -37,6 +37,11 @@ services:
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # LLM configuration endpoints (MUS-32) -- see .env.example for what each
+      # of these is for. Only required once you actually call /api/llm/*.
+      LLM_ADMIN_USERNAME: ${LLM_ADMIN_USERNAME:-}
+      LLM_ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD:-}
+      LLM_KEY_ENCRYPTION_KEY: ${LLM_KEY_ENCRYPTION_KEY:-}
 
 volumes:
   postgres_data:
