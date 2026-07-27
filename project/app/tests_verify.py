@@ -137,6 +137,21 @@ class CountTests(unittest.TestCase):
         v = _verify(_lead(num_producers=4), "Hi Priya,\nYour team of 40 producers is huge.")
         self.assertIn("wrong_count", _kinds(v))
 
+    def test_wrong_producers_you_have_phrasing(self):
+        v = _verify(_lead(num_producers=4), "Hi Priya,\nYou have 40 producers on staff.")
+        self.assertIn("wrong_count", _kinds(v))
+
+    def test_producer_comparison_not_flagged(self):
+        # "agencies with 50 producers" is a comparison, not a claim about *this*
+        # lead's team, so the count must not be flagged.
+        v = _verify(_lead(num_producers=4), "Hi Priya,\nEven agencies with 50 producers struggle.")
+        self.assertEqual(v, [])
+
+    def test_producer_hypothetical_not_flagged(self):
+        # "as you add 2 producers" is a hypothetical, not a record claim.
+        v = _verify(_lead(num_producers=4), "Hi Priya,\nAs you add 2 producers, we can help.")
+        self.assertEqual(v, [])
+
     def test_year_old_phrasing(self):
         v = _verify(_lead(years_in_business=12), "Hi Priya,\nYour 30-year-old agency thrives.")
         self.assertIn("wrong_count", _kinds(v))
@@ -151,6 +166,67 @@ class CountTests(unittest.TestCase):
     def test_incidental_numbers_not_flagged(self):
         copy = "Hi Priya,\nDo you have 15 minutes for a call in the next 2 weeks?"
         self.assertEqual(_verify(_lead(), copy), [])
+
+
+# ---------------------------------------------------------------------------
+# Goal / milestone framing (a *target*, not a claim about the record)
+# ---------------------------------------------------------------------------
+
+
+class GoalContextTests(unittest.TestCase):
+    """A spaced milestone ("20 closed deals") appears verbatim in real HubSpot
+    notes (lead_001: "if she hits 20 closed deals") and is exactly what a
+    power-user email should echo, so goal-framed counts must not be flagged as
+    contradictions — while genuine achievement claims still are."""
+
+    def setUp(self):
+        # deals_closed=6 like lead_001; the milestone is 20.
+        self.lead = _lead(deals_closed=6, num_producers=4, quotes_submitted=14)
+
+    def test_conditional_milestone_not_flagged(self):
+        for copy in (
+            "Hi Priya,\nExplore volume pricing once you hit 20 closed deals.",
+            "Hi Priya,\nYou wanted volume pricing if you hit 20 closed deals.",
+            "Hi Priya,\nWhen you reach 20 closed deals, let's talk pricing.",
+        ):
+            with self.subTest(copy=copy):
+                self.assertEqual(
+                    _verify(self.lead, copy, action_type=actions.POWER_USER_REWARD), []
+                )
+
+    def test_directional_milestone_not_flagged(self):
+        for copy in (
+            "Hi Priya,\nGreat progress toward 20 closed deals!",
+            "Hi Priya,\nYou're on track to reach your goal of 20 closed deals.",
+            "Hi Priya,\nYou're 14 deals away from 20 deals closed.",
+        ):
+            with self.subTest(copy=copy):
+                self.assertEqual(
+                    _verify(self.lead, copy, action_type=actions.POWER_USER_REWARD), []
+                )
+
+    def test_milestone_noun_after_count_not_flagged(self):
+        copy = "Hi Priya,\nYou're nearing the 20 closed deals milestone."
+        self.assertEqual(_verify(self.lead, copy, action_type=actions.POWER_USER_REWARD), [])
+
+    def test_goal_framing_does_not_suppress_wrong_claim(self):
+        # An achievement claim (even with a gerund) is still a claim, not a goal.
+        for copy in (
+            "Hi Priya,\nCongrats on hitting 47 closed deals!",
+            "Hi Priya,\nAmazing — you reached 47 closed deals.",
+        ):
+            with self.subTest(copy=copy):
+                self.assertIn(
+                    "wrong_count",
+                    _kinds(_verify(self.lead, copy, action_type=actions.POWER_USER_REWARD)),
+                )
+
+    def test_goal_in_prior_sentence_does_not_suppress_next(self):
+        # A goal word in one sentence must not shield a wrong claim in the next.
+        copy = "Hi Priya,\nYour goal is close. Congrats on your 47 closed deals!"
+        self.assertIn(
+            "wrong_count", _kinds(_verify(self.lead, copy, action_type=actions.POWER_USER_REWARD))
+        )
 
 
 # ---------------------------------------------------------------------------

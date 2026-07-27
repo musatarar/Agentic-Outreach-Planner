@@ -90,10 +90,36 @@ _QUOTES_RE = re.compile(
     r"(?:(\d+)\s+quotes?\s+(created|submitted)|(created|submitted)\s+(\d+)\s+quotes?)",
     re.IGNORECASE,
 )
-_PRODUCERS_RE = re.compile(r"(\d+)\s+producers?\b", re.IGNORECASE)
+# Producer counts are anchored to the *lead's own team* (a possessive / second-
+# person cue) so comparisons ("agencies with 50 producers") and hypotheticals
+# ("as you add 2 producers") — which are not claims about this record — are not
+# flagged. Up to three words may sit between the cue and the count.
+_PRODUCERS_RE = re.compile(
+    r"(?:your|team of|team's|roster of|staff of|you've|you have|you employ)\s+"
+    r"(?:[\w'&/-]+\s+){0,3}?(\d+)\s+producers?\b",
+    re.IGNORECASE,
+)
 _YEARS_RE = re.compile(
     r"(?:(\d+)[\s-]+years?\s+in\s+business|(\d+)-year-old)",
     re.IGNORECASE,
+)
+
+# Aspiration / goal framing that turns a count into a *target* rather than a
+# claim about the record — e.g. "once you hit 20 closed deals", "toward 20
+# closed deals", "your goal of 20 closed deals", "the 20 closed deals
+# milestone". Milestones like this appear verbatim in HubSpot notes (lead_001:
+# "if she hits 20 closed deals") and are exactly what a power-user email should
+# echo, so they must not be flagged. Deliberately excludes the ambiguous
+# "hit"/"reach" (they also describe achievements: "congrats on hitting 47"),
+# relying on the conditional/directional words that actually precede them.
+_GOAL_MARKER = (
+    r"if|once|when|whenever|until|till|toward|towards|nearing|approaching|"
+    r"goals?|targets?|milestones?|aiming|aim|en route|on track|short of|"
+    r"shy of|away from|close to|closing in|get to|up to"
+)
+_GOAL_BEFORE_RE = re.compile(rf"\b(?:{_GOAL_MARKER})\b[^.!?\n]{{0,20}}$", re.IGNORECASE)
+_GOAL_AFTER_RE = re.compile(
+    r"^[^.!?\n]{0,12}\b(?:milestone|target|goal|mark|threshold)\b", re.IGNORECASE
 )
 
 # Greeting line only ("Hi Priya,"), so a mid-body "say hi to Dan" is ignored.
@@ -206,6 +232,16 @@ def _first_group_int(match: re.Match) -> int | None:
     return None
 
 
+def _is_goal_context(copy: str, start: int, end: int) -> bool:
+    """True when the count at ``copy[start:end]`` is framed as a target/goal
+    rather than a claim about the record. Checks the same clause just before the
+    count for a goal cue ("once you hit 20 ...") and just after it for a
+    milestone noun ("20 closed deals milestone")."""
+    before = copy[max(0, start - 30) : start]
+    after = copy[end : end + 16]
+    return bool(_GOAL_BEFORE_RE.search(before) or _GOAL_AFTER_RE.search(after))
+
+
 def _coerce_number(value: Any) -> float | None:
     if value is None:
         return None
@@ -284,6 +320,8 @@ def _check_counts(lead: Any, copy: str) -> list[Violation]:
     deals = _int_attr(lead, "deals_closed")
     if deals is not None:
         for match in _DEALS_RE.finditer(copy):
+            if _is_goal_context(copy, match.start(), match.end()):
+                continue
             claimed = _first_group_int(match)
             if claimed is not None and claimed != deals:
                 violations.append(
@@ -296,6 +334,8 @@ def _check_counts(lead: Any, copy: str) -> list[Violation]:
     created = _int_attr(lead, "quotes_created")
     submitted = _int_attr(lead, "quotes_submitted")
     for match in _QUOTES_RE.finditer(copy):
+        if _is_goal_context(copy, match.start(), match.end()):
+            continue
         if match.group(1) is not None:
             claimed, qualifier = int(match.group(1)), match.group(2).lower()
         else:
@@ -312,6 +352,8 @@ def _check_counts(lead: Any, copy: str) -> list[Violation]:
     producers = _int_attr(lead, "num_producers")
     if producers is not None:
         for match in _PRODUCERS_RE.finditer(copy):
+            if _is_goal_context(copy, match.start(), match.end()):
+                continue
             claimed = int(match.group(1))
             if claimed != producers:
                 violations.append(
@@ -324,6 +366,8 @@ def _check_counts(lead: Any, copy: str) -> list[Violation]:
     years = _int_attr(lead, "years_in_business")
     if years is not None:
         for match in _YEARS_RE.finditer(copy):
+            if _is_goal_context(copy, match.start(), match.end()):
+                continue
             claimed = _first_group_int(match)
             if claimed is not None and claimed != years:
                 violations.append(
