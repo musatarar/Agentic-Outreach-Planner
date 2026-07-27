@@ -51,13 +51,17 @@ jobs:
       - name: Run copy eval
         run: |
           set -euo pipefail
-          args=()
-          [ -n "${{ github.event.inputs.provider }}" ] && args+=(--provider "${{ github.event.inputs.provider }}")
-          [ -n "${{ github.event.inputs.judge_provider }}" ] && args+=(--judge-provider "${{ github.event.inputs.judge_provider }}")
-          [ -n "${{ github.event.inputs.limit }}" ] && args+=(--limit "${{ github.event.inputs.limit }}")
-          [ "${{ github.event.inputs.update_baseline }}" = "true" ] && args+=(--update-baseline)
-          echo "Running: python evals/run_copy_eval.py ${args[*]:-}"
-          python evals/run_copy_eval.py "${args[@]:-}"
+          # Base command first, so the array is never empty. On the nightly
+          # schedule no inputs are set and it runs with zero extra args (gating
+          # the active provider); `"${args[@]:-}"` would instead pass one empty
+          # string arg that argparse rejects.
+          cmd=(python evals/run_copy_eval.py)
+          [ -n "${{ github.event.inputs.provider }}" ] && cmd+=(--provider "${{ github.event.inputs.provider }}")
+          [ -n "${{ github.event.inputs.judge_provider }}" ] && cmd+=(--judge-provider "${{ github.event.inputs.judge_provider }}")
+          [ -n "${{ github.event.inputs.limit }}" ] && cmd+=(--limit "${{ github.event.inputs.limit }}")
+          [ "${{ github.event.inputs.update_baseline }}" = "true" ] && cmd+=(--update-baseline)
+          echo "Running: ${cmd[*]}"
+          "${cmd[@]}"
 
       - name: Upload results + logs
         if: always()
