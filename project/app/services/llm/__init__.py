@@ -48,4 +48,15 @@ def get_llm_client():
     return _build_client(config.get_provider())
 
 
-__all__ = ["LLMClient", "get_llm_client"]
+def build_client(provider):
+    """Return the LLM client for an explicitly named configured provider.
+
+    Like :func:`get_llm_client`, but selects ``provider`` (which must have a
+    ``[llm.<provider>]`` section in ``config.toml``) instead of the active one.
+    Used by the copy eval harness to score a chosen provider without mutating
+    ``config.toml``; an unknown name raises ``ValueError``.
+    """
+    return _build_client(provider)
+
+
+__all__ = ["LLMClient", "get_llm_client", "build_client"]

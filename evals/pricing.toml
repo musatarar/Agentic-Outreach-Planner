@@ -1,0 +1,30 @@
+# Reference list prices (USD per 1,000,000 tokens) for the copy-eval cost column.
+#
+# This file runs no AI and contacts no provider -- it is static reference data
+# used only to annotate the quality-vs-cost-vs-latency table in the README.
+#
+# Cost is ESTIMATED: the repo's LLMClient.complete() returns text only (not token
+# usage), so run_copy_eval.py estimates tokens as ~chars/4 for the prompt and
+# completion and multiplies by the rates below. Treat the cost column as "est."
+# Keyed by the model id configured in config.toml. Models absent here show n/a.
+#
+# Prices are approximate list prices at time of writing -- edit to match your
+# account/tier. Update alongside any config.toml model change.
+
+[models."claude-sonnet-4-6"]
+input_per_1m = 3.00
+output_per_1m = 15.00
+
+[models."gpt-4o-mini"]
+input_per_1m = 0.15
+output_per_1m = 0.60
+
+[models."deepseek-chat"]
+input_per_1m = 0.27
+output_per_1m = 1.10
+
+# Groq free tier (no credit card) -> $0. Set real rates here if you move to a
+# paid Groq plan.
+[models."llama-3.3-70b-versatile"]
+input_per_1m = 0.0
+output_per_1m = 0.0

@@ -12,3 +12,9 @@
 ruff==0.16.0
 mypy==1.19.1
 coverage==7.10.7
+
+# LLM-judge copy quality eval (evals/run_copy_eval.py, MUS-21). Not needed for
+# `manage.py test` -- that suite mocks every provider. inspect-ai is the harness
+# scaffolding (dataset/scorer/report); all real LLM calls still go through the
+# repo's own provider-agnostic layer.
+inspect-ai==0.3.249

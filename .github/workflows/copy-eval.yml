@@ -1,0 +1,70 @@
+name: Copy quality eval (LLM judge)
+
+# Separate from CI on purpose: this makes REAL, paid LLM calls (generation +
+# judge), so it never runs on push/PR. It runs on a nightly schedule and can be
+# triggered by hand. The unit-test suite (CI) mocks every provider; this is the
+# only place real keys are used.
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Generation provider (must have a [llm.<provider>] block in config.toml)"
+        type: choice
+        default: groq
+        options: [groq, claude, chatgpt, deepseek]
+      judge_provider:
+        description: "Judge provider (blank = config [llm.judge] or the generation provider)"
+        type: string
+        default: ""
+      update_baseline:
+        description: "Record/refresh this provider's baseline instead of gating"
+        type: boolean
+        default: false
+      limit:
+        description: "Only run the first N leads (blank = all)"
+        type: string
+        default: ""
+  schedule:
+    # 07:00 UTC nightly — gates the active provider (config.toml) against the baseline.
+    - cron: "0 7 * * *"
+
+jobs:
+  copy-eval:
+    name: Copy eval (${{ github.event.inputs.provider || 'active' }})
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_SETTINGS_MODULE: project.settings
+      DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+      # Only the configured provider's key is actually used; the rest may be empty.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+
+      - name: Run copy eval
+        run: |
+          set -euo pipefail
+          args=()
+          [ -n "${{ github.event.inputs.provider }}" ] && args+=(--provider "${{ github.event.inputs.provider }}")
+          [ -n "${{ github.event.inputs.judge_provider }}" ] && args+=(--judge-provider "${{ github.event.inputs.judge_provider }}")
+          [ -n "${{ github.event.inputs.limit }}" ] && args+=(--limit "${{ github.event.inputs.limit }}")
+          [ "${{ github.event.inputs.update_baseline }}" = "true" ] && args+=(--update-baseline)
+          echo "Running: python evals/run_copy_eval.py ${args[*]:-}"
+          python evals/run_copy_eval.py "${args[@]:-}"
+
+      - name: Upload results + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copy-eval-${{ github.run_id }}
+          path: |
+            evals/results/
+            evals/.inspect-logs/
+          if-no-files-found: ignore
