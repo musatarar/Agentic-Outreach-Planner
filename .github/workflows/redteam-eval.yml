@@ -1,0 +1,55 @@
+name: Red-team eval (prompt injection)
+
+# Separate from CI on purpose: this makes REAL, paid LLM calls to probe the
+# copy pipeline with adversarial CRM notes, so it never runs on push/PR. It runs
+# on a nightly schedule and can be triggered by hand. The unit-test red-team
+# suite (project/app/tests_redteam.py) runs stubbed in CI; this is the only place
+# real keys are used against the injection payloads.
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Provider (must have a [llm.<provider>] block in config.toml)"
+        type: choice
+        default: groq
+        options: [groq, claude, chatgpt, deepseek]
+      limit:
+        description: "Only run the first N payloads (blank = all)"
+        type: string
+        default: ""
+  schedule:
+    # 07:30 UTC nightly — probes the active provider (config.toml) with every payload.
+    - cron: "30 7 * * *"
+
+jobs:
+  redteam-eval:
+    name: Red-team eval (${{ github.event.inputs.provider || 'active' }})
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_SETTINGS_MODULE: project.settings
+      DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+      # Only the configured provider's key is actually used; the rest may be empty.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+
+      - name: Run red-team eval
+        run: |
+          set -euo pipefail
+          # Base command first, so the array is never empty. On the nightly
+          # schedule no inputs are set and it runs with zero extra args (probing
+          # the active provider); `"${args[@]:-}"` would instead pass one empty
+          # string arg that argparse rejects.
+          cmd=(python evals/run_redteam_eval.py)
+          [ -n "${{ github.event.inputs.provider }}" ] && cmd+=(--provider "${{ github.event.inputs.provider }}")
+          [ -n "${{ github.event.inputs.limit }}" ] && cmd+=(--limit "${{ github.event.inputs.limit }}")
+          echo "Running: ${cmd[*]}"
+          "${cmd[@]}"
