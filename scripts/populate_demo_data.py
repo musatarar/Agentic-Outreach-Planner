@@ -26,6 +26,7 @@ from django.core.management import call_command  # noqa: E402
 
 def main():
     call_command("ingest_data")
+    call_command("seed_llm_catalog")
 
 
 if __name__ == "__main__":
