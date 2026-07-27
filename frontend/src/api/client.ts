@@ -82,6 +82,21 @@ export async function postJson<T>(url: string, body: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
+export async function putJson<T>(url: string, body: unknown): Promise<T> {
+  const csrfToken = await ensureCsrfToken();
+  const response = await fetch(url, {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await toError(response);
+  return (await response.json()) as T;
+}
+
 /** Uniform message for anything thrown out of the calls above. */
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

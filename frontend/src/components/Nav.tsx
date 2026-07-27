@@ -4,6 +4,7 @@ const LINKS = [
   { to: '/', label: 'Planner' },
   { to: '/reports/', label: 'Reports' },
   { to: '/next-actions/', label: 'BD Dashboard' },
+  { to: '/settings/', label: 'Settings' },
 ];
 
 /** Shared header. The current page renders as bold text rather than a link. */

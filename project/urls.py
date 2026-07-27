@@ -18,12 +18,13 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
-from project.app.views_frontend import index, next_actions, reports
+from project.app.views_frontend import index, next_actions, reports, settings
 
 urlpatterns = [
     path("", index),
     path("reports/", reports),
     path("next-actions/", next_actions),
+    path("settings/", settings),
     path("admin/", admin.site.urls),
     path("api/", include("project.app.urls")),
 ]
