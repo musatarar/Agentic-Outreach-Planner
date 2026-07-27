@@ -168,9 +168,19 @@ class PlanOutreachGroundingTests(TestCase):
 
     def test_grounded_copy_passes(self):
         self._make_lead()
+        # Well-formed (subject, one CTA, sane length) AND grounded — must pass
+        # both the shape gate (MUS-23) and the grounding gate (MUS-22).
         good_copy = (
-            "Subject: Let's finish setting up\n\nHi Priya,\n\nSummit Risk Advisors "
-            "has a strong $5M book — let's get your account live.\n\nBest,\nThe Eventual team"
+            "Subject: Let's finish setting up\n\n"
+            "Hi Priya,\n\n"
+            "Summit Risk Advisors has a strong $5M book, and I'd hate to see that "
+            "momentum stall before your account is live. Getting fully set up takes "
+            "about fifteen minutes, and once it's done your producers can start "
+            "protecting premiums right away. I know the demo covered a lot, so I'm "
+            "happy to walk your team through the final steps personally and answer "
+            "anything that came up afterward. Would you have time for a quick call "
+            "this week to wrap up onboarding?\n\n"
+            "Best,\nThe Eventual team"
         )
         with patch("project.app.services.outreach.generate_copy", return_value=good_copy):
             plan_outreach()
@@ -183,7 +193,21 @@ class PlanOutreachGroundingTests(TestCase):
     @override_settings(COPY_VERIFY_LEVEL="off")
     def test_verification_can_be_disabled_via_setting(self):
         self._make_lead(deals_closed=4)
-        bad_copy = "Hi Priya,\n\nYour 47 closed deals are incredible.\n"
+        # Well-formed shape but a grounding contradiction (47 vs 4 deals). With
+        # grounding disabled the contradiction is not flagged; the shape gate
+        # (which is not governed by COPY_VERIFY_LEVEL) still passes.
+        bad_copy = (
+            "Subject: Your incredible momentum\n\n"
+            "Hi Priya,\n\n"
+            "Your 47 closed deals this quarter are genuinely incredible, and everyone "
+            "on our side has noticed how quickly Summit Risk Advisors is moving. I "
+            "wanted to write personally to say how great it has been watching your team "
+            "put Premium Lock to work for your clients across the state. There is real "
+            "momentum here, and I would be glad to help you keep it building with "
+            "whatever comes next for the agency. Would you be open to a quick call this "
+            "week to talk through what is ahead?\n\n"
+            "Best,\nThe Eventual team"
+        )
         with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
             plan_outreach()
 

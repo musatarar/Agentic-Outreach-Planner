@@ -381,6 +381,62 @@ def generate_copy(lead, action_type, reason):
     return get_llm_client().complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
 
+def validate_copy(email):
+    """SHAPE-only validation of generated copy (MUS-23 output validation).
+
+    Returns ``[]`` when the email is well-shaped, else a list of human-readable
+    problems. This is a structural guard against a hijacked generation that no
+    longer looks like the requested email (no subject, an essay of the wrong
+    length, leaked preamble/commentary, multiple or zero CTAs) — a classic
+    symptom of a successful prompt injection.
+
+    It intentionally reuses the deterministic checks in ``evals/copy_checks.py``
+    and does **not** re-implement grounding or commercial-promise checks — those
+    are :mod:`project.app.services.verify`'s job. Shape here, substance there.
+    """
+    from evals import copy_checks  # lazy: keeps this module importable standalone
+
+    if not email or not email.strip():
+        return ["Generated copy is empty."]
+
+    results = copy_checks.run_all(email)
+    problems = []
+    if not results["subject"]:
+        problems.append("No 'Subject:' line found in the generated email.")
+    if not results["no_preamble"]:
+        problems.append(
+            "Generated copy opens with commentary/preamble instead of the email "
+            "itself (a sign the model was steered off-task)."
+        )
+    if not results["single_cta"]:
+        count = results["detail_cta_count"]
+        problems.append(
+            f"Email has {count} call-to-action-shaped sentence(s); a well-formed "
+            f"outreach email has exactly one."
+        )
+    if not results["word_count"]:
+        count = results["detail_word_count"]
+        problems.append(
+            f"Email body is {count} words, outside the expected "
+            f"{copy_checks.WORD_MIN}-{copy_checks.WORD_MAX}-word range."
+        )
+    return problems
+
+
+def format_shape_problems(problems):
+    """Render shape problems as the ``further_action`` text a reviewer reads."""
+    if not problems:
+        return ""
+    lines = "\n".join(f"- {p}" for p in problems)
+    return (
+        "Shape check failed — the generated copy is not a well-formed outreach "
+        "email (possible prompt-injection / off-task generation):\n"
+        f"{lines}\n\n"
+        "The draft has been kept for reference; a human should review it before "
+        "the email is sent."
+    )
+
+
 # --------------------------------------------------------------------------
 # planner
 # --------------------------------------------------------------------------
@@ -421,13 +477,23 @@ def plan_outreach():
                     f"{action_type} email manually using the reason above."
                 )
             else:
-                # Ground the draft against the record. Fail closed: on any
-                # contradiction, keep the copy but route it to a human with the
-                # specific problems spelled out (see verify.py).
+                # Two independent output gates, both fail-closed:
+                #   1. SHAPE (MUS-23): is the output still a well-formed email, or
+                #      did an injection steer it off-task? (validate_copy)
+                #   2. GROUNDING (MUS-22): does the copy contradict the record or
+                #      make an unauthorized promise? (verify.verify_copy)
+                # Any problem from either gate routes the (kept) draft to a human
+                # with the specific issues spelled out.
+                shape_problems = validate_copy(suggested_copy)
                 violations = verify.verify_copy(lead, suggested_copy, action_type, level=level)
-                if violations:
+                if shape_problems or violations:
                     needs_human = True
-                    further_action = verify.format_violations(violations)
+                    messages = []
+                    if shape_problems:
+                        messages.append(format_shape_problems(shape_problems))
+                    if violations:
+                        messages.append(verify.format_violations(violations))
+                    further_action = "\n\n".join(messages)
 
         action = OutreachAction.objects.create(
             lead=lead,
