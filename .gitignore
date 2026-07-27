@@ -54,3 +54,7 @@ db.sqlite3
 
 # secrets
 .env
+
+# Inspect eval run logs (copy eval, MUS-21). Scored aggregates are committed
+# under evals/results/; these raw per-run transcripts are not.
+evals/.inspect-logs/

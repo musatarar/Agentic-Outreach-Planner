@@ -19,7 +19,9 @@ of an account exec digging through HubSpot and Slack every morning.
 - **Safe default for the unknown.** Leads the rules can't classify are flagged
   `needs_human=True` and routed to a BD review queue instead of getting an
   auto-generated email.
-- **51 passing tests** across models, API, rule logic (LLM calls mocked), and frontend.
+- **67 passing tests** across models, API, rule logic (LLM calls mocked), copy checks, and
+  frontend — plus two eval harnesses that score classification accuracy and generated-copy
+  quality against golden data (see [Evals](#evals)).
 
 ## Quickstart
 
@@ -92,6 +94,48 @@ coverage run manage.py test project.app && coverage report
 
 CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR, across the
 supported Python versions and against both SQLite and a Postgres service container.
+
+## Evals
+
+Two harnesses under [`evals/`](evals/) measure whether the product is actually *correct*,
+not just that the code runs — see [`evals/README.md`](evals/README.md) for details.
+
+- **Rules regression suite** (`run_rules_eval.py`) — scores the deterministic
+  priority/action classifier against a hand-labeled golden set and gates on regression.
+  Pure Python, no network.
+- **Copy quality eval** (`run_copy_eval.py`, MUS-21) — scores the *generated email*: cheap
+  deterministic checks (Subject line, length, no preamble, one CTA) first, then an LLM
+  judge (concrete facts / peer tone / CTA-matches-action, 1–5 each, rubric in
+  [`evals/rubrics/copy.md`](evals/rubrics/copy.md)). Built on Inspect, but generation *and*
+  judging both run through the same provider-agnostic layer — nothing is hardcoded to a
+  vendor, and a run only calls the provider you configured.
+
+The copy eval makes real, paid LLM calls, so it runs as a **separate** job
+(`.github/workflows/copy-eval.yml`) — nightly + manual, never on push/PR — and fails on a
+quality regression against `evals/baselines/copy.json`.
+
+### Provider comparison
+
+Because the eval drives the real provider layer, running it per provider yields a
+quality-vs-cost-vs-latency comparison (assembled from separate single-provider runs;
+regenerate with `python evals/run_copy_eval.py --table`). Cost is estimated (the provider
+interface returns text only); latency is measured wall-clock. Over the ~38 golden leads:
+
+<!-- COPY-EVAL-TABLE -->
+| Provider | Model | Judge (1-5) | facts | tone | CTA | Checks | est. $/email | Latency (med) |
+|---|---|--:|--:|--:|--:|--:|--:|--:|
+| groq | `llama-3.3-70b-versatile` | 4.68 | 4.1 | 5.0 | 5.0 | 89% | $0 | 1.87s |
+<!-- /COPY-EVAL-TABLE -->
+
+Add a row by running `--provider <name> --update-baseline` for any configured provider (needs
+its API key), then `--table`. Notes on this run:
+
+- **Judge = the same provider (self-grading) here**, which is lenient — tone and CTA saturate
+  at 5.0. Set `[llm.judge]` in `config.toml` to grade with a different (stronger) model for more
+  discriminating scores; the harness stays agnostic either way.
+- **Cost is $0** on Groq's free tier. Latency is the **median** API call time; a full 38-lead
+  judge pass on the free tier is heavily rate-limited (the recorded run spent most of its
+  wall-clock waiting on `Retry-After`), so use a paid tier or `--limit` for fast iteration.
 
 ## Frontend development
 

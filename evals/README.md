@@ -79,7 +79,84 @@ re-run with `--update-baseline` and commit the updated `baselines/rules.json`.
 Change a threshold constant in `outreach.py` (e.g. `DORMANT_DAYS = 21` → `30`) and
 re-run: the numbers visibly move and the gate fails. Revert to restore green.
 
-## Roadmap
+## Copy quality eval (`run_copy_eval.py`, LLM judge)
 
-MUS-21 (LLM-judge eval for the generated copy) will add a sibling harness here,
-reusing the same `golden/` + `baselines/` layout.
+Where the rules eval scores the *classifier*, this one scores the *generated
+copy*. `_build_copy_prompt` asks the model for six things — a Subject line, a
+~120-word body, concrete lead detail, a helpful-peer voice, exactly one CTA
+matching the planned action, and no commentary — and nothing verified any of
+them. This harness does: **cheap deterministic checks first, then an LLM judge.**
+
+Built on [Inspect](https://inspect.aisi.org.uk/) (`inspect-ai`, in
+`requirements-dev.txt`) — but Inspect is only scaffolding (dataset, scorers,
+report, `inspect view` logs). **Every real LLM call — generation *and* judging —
+goes through the repo's own provider-agnostic layer** (`get_llm_client` /
+`build_client`), never Inspect's model providers. Inspect's task model is
+`mockllm/model`, so the harness needs no key for Inspect itself.
+
+```bash
+python evals/run_copy_eval.py                     # gate the active provider vs baseline
+python evals/run_copy_eval.py --provider claude   # gate a specific configured provider
+python evals/run_copy_eval.py --update-baseline   # (re)write this provider's baseline
+python evals/run_copy_eval.py --limit 6           # quick smoke test (fewer leads)
+python evals/run_copy_eval.py --table             # print the README comparison table
+```
+
+The provider's API key must be in the environment (e.g. `GROQ_API_KEY`).
+
+### Files
+
+| Path | What it is |
+|------|------------|
+| `run_copy_eval.py` | CLI runner: runs the Inspect task for one provider, aggregates, gates, renders the table. |
+| `copy_eval.py` | The Inspect task — dataset, generation solver, deterministic + judge scorers. |
+| `copy_checks.py` | Pure-Python deterministic checks (no LLM, no deps; unit-tested in `project/app/tests_copy_scorers.py`). |
+| `rubrics/copy.md` | The LLM-judge rubric — committed as a file, not buried in a prompt string. |
+| `pricing.toml` | Per-model reference rates for the est. cost column (runs no AI). |
+| `baselines/copy.json` | Per-provider quality baseline the gate protects. |
+| `results/copy-<provider>.json` | Full per-run aggregates (quality + latency + est. cost) feeding the table. |
+
+### LLM-agnostic, one provider per run
+
+The harness only ever calls the provider you configured — the active `[llm]
+provider` in `config.toml`, or an explicit `--provider` that must name an
+existing `[llm.<provider>]` block. It never fans out to providers you didn't
+configure. The judge is equally agnostic: it uses `config.toml`'s optional
+`[llm.judge]` provider if set (handy to avoid a model grading its own output),
+otherwise the generation provider. Nothing is hardcoded to any vendor.
+
+The provider **comparison table** is therefore assembled from *separate*
+single-provider runs — run once per provider you want to compare, then
+`--table` renders the Markdown from whatever `results/copy-*.json` artifacts
+exist.
+
+### What it scores
+
+Reuses the same `golden/leads.jsonl` (via the rules harness's `load_golden` /
+`build_lead`), dropping `unknown` leads (no copy is generated for those) — ~38
+leads. Each lead's ground-truth `expected_action` is the planned action and its
+`rationale` is the "why now", so copy quality is judged independently of any
+rules bug.
+
+- **Deterministic (pass/fail, free):** has a `Subject:` line; body word count in
+  band; no preamble/commentary; exactly one CTA-shaped sentence. Coarse by
+  design — they catch gross violations; the judge handles nuance.
+- **LLM judge (1–5 each, rubric in `rubrics/copy.md`):** references ≥2 concrete
+  lead facts; tone is a helpful peer, not salesy; the CTA matches the planned
+  `action_type`.
+
+### The regression gate
+
+Generation is non-deterministic (every run yields different emails), so the gate
+uses **tolerance bands** rather than exact match: a provider fails if a
+deterministic pass-rate drops more than 0.10 below its baseline, or a judge
+dimension drops more than 0.5 (on the 1–5 scale), or fewer than 80% of leads
+produced copy. Baselines are **per provider**; only quality is gated —
+latency/cost live in `results/` and the README table, and are reported, not
+gated. Lock in an intended change with `--provider <p> --update-baseline`.
+
+### Gating in CI
+
+`.github/workflows/copy-eval.yml` runs this as a **separate** job — nightly plus
+manual (`workflow_dispatch`), never on push/PR — because it makes real, paid LLM
+calls. Provider keys come from GitHub secrets; a regression fails the job.

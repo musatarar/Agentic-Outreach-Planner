@@ -26,3 +26,12 @@ model = "deepseek-chat"
 # Get a key at https://console.groq.com
 [llm.groq]
 model = "llama-3.3-70b-versatile"
+
+# Optional: pick a different configured provider to act as the LLM judge in the
+# copy quality eval (evals/run_copy_eval.py), so a model doesn't grade its own
+# output. The judge reuses that provider's [llm.<provider>] model. If this block
+# is omitted, the judge uses the active provider above. The judge is never
+# hardcoded to a vendor -- it always resolves through this file, exactly like
+# generation does.
+# [llm.judge]
+# provider = "claude"

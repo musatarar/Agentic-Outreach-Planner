@@ -1,0 +1,35 @@
+{
+  "provider": "groq",
+  "judge_provider": "groq",
+  "model": "llama-3.3-70b-versatile",
+  "generated_at": "2026-07-26T18:55:59+00:00",
+  "today": "2026-06-12",
+  "n": 38,
+  "n_valid": 38,
+  "n_generation_errors": 0,
+  "n_judge_parse_failures": 1,
+  "deterministic": {
+    "subject": 1.0,
+    "word_count": 1.0,
+    "no_preamble": 1.0,
+    "single_cta": 0.5526,
+    "overall": 0.8882
+  },
+  "judge": {
+    "concrete_facts": 4.0541,
+    "tone": 5.0,
+    "cta_match": 5.0,
+    "overall": 4.6847
+  },
+  "latency_s": {
+    "median": 1.866,
+    "p90": 12.4849,
+    "mean": 12.3305
+  },
+  "cost_est_usd": {
+    "per_email": 0.0,
+    "total": 0.0,
+    "input_per_1m": 0.0,
+    "output_per_1m": 0.0
+  }
+}
