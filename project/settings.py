@@ -41,6 +41,10 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUD
 if ANTHROPIC_API_KEY:
     os.environ.setdefault("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
 
+# Grounding verifier strictness for generated outreach copy (MUS-22):
+#   off | standard (default) | strict. See project/app/services/verify.py.
+COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
+
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
 # above for local/demo convenience; production should set these directly.

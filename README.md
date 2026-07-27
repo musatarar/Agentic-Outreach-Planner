@@ -19,7 +19,14 @@ of an account exec digging through HubSpot and Slack every morning.
 - **Safe default for the unknown.** Leads the rules can't classify are flagged
   `needs_human=True` and routed to a BD review queue instead of getting an
   auto-generated email.
-- **67 passing tests** across models, API, rule logic (LLM calls mocked), copy checks, and
+- **Grounds copy against the record.** Before a generated email can be sent, a
+  deterministic verifier (no LLM) checks every number, dollar figure, name, and date
+  against the `Lead`: inflated deal counts, invented book sizes, the wrong contact, or an
+  unauthorized discount all flip `needs_human=True` and land in the review queue with the
+  specific problem spelled out. It **fails closed** — a wrong number in a sales email is
+  more expensive than a delayed one — and strictness is configurable via `COPY_VERIFY_LEVEL`
+  (`off | standard | strict`). See [`services/verify.py`](project/app/services/verify.py).
+- **120 passing tests** across models, API, rule logic (LLM calls mocked), copy checks, and
   frontend — plus two eval harnesses that score classification accuracy and generated-copy
   quality against golden data (see [Evals](#evals)).
 
