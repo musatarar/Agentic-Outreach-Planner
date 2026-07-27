@@ -338,6 +338,75 @@ class ConfigTestEndpointTests(DRFAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertFalse(resp.data["ok"])
         self.assertEqual(resp.data["error_kind"], "rate_limit")
+
+    def test_candidate_body_tests_an_unsaved_key_not_the_saved_one(self):
+        # Nothing saved yet (fresh clone) -- a candidate body must still be
+        # testable, using the key from the request, not "no configuration".
+        with mock.patch.object(claude_mod.ClaudeClient, "complete", return_value="pong") as mocked:
+            resp = self.client.post(
+                "/api/llm/config/test/",
+                {
+                    "provider": "claude",
+                    "model": "model-a",
+                    "max_tokens": 500,
+                    "api_key": "sk-ant-unsaved-candidate",
+                },
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data["ok"])
+        self.assertEqual(resp.data["model_echo"], "model-a")
+        self.assertTrue(mocked.called)
+        # The candidate key was used to build a client, but never echoed back.
+        self.assertNotIn("sk-ant-unsaved-candidate", resp.content.decode())
+
+    def test_candidate_body_does_not_leak_previously_saved_key_for_a_different_provider(self):
+        # A saved Claude config exists, but the candidate body asks to test
+        # a *different* provider with no key of its own and no env var set --
+        # this must not fall back to Claude's saved key.
+        other_provider = LLMProvider.objects.create(
+            key="groq",
+            label="Groq",
+            api_key_url="https://console.groq.com/keys",
+            api_key_label="Groq API key",
+            api_key_prefix="gsk_",
+        )
+        other_model = LLMModel.objects.create(
+            provider=other_provider,
+            model_id="model-b",
+            label="Model B",
+            context_window=8_000,
+            default_max_tokens=500,
+            input_price_per_mtok_usd="0.10",
+            output_price_per_mtok_usd="0.10",
+        )
+        LLMConfiguration.load(provider=self.provider, model=self.model, max_tokens=500)
+        config_row = LLMConfiguration.objects.get(pk=1)
+        with mock.patch.dict(
+            os.environ, {"LLM_KEY_ENCRYPTION_KEY": Fernet.generate_key().decode()}
+        ):
+            config_row.encrypted_api_key = crypto.encrypt_key("claude-saved-key")
+        config_row.save()
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            resp = self.client.post(
+                "/api/llm/config/test/",
+                {"provider": other_provider.key, "model": other_model.model_id, "max_tokens": 500},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data["ok"])
+        self.assertEqual(resp.data["error_kind"], "auth")
+
+    def test_candidate_body_with_unknown_model_for_provider_returns_400(self):
+        resp = self.client.post(
+            "/api/llm/config/test/",
+            {"provider": "claude", "model": "does-not-exist", "max_tokens": 500},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertNotIn("nope", resp.content.decode())
 
 

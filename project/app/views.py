@@ -256,8 +256,19 @@ class LLMConfigView(APIView):
 
 
 class LLMConfigTestView(APIView):
-    """POST /api/llm/config/test/ — one minimal completion against the
-    currently saved configuration, to verify the key/model actually work."""
+    """POST /api/llm/config/test/ — one minimal completion to verify a
+    provider/model/key combination actually works.
+
+    Accepts an optional candidate body in the same shape as ``PUT
+    /api/llm/config/`` (``provider``, ``model``, ``max_tokens``, optional
+    ``api_key``) so a user can test a key *before* saving it. ``api_key``
+    omitted (not just blank) falls back to whatever key is currently
+    resolvable for that candidate provider (stored DB key if it's the active
+    provider, else that provider's env var) -- the same "omit = don't
+    change" semantics as PUT. A body with no ``provider`` at all falls back
+    to testing the already-saved configuration, preserving the previous
+    no-body behavior.
+    """
 
     authentication_classes = [LLMAdminBasicAuthentication]
     permission_classes = [IsAuthenticated]
@@ -267,20 +278,36 @@ class LLMConfigTestView(APIView):
     _TEST_MAX_TOKENS = 8
 
     def post(self, request, *args, **kwargs):
-        config = LLMConfiguration.objects.select_related("provider", "model").filter(pk=1).first()
-        if config is None:
-            return Response(
-                {
-                    "ok": False,
-                    "error_kind": "unknown_model",
-                    "message": "No LLM configuration saved yet.",
-                },
-                status=status.HTTP_200_OK,
-            )
+        candidate = request.data if isinstance(request.data, dict) else {}
 
-        provider = config.provider_id
-        model_id = config.model.model_id
-        api_key, _key_source = llm_config.resolve_active_key(provider)
+        if candidate.get("provider"):
+            serializer = LLMConfigurationSerializer(data=candidate)
+            serializer.is_valid(raise_exception=True)
+            validated = serializer.validated_data
+            provider = validated["provider"]
+            model = validated["model"]
+            candidate_key = validated.get("api_key")
+            if candidate_key:
+                api_key = candidate_key
+            else:
+                api_key, _key_source = llm_config.resolve_active_key(provider.key)
+        else:
+            config = (
+                LLMConfiguration.objects.select_related("provider", "model").filter(pk=1).first()
+            )
+            if config is None:
+                return Response(
+                    {
+                        "ok": False,
+                        "error_kind": "unknown_model",
+                        "message": "No LLM configuration saved yet.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            provider = config.provider
+            model = config.model
+            api_key, _key_source = llm_config.resolve_active_key(provider.key)
+
         if not api_key:
             return Response(
                 {
@@ -291,19 +318,19 @@ class LLMConfigTestView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        client_cls = LLM_PROVIDER_REGISTRY.get(provider)
+        client_cls = LLM_PROVIDER_REGISTRY.get(provider.key)
         if client_cls is None:
             return Response(
                 {
                     "ok": False,
                     "error_kind": "unknown_model",
-                    "message": f"Unknown provider '{provider}'.",
+                    "message": f"Unknown provider '{provider.key}'.",
                 },
                 status=status.HTTP_200_OK,
             )
 
         client = client_cls(
-            model=model_id, default_max_tokens=self._TEST_MAX_TOKENS, api_key=api_key
+            model=model.model_id, default_max_tokens=self._TEST_MAX_TOKENS, api_key=api_key
         )
         start = time.monotonic()
         try:
@@ -321,7 +348,7 @@ class LLMConfigTestView(APIView):
 
         latency_ms = int((time.monotonic() - start) * 1000)
         return Response(
-            {"ok": True, "latency_ms": latency_ms, "model_echo": model_id},
+            {"ok": True, "latency_ms": latency_ms, "model_echo": model.model_id},
             status=status.HTTP_200_OK,
         )
 
