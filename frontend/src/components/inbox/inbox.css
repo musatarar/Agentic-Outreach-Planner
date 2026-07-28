@@ -480,12 +480,19 @@
    Action bar
    ====================================================================== */
 
+/* The snooze and dismiss popovers are absolutely positioned SIBLINGS of the
+   action bar, not children, so this wrapper is what they anchor to. Positioning
+   .action-bar itself does nothing for them -- a sibling is not a containing
+   block -- and without an anchor here they resolve against the viewport, where
+   `bottom: 100%` parks them off-screen above the page. */
+.action-bar-anchor {
+  position: relative;
+}
+
 .action-bar {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  /* The snooze and dismiss popovers anchor to this. */
-  position: relative;
   padding-top: var(--space-4);
   border-top: var(--border-width-hair) solid var(--color-border-subtle);
 }

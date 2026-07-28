@@ -310,7 +310,11 @@ export function InboxPage() {
                 }
                 onDraftClick={() => setEditingId(current.id)}
                 actions={
-                  <>
+                  // The popovers are absolutely positioned siblings of the
+                  // action bar, so this wrapper -- not .action-bar -- is their
+                  // containing block. Without it they resolve against the
+                  // viewport and `bottom: 100%` puts them off-screen.
+                  <div className="action-bar-anchor">
                     <ActionBar
                       report={report}
                       // While an edit is live the dry-run report is the honest
@@ -341,7 +345,7 @@ export function InboxPage() {
                         onClose={() => setMode('browse')}
                       />
                     )}
-                  </>
+                  </div>
                 }
               />
             </>
