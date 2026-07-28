@@ -4,15 +4,48 @@ Kept in its own module: MUS-39 never edits ``tests_api.py`` (CONTRACT MUS-35
 section 8.2), so the two suites can be reviewed and merged independently.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
-from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.db import IntegrityError, connection, transaction
+from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
+from django.utils import timezone
 
-from project.app.models import DismissedOutreachKey, Lead, OutreachAction, OutreachEdit
+from project.app.models import (
+    DismissedOutreachKey,
+    Event,
+    Lead,
+    OutreachAction,
+    OutreachEdit,
+)
 from project.app.services import dedupe, queue_copy
 from project.app.services.outreach import plan_outreach
+
+try:  # pragma: no cover - the fallback disappears the moment MUS-37 merges
+    from project.app.tests_auth_utils import AuthenticatedAPITestCase
+except ImportError:
+    # MUS-37 owns tests_auth_utils.py; its name and API are frozen in CONTRACT
+    # section 8.2 precisely so MUS-39 can write against it before it lands.
+    # This local twin keeps the branch green standalone and is deleted by the
+    # import above the moment MUS-37 merges.
+    class AuthenticatedAPITestCase(TestCase):
+        """TestCase whose ``self.client`` is already signed in."""
+
+        TEST_EMAIL = "tester@example.com"
+
+        def setUp(self):
+            super().setUp()
+            self.user = get_user_model().objects.create(
+                username=self.TEST_EMAIL, email=self.TEST_EMAIL
+            )
+            self.user.set_unusable_password()
+            self.user.save()
+            self.client.force_login(self.user)
+
 
 # A well-shaped, grounded draft: passes both the shape gate (MUS-23) and the
 # grounding gate (MUS-22) so plan_outreach() leaves needs_human False.
@@ -359,8 +392,6 @@ class PlanOutreachDedupeTests(TestCase):
         generate.assert_not_called()
 
     def test_a_revoked_dismissal_no_longer_suppresses(self):
-        from django.utils import timezone
-
         lead = self._lead()
         self._plan()
         action = OutreachAction.objects.get()
@@ -396,3 +427,244 @@ class PlanOutreachDedupeTests(TestCase):
         action = OutreachAction.objects.get()
         self.assertNotIn("\r", action.suggested_copy)
         self.assertEqual(action.suggested_copy, GOOD_COPY)
+
+
+def make_event(lead, **overrides):
+    defaults = dict(lead=lead, type="login", timestamp=timezone.now(), meta={})
+    defaults.update(overrides)
+    return Event.objects.create(**defaults)
+
+
+class QueueListViewTests(AuthenticatedAPITestCase):
+    """GET /api/queue/ -- CONTRACT section 5.2."""
+
+    def test_requires_authentication(self):
+        self.client.logout()
+        resp = self.client.get(reverse("queue-list"))
+        # 401 once MUS-37's SessionAuthenticationWith401 is the default; 403
+        # from stock DRF SessionAuthentication until then. Never 200.
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_returns_only_pending_items(self):
+        lead = make_lead()
+        pending = make_action(lead)
+        for status_value in ("approved", "snoozed", "dismissed"):
+            make_action(
+                make_lead(f"lead_{status_value}"),
+                status=status_value,
+                status_changed_at=timezone.now(),
+            )
+
+        resp = self.client.get(reverse("queue-list"))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([item["id"] for item in resp.data["items"]], [pending.id])
+
+    def test_orders_by_priority_then_lead_id(self):
+        make_action(make_lead("lead_003"), priority=1)
+        make_action(make_lead("lead_001"), priority=2)
+        make_action(make_lead("lead_002"), priority=1)
+
+        resp = self.client.get(reverse("queue-list"))
+
+        self.assertEqual(
+            [item["lead"]["id"] for item in resp.data["items"]],
+            ["lead_002", "lead_003", "lead_001"],
+        )
+
+    def test_items_are_complete(self):
+        """Section 9.14 -- advancing a row must need zero network requests."""
+        lead = make_lead()
+        make_event(lead, type="quote_submitted")
+        action = make_action(lead)
+        action.rule_trace = {"version": 1, "today": "2026-06-12"}
+        action.verification = queue_copy.build_verification(
+            lead, action.suggested_copy, action.action_type
+        )
+        action.save()
+
+        item = self.client.get(reverse("queue-list")).data["items"][0]
+
+        self.assertEqual(item["rule_trace"]["version"], 1)
+        self.assertEqual(item["verification"]["copy"], item["effective_copy"])
+        self.assertTrue(item["effective_copy"])
+        self.assertEqual(item["action_label"], "Nudge usage / encourage next step")
+        self.assertEqual(item["lead"]["recent_events"][0]["summary"], "Quote submitted")
+        self.assertFalse(item["is_edited"])
+        self.assertEqual(item["edited_copy"], "")  # "" never null -- section 9.11
+        self.assertTrue(item["can_approve"])
+        self.assertEqual(item["undo"], {"available": False, "expires_at": None})
+        self.assertEqual(item["snooze"], {"until": None, "trigger": "", "activity_after": None})
+
+    def test_verification_always_describes_effective_copy(self):
+        """Section 9.2 -- spans computed against one string, rendered over another."""
+        action = make_action()
+        action.edited_copy = "Subject: Different\n\nHi.\n"
+        action.save()
+
+        item = self.client.get(reverse("queue-list")).data["items"][0]
+
+        self.assertEqual(item["effective_copy"], action.edited_copy)
+        self.assertEqual(item["verification"]["copy"], action.edited_copy)
+        self.assertTrue(item["is_edited"])
+
+    def test_recent_events_are_newest_first_and_capped_at_five(self):
+        lead = make_lead()
+        base = timezone.now()
+        for offset in range(7):
+            make_event(lead, timestamp=base - timedelta(hours=offset))
+        make_action(lead)
+
+        events = self.client.get(reverse("queue-list")).data["items"][0]["lead"]["recent_events"]
+
+        self.assertEqual(len(events), 5)
+        self.assertEqual(events, sorted(events, key=lambda e: e["timestamp"], reverse=True))
+
+    def test_counts_drive_the_progress_header(self):
+        make_action(make_lead("lead_001"))
+        make_action(make_lead("lead_002"))
+        make_action(
+            make_lead("lead_003"),
+            status=OutreachAction.STATUS_APPROVED,
+            status_changed_at=timezone.now(),
+        )
+        make_action(
+            make_lead("lead_004"),
+            status=OutreachAction.STATUS_DISMISSED,
+            status_changed_at=timezone.now(),
+        )
+
+        counts = self.client.get(reverse("queue-list")).data["counts"]
+
+        self.assertEqual(counts["remaining"], 2)
+        self.assertEqual(counts["approved_today"], 1)
+        self.assertEqual(counts["dismissed_today"], 1)
+        self.assertEqual(counts["snoozed_today"], 0)
+        self.assertEqual(counts["done_today"], 2)
+        self.assertEqual(counts["total_today"], 4)
+
+    def test_yesterdays_decisions_do_not_count_toward_today(self):
+        make_action(
+            make_lead("lead_old"),
+            status=OutreachAction.STATUS_APPROVED,
+            status_changed_at=timezone.now() - timedelta(days=2),
+        )
+
+        counts = self.client.get(reverse("queue-list")).data["counts"]
+
+        self.assertEqual(counts["approved_today"], 0)
+        self.assertEqual(counts["total_today"], 0)
+
+    def _make_actions(self, count):
+        start = OutreachAction.objects.count()
+        for index in range(start, start + count):
+            lead = make_lead(f"lead_{index:04d}")
+            make_event(lead)
+            make_event(lead, type="quote_created")
+            make_action(lead)
+
+    def test_queue_query_count_is_constant(self):
+        self._make_actions(3)
+        with CaptureQueriesContext(connection) as small:
+            self.client.get("/api/queue/")
+        self._make_actions(297)
+        with CaptureQueriesContext(connection) as large:
+            self.client.get("/api/queue/")
+        self.assertEqual(len(small), len(large))
+        self.assertLessEqual(len(large), 8)  # absolute ceiling
+
+
+@override_settings(TRIAGE_TIMEZONE="America/Denver")
+class QueueTodayTests(AuthenticatedAPITestCase):
+    """Section 9.5 -- the server decides the day boundary, not the browser."""
+
+    def test_date_is_computed_in_the_triage_timezone(self):
+        frozen = datetime(2026, 7, 29, 4, 0, tzinfo=dt_timezone.utc)  # 22:00 on the 28th
+        make_action(
+            make_lead(),
+            status=OutreachAction.STATUS_APPROVED,
+            status_changed_at=datetime(2026, 7, 29, 2, 0, tzinfo=dt_timezone.utc),
+        )
+
+        with patch("django.utils.timezone.now", return_value=frozen):
+            resp = self.client.get(reverse("queue-list"))
+
+        self.assertEqual(resp.data["date"], "2026-07-28")
+        self.assertEqual(resp.data["timezone"], "America/Denver")
+        # 02:00 UTC on the 29th is 20:00 local on the 28th -- same working day.
+        self.assertEqual(resp.data["counts"]["approved_today"], 1)
+
+
+class QueueDetailViewTests(AuthenticatedAPITestCase):
+    def test_returns_one_item(self):
+        action = make_action()
+        resp = self.client.get(reverse("queue-detail", args=[action.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], action.id)
+
+    def test_unknown_id_is_a_contract_shaped_404(self):
+        resp = self.client.get(reverse("queue-detail", args=[9999]))
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.data["code"], "not_found")
+        self.assertTrue(resp.data["detail"])
+
+    def test_returns_items_in_any_status(self):
+        action = make_action(status=OutreachAction.STATUS_DISMISSED)
+        resp = self.client.get(reverse("queue-detail", args=[action.id]))
+        self.assertEqual(resp.data["status"], "dismissed")
+
+
+class QueueDoneViewTests(AuthenticatedAPITestCase):
+    def _decided(self, lead_id, status_value, minutes_ago, **overrides):
+        return make_action(
+            make_lead(lead_id),
+            status=status_value,
+            status_changed_at=timezone.now() - timedelta(minutes=minutes_ago),
+            **overrides,
+        )
+
+    def test_lists_todays_decisions_newest_first(self):
+        first = self._decided("lead_001", OutreachAction.STATUS_APPROVED, 30)
+        last = self._decided("lead_002", OutreachAction.STATUS_DISMISSED, 5)
+        make_action(make_lead("lead_003"))  # still pending -> not in /done
+
+        resp = self.client.get(reverse("queue-done"))
+
+        self.assertEqual([item["id"] for item in resp.data["items"]], [last.id, first.id])
+        self.assertEqual(resp.data["summary"]["total"], 2)
+        self.assertEqual(resp.data["summary"]["approved"], 1)
+        self.assertEqual(resp.data["summary"]["dismissed"], 1)
+
+    def test_elapsed_and_pipeline_value(self):
+        self._decided("lead_001", OutreachAction.STATUS_APPROVED, 20)
+        self._decided("lead_002", OutreachAction.STATUS_APPROVED, 5)
+        self._decided("lead_003", OutreachAction.STATUS_DISMISSED, 1)
+
+        summary = self.client.get(reverse("queue-done")).data["summary"]
+
+        # Approved items only: a dismissed lead is not pipeline.
+        self.assertEqual(summary["pipeline_value_usd"], 2_000_000)
+        self.assertEqual(summary["elapsed_seconds"], 19 * 60)
+        self.assertIsNotNone(summary["first_action_at"])
+        self.assertIsNotNone(summary["last_action_at"])
+
+    def test_elapsed_is_null_below_two_items(self):
+        self._decided("lead_001", OutreachAction.STATUS_APPROVED, 5)
+        summary = self.client.get(reverse("queue-done")).data["summary"]
+        self.assertIsNone(summary["elapsed_seconds"])
+
+    def test_queue_cleared_needs_an_empty_queue_and_some_work(self):
+        summary = self.client.get(reverse("queue-done")).data["summary"]
+        # Nothing done yet: not "cleared", however empty the queue is.
+        self.assertFalse(summary["queue_cleared"])
+        self.assertEqual(summary["total"], 0)
+
+        self._decided("lead_001", OutreachAction.STATUS_APPROVED, 5)
+        self.assertTrue(self.client.get(reverse("queue-done")).data["summary"]["queue_cleared"])
+
+        make_action(make_lead("lead_002"))  # one still pending
+        self.assertFalse(self.client.get(reverse("queue-done")).data["summary"]["queue_cleared"])
+
+    def test_requires_authentication(self):
+        self.client.logout()
+        self.assertIn(self.client.get(reverse("queue-done")).status_code, (401, 403))
