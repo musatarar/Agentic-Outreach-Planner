@@ -331,6 +331,135 @@
   color: var(--color-text-subtle);
 }
 
+/* ======================================================================
+   Rule trace — the machine's arithmetic, one line per condition.
+   Mono throughout, and the strings come from the server verbatim.
+   ====================================================================== */
+
+.trace {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-snug);
+  overflow-x: auto;
+}
+
+/* Failed conditions recede so the shape of the reasoning is legible before a
+   single line is read; the ones that fired carry full text colour. */
+.trace__line {
+  color: var(--color-text-subtle);
+  white-space: pre;
+  padding: 1px 0;
+}
+
+.trace__line--passed { color: var(--color-text); }
+
+.trace__line--depth-1 { padding-left: var(--space-4); }
+
+.trace__rule { margin-top: var(--space-2); }
+
+.trace__stale { color: var(--color-warning); }
+
+.trace__rejected { margin-top: var(--space-2); }
+
+.trace__rejected-summary {
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+  cursor: pointer;
+}
+
+.trace__rejected-rule { margin-top: var(--space-2); }
+
+/* ======================================================================
+   Claim underlines — the highest-trust element in the design.
+   Reserved for claims inside generated copy. Never a fill, never on chrome,
+   never anywhere but inside .draft.
+   ====================================================================== */
+
+.claim {
+  text-decoration-line: underline;
+  text-decoration-thickness: var(--underline-thickness);
+  text-underline-offset: var(--underline-offset);
+  /* Underlines must survive a line wrap intact rather than being clipped by
+     the descenders of the line below. */
+  text-decoration-skip-ink: none;
+}
+
+.claim--verified {
+  text-decoration-color: var(--color-verified);
+  text-decoration-style: var(--underline-style-verified);
+}
+
+.claim--unverified {
+  text-decoration-color: var(--color-unverified);
+  text-decoration-style: var(--underline-style-unverified);
+}
+
+/* ======================================================================
+   Action bar
+   ====================================================================== */
+
+.action-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: var(--border-width-hair) solid var(--color-border-subtle);
+}
+
+.action-bar__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* `4 of 4 claims verified`, server-rendered and printed verbatim. Mono,
+   because it is a count. */
+.action-bar__summary-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.action-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.action-bar__blocked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-warning-bg);
+  border: var(--border-width-hair) solid var(--color-p2-border);
+  border-radius: var(--radius-md);
+}
+
+.action-bar__blocked-headline {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-warning);
+  line-height: var(--leading-snug);
+}
+
+.action-bar__blocked-detail {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: var(--leading-normal);
+}
+
+/* The quoted claim is the bridge back to the red underline a few lines above,
+   so it is set in the draft's own voice rather than in chrome sans. */
+.action-bar__blocked-quote {
+  font-family: var(--font-serif);
+  color: var(--color-text);
+  margin-right: var(--space-2);
+}
+
 .inbox-status {
   padding: var(--space-6) 0;
   font-size: var(--text-sm);
