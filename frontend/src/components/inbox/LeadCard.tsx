@@ -32,6 +32,8 @@ export interface LeadCardProps {
   total: number;
   /** The draft block. Swapped for the editor while editing, in place. */
   draft?: ReactNode;
+  /** Click-to-edit. The keyboard path is `E` and the Edit button, not this. */
+  onDraftClick?: () => void;
   /** Verification summary and actions. */
   actions?: ReactNode;
 }
@@ -52,6 +54,7 @@ export function LeadCard({
   position,
   total,
   draft,
+  onDraftClick,
   actions,
 }: LeadCardProps) {
   const { lead } = item;
@@ -96,7 +99,14 @@ export function LeadCard({
 
           <div className="inbox-section">
             <div className="inbox-section__label">Draft</div>
-            {draft ?? <VerifiedDraft report={report} />}
+            {draft ?? (
+              // A mouse affordance only. Giving this a button role would make a
+              // screen reader announce the entire email as one control label;
+              // `E` and the Edit button are the accessible ways in.
+              <div className="draft-open" onClick={onDraftClick}>
+                <VerifiedDraft report={report} />
+              </div>
+            )}
           </div>
 
           {actions}
