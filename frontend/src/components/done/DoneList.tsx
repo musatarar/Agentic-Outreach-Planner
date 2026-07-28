@@ -1,4 +1,5 @@
 import type { QueueItem } from '../../api/types';
+import type { RowUndo } from './DoneRow';
 import { DoneRow } from './DoneRow';
 import { dayKey, formatDayLabel } from './format';
 
@@ -6,6 +7,9 @@ export interface DoneListProps {
   /** Server order — `status_changed_at DESC`. Never re-sorted here. */
   items: QueueItem[];
   timeZone: string;
+  onUndo: (item: QueueItem) => void;
+  /** Keyed by `QueueItem.id`; a missing entry is the idle state. */
+  undoState: Record<number, RowUndo>;
 }
 
 interface DayBucket {
@@ -41,7 +45,7 @@ function groupByDay(items: QueueItem[], timeZone: string): DayBucket[] {
  * already in the page header would be noise. The grouping is here so that the
  * day the range widens, the headings appear with no further work.
  */
-export function DoneList({ items, timeZone }: DoneListProps) {
+export function DoneList({ items, timeZone, onUndo, undoState }: DoneListProps) {
   const days = groupByDay(items, timeZone);
   const showHeadings = days.length > 1;
 
@@ -57,7 +61,13 @@ export function DoneList({ items, timeZone }: DoneListProps) {
           )}
           <ul className="done-list">
             {day.items.map((item) => (
-              <DoneRow key={item.id} item={item} timeZone={timeZone} />
+              <DoneRow
+                key={item.id}
+                item={item}
+                timeZone={timeZone}
+                onUndo={onUndo}
+                undoState={undoState[item.id]}
+              />
             ))}
           </ul>
         </section>

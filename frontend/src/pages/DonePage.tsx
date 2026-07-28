@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { errorMessage } from '../api/client';
-import { fetchDone } from '../api/endpoints';
-import type { DoneResponse } from '../api/types';
+import { fetchDone, undoQueueItem } from '../api/endpoints';
+import type { DoneResponse, QueueItem } from '../api/types';
+import { isUndoWindowExpired } from '../components/done/apiError';
 import { DoneList } from '../components/done/DoneList';
+import type { RowUndo } from '../components/done/DoneRow';
 import { formatDayLabel } from '../components/done/format';
 import { PageHeader } from '../components/PageHeader';
 import '../components/done/done.css';
@@ -35,33 +38,79 @@ function SummaryStrip({ data }: { data: DoneResponse }) {
   );
 }
 
+interface UndoneNotice {
+  verb: string;
+  contact: string;
+}
+
 /**
  * `/done` — everything actioned today, newest first.
  *
  * This screen exists so that pressing `A` on the inbox is cheap: a visible,
  * reversible record is what lets someone move fast. It is also the only route
  * back from a dismiss, which is otherwise permanent by design.
+ *
+ * No keyboard shortcuts are bound here. CONTRACT §9.13 requires any keyboard
+ * handling to go through MUS-40's `hooks/useHotkeys.ts` rather than a local
+ * `keydown` listener, and that hook does not exist on this branch. An undo
+ * hotkey is a one-line addition to this page once MUS-40 has merged.
  */
 export function DonePage() {
   const [data, setData] = useState<DoneResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [undoState, setUndoState] = useState<Record<number, RowUndo>>({});
+  const [undone, setUndone] = useState<UndoneNotice | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       setData(await fetchDone());
       setError(null);
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const handleUndo = useCallback(
+    async (item: QueueItem) => {
+      const verb = item.status === 'snoozed' ? 'Un-snoozed' : 'Undone';
+      setUndoState((prev) => ({ ...prev, [item.id]: { phase: 'sending' } }));
+      try {
+        // Sent unconditionally. CONTRACT §9.6: the undo window is the server's
+        // call, so the request is never gated on the browser's clock.
+        await undoQueueItem(item.id);
+        setUndone({ verb, contact: item.lead.contact_name });
+        setUndoState((prev) => {
+          const next = { ...prev };
+          delete next[item.id];
+          return next;
+        });
+        // Refetch rather than splice. `summary.queue_cleared` and the counts
+        // are server-computed and must not be inferred from array lengths
+        // (CONTRACT §5.2) — an undo puts an item back in the queue, which has
+        // to switch the cleared-queue state back off.
+        await load(true);
+      } catch (caught) {
+        // The row stays on /done either way; only the control goes away.
+        const phase = isUndoWindowExpired(caught) ? 'expired' : 'failed';
+        setUndoState((prev) => ({
+          ...prev,
+          [item.id]:
+            phase === 'expired'
+              ? { phase }
+              : { phase, message: errorMessage(caught) },
+        }));
+      }
+    },
+    [load],
+  );
 
   return (
     <>
@@ -90,8 +139,32 @@ export function DonePage() {
           </div>
         )}
 
+        {undone && (
+          <div className="done-banner" role="status">
+            <span className="done-banner__text">
+              <strong>{undone.verb}</strong> — {undone.contact} is back in your inbox,
+              at the position they were in.
+            </span>
+            <Link className="done-banner__link" to="/inbox">
+              Open inbox
+            </Link>
+            <button
+              type="button"
+              className="secondary done-banner__dismiss"
+              onClick={() => setUndone(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {data && data.items.length > 0 && (
-          <DoneList items={data.items} timeZone={data.timezone} />
+          <DoneList
+            items={data.items}
+            timeZone={data.timezone}
+            onUndo={(item) => void handleUndo(item)}
+            undoState={undoState}
+          />
         )}
 
         {/* Replaced wholesale by the two real empty states in mus-41-c. */}
