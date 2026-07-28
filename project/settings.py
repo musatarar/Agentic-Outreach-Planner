@@ -188,4 +188,10 @@ LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECOND
 
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "project.app.exceptions.contract_exception_handler",
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_request_ip": LOGIN_RATE_LIMIT_IP,
+        "auth_consume_ip": "60/hour",
+        "queue_verify": "120/min",
+    },
 }
