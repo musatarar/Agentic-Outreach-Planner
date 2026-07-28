@@ -38,6 +38,30 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: mypy project/app/services/
 
+  frontend:
+    name: Frontend (typecheck, tests, bundle freshness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      # The React bundle is committed and served by Django with no Node in the
+      # image, so a stale bundle means the app serves old code while the new
+      # source sits in the repo looking merged. Nothing else catches that.
+      - name: Fail if the committed bundle is stale
+        run: git diff --exit-code -- project/app/static/frontend/
+
   test:
     name: Test (py${{ matrix.python-version }}, ${{ matrix.database }})
     runs-on: ubuntu-latest
