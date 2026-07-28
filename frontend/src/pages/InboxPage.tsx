@@ -1,5 +1,8 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { errorMessage } from '../api/client';
+import { approveQueueItem } from '../api/endpoints';
 import { useQueue } from '../hooks/useQueue';
+import { ActionBar } from '../components/inbox/ActionBar';
 import { InboxHeader } from '../components/inbox/InboxHeader';
 import { LeadCard } from '../components/inbox/LeadCard';
 import { QueueRail } from '../components/inbox/QueueRail';
@@ -19,10 +22,31 @@ import '../components/inbox/inbox.css';
 export function InboxPage() {
   const queue = useQueue();
   const { current, items, index, counts, date } = queue;
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = 'Triage inbox';
   }, []);
+
+  const { settle } = queue;
+
+  const approve = useCallback(async () => {
+    if (!current || busy) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const updated = await approveQueueItem(current.id);
+      settle(updated, 'approved');
+    } catch (error) {
+      // The server gates approval independently and answers 409
+      // `unverified_claims` even when the button looked enabled (§4.6). Surface
+      // it rather than pretending the item moved.
+      setActionError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, current, settle]);
 
   return (
     <div className="inbox">
@@ -48,12 +72,31 @@ export function InboxPage() {
           )}
 
           {current && (
-            <LeadCard
-              key={current.id}
-              item={current}
-              position={index + 1}
-              total={items.length}
-            />
+            <>
+              {actionError && (
+                <div className="inbox__center">
+                  <p className="inbox-error" role="alert">
+                    {actionError}
+                  </p>
+                </div>
+              )}
+              <LeadCard
+                key={current.id}
+                item={current}
+                report={current.verification}
+                queueDate={date}
+                position={index + 1}
+                total={items.length}
+                actions={
+                  <ActionBar
+                    report={current.verification}
+                    canApprove={current.can_approve}
+                    approving={busy}
+                    onApprove={approve}
+                  />
+                }
+              />
+            </>
           )}
 
           {queue.cleared && (
