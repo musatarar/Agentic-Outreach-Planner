@@ -185,3 +185,7 @@ LOGIN_LINK_BASE_URL = os.environ.get("LOGIN_LINK_BASE_URL", "http://127.0.0.1:80
 LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
 LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
 LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
+
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "project.app.exceptions.contract_exception_handler",
+}
