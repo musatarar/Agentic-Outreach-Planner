@@ -1313,7 +1313,16 @@ in the same `transaction.atomic()` block.
 Request `{}`. Reverses the last transition back to `pending`.
 
 - Allowed from `approved`, `snoozed`, `dismissed`.
-- Only within `TRIAGE_UNDO_WINDOW_SECONDS` (300) of `status_changed_at`.
+- **The window applies only to `approved` and `dismissed`.** Undo from `snoozed` is always permitted,
+  with `undo.available: true` and `undo.expires_at: null` — meaning *no deadline*, not *expired*.
+
+  An earlier revision capped all three at `TRIAGE_UNDO_WINDOW_SECONDS`. That made MUS-41's required
+  un-snooze control dead on arrival: `/done` lists everything actioned today, so nearly every snoozed
+  row it shows is already past a 300-second window. The undo window exists to protect against
+  fat-fingering something *irreversible* — an approve that put text on a clipboard, a dismiss that
+  suppresses a recommendation permanently. Reversing a deferral is not undoing a mistake; it is a new
+  decision ("bring this back now"), and time-boxing it has no safety rationale.
+- For `approved` and `dismissed`: only within `TRIAGE_UNDO_WINDOW_SECONDS` (300) of `status_changed_at`.
 - When undoing a **dismiss**, the same transaction sets `DismissedOutreachKey.revoked_at = now()`
   for that `dedupe_key`. See §9.7 — this is the single highest-value cross-boundary bug available.
 - Clears `snooze_until`, `snooze_trigger`, `snooze_activity_after`, `dismiss_reason`. Does **not**
