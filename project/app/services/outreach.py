@@ -437,8 +437,9 @@ Write the email now. Requirements:
 def generate_copy(lead, action_type, reason):
     """Generate a personalized outreach email via the configured LLM provider.
 
-    The provider (Claude, ChatGPT, DeepSeek, Groq, ...) is selected in
-    ``config.toml``; see :mod:`project.app.services.llm`. Returns the text.
+    The provider (Claude, ChatGPT, DeepSeek, Groq, ...) is selected via the
+    database-backed ``LLMConfiguration``; see :mod:`project.app.services.llm`.
+    Returns the text.
     """
     prompt = _build_copy_prompt(lead, action_type, reason)
     return get_llm_client().complete(prompt, max_tokens=MAX_COPY_TOKENS)

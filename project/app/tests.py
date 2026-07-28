@@ -7,7 +7,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils.timezone import is_aware
 
-from project.app.models import Event, Lead, OutreachAction
+from project.app.models import Event, Lead, LLMModel, LLMProvider, OutreachAction
 from project.app.services.outreach import plan_outreach
 
 
@@ -65,6 +65,32 @@ class IngestDataCommandTests(TestCase):
         self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
         self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
         self.assertEqual(Lead.objects.get(id="lead_001").events.count(), 8)
+
+
+class SeedLLMCatalogCommandTests(TestCase):
+    """Catalog seed command (MUS-32) loads all 4 providers and is idempotent."""
+
+    def test_seeds_all_providers_and_models(self):
+        call_command("seed_llm_catalog")
+
+        self.assertEqual(
+            set(LLMProvider.objects.values_list("key", flat=True)),
+            {"claude", "chatgpt", "deepseek", "groq"},
+        )
+        self.assertGreater(LLMModel.objects.filter(provider_id="claude").count(), 0)
+        self.assertGreater(LLMModel.objects.filter(provider_id="groq").count(), 0)
+
+        claude = LLMProvider.objects.get(key="claude")
+        self.assertEqual(claude.api_key_url, "https://console.anthropic.com/settings/keys")
+
+    def test_idempotent_updates_in_place_without_duplicates(self):
+        call_command("seed_llm_catalog")
+        first_count = LLMModel.objects.count()
+
+        call_command("seed_llm_catalog")
+
+        self.assertEqual(LLMProvider.objects.count(), 4)
+        self.assertEqual(LLMModel.objects.count(), first_count)
 
 
 class ModelBasicsTests(TestCase):

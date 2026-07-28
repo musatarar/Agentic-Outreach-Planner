@@ -10,7 +10,7 @@ checks + LLM-judge scores, writes a per-provider result artifact, and fails
 Key properties (see evals/README.md and the plan):
 
 * **LLM-agnostic, single provider per run.** Generation and judging both flow
-  through the repo's ``config.toml`` provider layer. Nothing is hardcoded, and a
+  through the repo's database-backed provider layer. Nothing is hardcoded, and a
   run only ever calls the provider you configured (active, or ``--provider``).
 * **The comparison table is assembled from separate runs.** Run once per
   provider; ``--table`` renders the Markdown table from whatever
@@ -400,7 +400,9 @@ def _tbl_pct(v):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="LLM-judge copy quality eval + gate.")
-    parser.add_argument("--provider", help="Generation provider (default: active in config.toml).")
+    parser.add_argument(
+        "--provider", help="Generation provider (default: the active database-configured one)."
+    )
     parser.add_argument(
         "--judge-provider", help="Judge provider (default: [llm.judge] or generation)."
     )

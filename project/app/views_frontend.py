@@ -23,3 +23,9 @@ def reports(request):
 def next_actions(request):
     """Render the BD Dashboard (manual review queue)."""
     return render(request, "app/next_actions.html")
+
+
+@ensure_csrf_cookie
+def settings(request):
+    """Render the Settings page (LLM provider/model/API key selection)."""
+    return render(request, "app/settings.html")

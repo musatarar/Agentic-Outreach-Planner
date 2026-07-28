@@ -10,5 +10,5 @@ class ChatGPTClient(OpenAICompatibleClient):
     api_key_env = "OPENAI_API_KEY"
     provider_label = "ChatGPT"
 
-    def __init__(self, model=DEFAULT_MODEL, default_max_tokens=500):
-        super().__init__(model=model, default_max_tokens=default_max_tokens)
+    def __init__(self, model=DEFAULT_MODEL, default_max_tokens=500, api_key=None):
+        super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)

@@ -380,8 +380,8 @@ class DetermineActionTests(unittest.TestCase):
 #
 # generate_copy is now provider-agnostic: it builds the prompt and delegates to
 # the configured LLM client. We mock get_llm_client so these tests stay
-# independent of which provider config.toml selects. Provider adapters
-# (Claude / OpenAI-compatible) are tested in tests_llm.py.
+# independent of which provider the database-backed LLMConfiguration selects.
+# Provider adapters (Claude / OpenAI-compatible) are tested in tests_llm.py.
 
 
 class GenerateCopyTests(unittest.TestCase):
