@@ -29,3 +29,27 @@ def next_actions(request):
 def settings(request):
     """Render the Settings page (LLM provider/model/API key selection)."""
     return render(request, "app/settings.html")
+
+
+@ensure_csrf_cookie
+def signin(request):
+    """Render the sign-in page (magic-link request). Public: no data on it."""
+    return render(request, "app/signin.html")
+
+
+@ensure_csrf_cookie
+def auth_consume(request):
+    """Render the token-consumption page. Public; the token is in the query string."""
+    return render(request, "app/auth_consume.html")
+
+
+@ensure_csrf_cookie
+def inbox(request):
+    """Render the triage inbox shell. Access control is the client-side guard."""
+    return render(request, "app/inbox.html")
+
+
+@ensure_csrf_cookie
+def done(request):
+    """Render the 'done today' shell. Access control is the client-side guard."""
+    return render(request, "app/done.html")
