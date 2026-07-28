@@ -128,6 +128,14 @@ _UNCOUNTED_KINDS = frozenset(
     {"goal_reference", "future_date", "unauthorized_offer", "omission", "unsupported_year"}
 )
 
+# Claim kinds that block approval on their own, whatever the "N of M" ratio says.
+# The summary ratio and the approve gate answer two different questions: "how
+# much of this copy did we grade against the record?" and "may a reviewer send
+# it?". An unauthorized commercial promise is the single most consequential
+# thing generated copy can contain — `plan_outreach()` already fails closed on
+# it via `needs_human=True`, and the approve gate must agree.
+BLOCKING_KINDS = frozenset({"unauthorized_offer"})
+
 VERIFICATION_SCHEMA_VERSION = 1
 
 _GOAL_REFERENCE_MESSAGE = "Framed as a target, not a claim about the record."
@@ -860,6 +868,12 @@ def verify_spans(
     (§9.1(c)) and echoed back: offsets index into ``report["copy"]``, never into
     whatever the client currently has in its textarea (§9.2).
 
+    ``can_approve`` has **two independent causes** and is false if either holds:
+    a contradicted claim about the record, or a claim of a
+    :data:`BLOCKING_KINDS` kind. The two compose — neither overrides the other —
+    so a reviewer's warning state may have to point at an offer span rather than
+    at a mismatched number.
+
     Pure: no database, no LLM, duck-typed on the same lead attributes.
     """
     today = today or datetime.date.today()
@@ -877,6 +891,9 @@ def verify_spans(
     verified_count = sum(1 for c in counted if c.verified is True)
     unverified_count = sum(1 for c in counted if c.verified is False)
     checked_count = verified_count + unverified_count
+    # A prohibition stays out of the ratio (it is not a claim about the record)
+    # but still blocks approval on its own.
+    blocked = any(c.kind in BLOCKING_KINDS for c in ordered)
     return {
         "version": VERIFICATION_SCHEMA_VERSION,
         "level": level,
@@ -888,7 +905,7 @@ def verify_spans(
         "unverified_count": unverified_count,
         "checked_count": checked_count,
         "summary": f"{verified_count} of {checked_count} claims verified",
-        "can_approve": unverified_count == 0,
+        "can_approve": unverified_count == 0 and not blocked,
         "claims": [c.to_dict() for c in ordered],
     }
 

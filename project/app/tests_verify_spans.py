@@ -506,7 +506,11 @@ class ReportEnvelopeTests(unittest.TestCase):
                     report["summary"],
                     f"{report['verified_count']} of {report['checked_count']} claims verified",
                 )
-                self.assertEqual(report["can_approve"], report["unverified_count"] == 0)
+                blocked = any(c["kind"] in verify.BLOCKING_KINDS for c in report["claims"])
+                self.assertEqual(
+                    report["can_approve"],
+                    report["unverified_count"] == 0 and not blocked,
+                )
 
     def test_every_span_slices_back_to_its_own_text(self):
         for name, lead, copy, action_type, level in CASES:
@@ -573,6 +577,72 @@ class ReportEnvelopeTests(unittest.TestCase):
         self.assertEqual(kinds, {"goal_reference", "future_date", "unauthorized_offer"})
         self.assertTrue(all(c["counts_toward_summary"] is False for c in report["claims"]))
         self.assertEqual(report["summary"], "0 of 0 claims verified")
+
+
+# ---------------------------------------------------------------------------
+# §4.4 — can_approve has two independent causes
+# ---------------------------------------------------------------------------
+
+
+class ApproveGateTests(unittest.TestCase):
+    """The summary ratio and the approve gate answer different questions.
+
+    "How much of this copy did we grade against the record?" is not "may a
+    reviewer send it?". An unauthorized commercial promise is not a claim about
+    the record — it must stay out of the ratio — but it is the single most
+    consequential thing generated copy can contain, and ``plan_outreach()``
+    already fails closed on it. The gate must agree.
+    """
+
+    def _report(self, lead, copy, action_type, level=None):
+        return verify.verify_spans(lead, copy, action_type, **_kwargs(level))
+
+    def test_an_offer_blocks_approval_while_every_graded_claim_still_passes(self):
+        lead = _lead(deals_closed=4, quotes_submitted=3, estimated_book_size_usd=5_000_000)
+        copy = (
+            "Hi Priya,\nYour 4 closed deals and 3 quotes submitted against a "
+            "$5,000,000 book are great — here is 20% off your renewal."
+        )
+        report = self._report(lead, copy, actions.REENGAGE_DORMANT)
+
+        # Everything the verifier actually graded is grounded...
+        self.assertEqual(report["verified_count"], 4)
+        self.assertEqual(report["unverified_count"], 0)
+        self.assertEqual(report["checked_count"], 4)
+        self.assertEqual(report["summary"], "4 of 4 claims verified")
+
+        # ...and the offer is excluded from BOTH counts, exactly as §4.3 pins.
+        offer = next(c for c in report["claims"] if c["kind"] == "unauthorized_offer")
+        self.assertFalse(offer["counts_toward_summary"])
+        self.assertIs(offer["verified"], False)
+        self.assertEqual(report["copy"][offer["start"] : offer["end"]], "20% off")
+
+        # ...yet approval is blocked. This pairing is the surprising part.
+        self.assertFalse(report["can_approve"])
+
+    def test_the_two_causes_compose_rather_than_override(self):
+        lead = _lead(deals_closed=4)
+        copy = "Hi Priya,\nYour 47 closed deals are great — here is 20% off."
+        report = self._report(lead, copy, actions.REENGAGE_DORMANT)
+        self.assertEqual(report["unverified_count"], 1)  # the deal count
+        self.assertTrue(any(c["kind"] == "unauthorized_offer" for c in report["claims"]))
+        self.assertFalse(report["can_approve"])
+
+    def test_an_authorized_offer_does_not_block(self):
+        # Volume pricing is exactly what a power-user reward email is for, so no
+        # unauthorized_offer claim is recorded at all.
+        lead = _lead()
+        copy = "Hi Priya,\nLet's talk volume pricing for Summit Risk Advisors."
+        report = self._report(lead, copy, actions.POWER_USER_REWARD)
+        self.assertFalse(any(c["kind"] == "unauthorized_offer" for c in report["claims"]))
+        self.assertTrue(report["can_approve"])
+
+    def test_blocking_kinds_is_a_strict_subset_of_the_uncounted_kinds(self):
+        # A blocking kind that also counted would be double-punished: once in
+        # the ratio and once in the gate.
+        self.assertTrue(verify.BLOCKING_KINDS)
+        for kind in verify.BLOCKING_KINDS:
+            self.assertIn(kind, verify._UNCOUNTED_KINDS)
 
 
 # ---------------------------------------------------------------------------
@@ -706,7 +776,12 @@ class WorkedExampleTests(unittest.TestCase):
         self.assertEqual(report["unverified_count"], 2)
         self.assertEqual(report["checked_count"], 4)
         self.assertEqual(report["summary"], "2 of 4 claims verified")
+        # Blocked purely by the unverified-claims path: this copy contains no
+        # blocking claim, so the two causes of can_approve are independent.
         self.assertFalse(report["can_approve"])
+        self.assertFalse(
+            any(c["kind"] in verify.BLOCKING_KINDS for c in report["claims"]),
+        )
         by_id = {c["id"]: c for c in report["claims"]}
         self.assertEqual((by_id["claim-0002"]["start"], by_id["claim-0002"]["end"]), (75, 89))
         self.assertIs(by_id["claim-0002"]["verified"], False)
