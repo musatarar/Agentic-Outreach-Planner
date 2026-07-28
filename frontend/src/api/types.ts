@@ -35,6 +35,72 @@ export interface ReviewQueue {
   action_options: ActionOption[];
 }
 
+/** One selectable model within a provider, from GET /api/llm/catalog/. */
+export interface LLMModel {
+  id: string;
+  label: string;
+  context_window: number;
+  default_max_tokens: number;
+  input_price_per_mtok_usd: number;
+  output_price_per_mtok_usd: number;
+  tier: string;
+  notes: string;
+}
+
+/**
+ * One provider entry from GET /api/llm/catalog/. sort_order is optional in
+ * the type (not shown in the single-item contract example) — display code
+ * falls back to array order when it's absent.
+ */
+export interface LLMProvider {
+  key: string;
+  label: string;
+  api_key_url: string;
+  api_key_label: string;
+  api_key_prefix: string;
+  sort_order?: number;
+  models: LLMModel[];
+}
+
+/** GET /api/llm/catalog/ — the full list of providers/models to choose from. */
+export interface LLMCatalog {
+  providers: LLMProvider[];
+}
+
+/** Where the active API key came from — never the key itself. */
+export type LLMKeySource = 'database' | 'environment' | 'none';
+
+/** GET /api/llm/config/ — the active provider/model config. Never returns the key. */
+export interface LLMConfig {
+  provider: string;
+  model: string;
+  max_tokens: number;
+  has_key: boolean;
+  key_last_four: string | null;
+  key_source: LLMKeySource;
+  updated_at: string;
+}
+
+/**
+ * PUT body for /api/llm/config/. api_key is write-only: omit to keep the
+ * stored key, null to clear it, a string to set/replace it.
+ */
+export interface LLMConfigInput {
+  provider: string;
+  model: string;
+  max_tokens: number;
+  api_key?: string | null;
+}
+
+/** Result of POST /api/llm/config/test/ — either shape may come back. */
+export type LLMTestResult =
+  | { ok: true; latency_ms: number; model_echo: string }
+  | {
+      ok: false;
+      error_kind: 'auth' | 'rate_limit' | 'unknown_model' | 'network';
+      message: string;
+    };
+
 export type DecisionKind = 'select_existing' | 'propose_new';
 export type DecisionStatus = 'resolved' | 'pending_engineering';
 

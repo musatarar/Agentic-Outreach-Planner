@@ -25,3 +25,11 @@ class FrontendTestCase(TestCase):
         response = self.client.get("/next-actions/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "BD Dashboard")
+
+    def test_settings_view_renders(self):
+        """Settings page loads, uses the SPA shell template, and sets the CSRF cookie."""
+        response = self.client.get("/settings/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "app/settings.html")
+        self.assertContains(response, "Settings")
+        self.assertIn("csrftoken", response.cookies)

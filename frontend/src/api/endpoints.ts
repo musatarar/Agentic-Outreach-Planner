@@ -1,5 +1,9 @@
-import { getJson, postJson } from './client';
+import { getJson, postJson, putJson } from './client';
 import type {
+  LLMCatalog,
+  LLMConfig,
+  LLMConfigInput,
+  LLMTestResult,
   OutreachAction,
   ReviewDecision,
   ReviewDecisionInput,
@@ -20,3 +24,13 @@ export const fetchReviewDecisions = () =>
 
 export const createReviewDecision = (decision: ReviewDecisionInput) =>
   postJson<ReviewDecision>('/api/review-decisions/', decision);
+
+export const fetchLLMCatalog = () => getJson<LLMCatalog>('/api/llm/catalog/');
+
+export const fetchLLMConfig = () => getJson<LLMConfig>('/api/llm/config/');
+
+export const saveLLMConfig = (config: LLMConfigInput) =>
+  putJson<LLMConfig>('/api/llm/config/', config);
+
+export const testLLMConfig = (config: LLMConfigInput) =>
+  postJson<LLMTestResult>('/api/llm/config/test/', config);

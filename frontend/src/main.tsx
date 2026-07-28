@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { DashboardPage } from './pages/DashboardPage';
 import { PlannerPage } from './pages/PlannerPage';
 import { ReportsPage } from './pages/ReportsPage';
+import { SettingsPage } from './pages/SettingsPage';
 import './styles.css';
 
 // The routes match the Django URLs in project/urls.py, so a hard refresh on any
@@ -19,6 +20,7 @@ createRoot(root).render(
         <Route path="/" element={<PlannerPage />} />
         <Route path="/reports/" element={<ReportsPage />} />
         <Route path="/next-actions/" element={<DashboardPage />} />
+        <Route path="/settings/" element={<SettingsPage />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>,
