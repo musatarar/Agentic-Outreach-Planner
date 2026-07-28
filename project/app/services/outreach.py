@@ -1236,21 +1236,66 @@ def format_shape_problems(problems):
 # --------------------------------------------------------------------------
 
 
+def _rule_trace_snapshot(lead):
+    """Snapshot MUS-42's structured rule trace for one lead (MUS-39 hook).
+
+    Stored once, at planning time, and never recomputed: every relative figure
+    in it ("28d since last contact") is only true as of ``trace.today``, so a
+    read-time recomputation would silently contradict the ``reason`` prose
+    persisted alongside it (CONTRACT MUS-35 section 9.9).
+
+    ``explain()`` arrives with MUS-42, which merges ahead of MUS-39. It is
+    looked up through ``globals()`` rather than referenced directly so this
+    hunk stays disjoint from MUS-42's (section 9.19) and this branch is green
+    standalone; until then the trace is an empty dict and the queue payload
+    degrades to "no trace" rather than the planner failing.
+    """
+    explain_fn = globals().get("explain")
+    return explain_fn(lead) if explain_fn is not None else {}
+
+
 def plan_outreach():
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority."""
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
 
-    from project.app.models import Lead, OutreachAction
+    from project.app.models import DismissedOutreachKey, Lead, OutreachAction
+    from project.app.services import dedupe as dedupe_service
+    from project.app.services import queue_copy
 
     # Copy grounding strictness (off | standard | strict); see verify.py.
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
+
+    # Two skip rules, both keyed on the (lead, action_type) dedupe key and both
+    # read ONCE per run -- one query each, O(1) in leads (CONTRACT section 2.6).
+    #
+    #   1. Dismiss is permanent. A recommendation the reviewer killed must not
+    #      come back on a later run, and consulting the ledger *before* copy
+    #      generation means it costs no LLM call either.
+    #   2. An open item wins. POSTing /api/outreach/run/ twice would otherwise
+    #      double the inbox (section 9.8).
+    suppressed = set(
+        DismissedOutreachKey.objects.filter(revoked_at__isnull=True).values_list(
+            "dedupe_key", flat=True
+        )
+    )
+    open_keys = set(
+        OutreachAction.objects.filter(
+            status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED)
+        )
+        .exclude(dedupe_key="")
+        .values_list("dedupe_key", flat=True)
+    )
 
     planned = []
     for lead in Lead.objects.all():
         priority = determine_priority(lead)
         action_type, reason = determine_action(lead)
+        key = dedupe_service.dedupe_key(lead.id, action_type)
+        if key in suppressed or key in open_keys:
+            continue
+
         needs_human = action_type == actions.UNKNOWN
         suggested_copy = ""
         further_action = ""
@@ -1263,7 +1308,9 @@ def plan_outreach():
             )
         else:
             try:
-                suggested_copy = generate_copy(lead, action_type, reason)
+                # Normalized on the way in: `suggested_copy` is immutable after
+                # this point, and every span offset computed later indexes it.
+                suggested_copy = queue_copy.normalize_copy(generate_copy(lead, action_type, reason))
             except Exception as exc:  # don't let one API failure sink the run
                 needs_human = True
                 further_action = (
@@ -1297,8 +1344,16 @@ def plan_outreach():
             suggested_copy=suggested_copy,
             needs_human=needs_human,
             further_action=further_action,
+            dedupe_key=key,
+            rule_trace=_rule_trace_snapshot(lead),
+            verification=queue_copy.build_verification(
+                lead, suggested_copy, action_type, level=level
+            ),
         )
         planned.append(action)
+        # This lead now has an open item, so a later lead sharing the key (or a
+        # re-entrant run) skips it rather than duplicating.
+        open_keys.add(key)
 
     planned.sort(key=lambda a: a.priority)
     return planned
