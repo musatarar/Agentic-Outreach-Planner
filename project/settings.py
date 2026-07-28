@@ -208,3 +208,10 @@ LOGGING = {
         },
     },
 }
+
+# --- Triage queue (MUS-39) ----------------------------------------------------
+TRIAGE_UNDO_WINDOW_SECONDS = int(os.environ.get("TRIAGE_UNDO_WINDOW_SECONDS", "300"))
+TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS = int(
+    os.environ.get("TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS", "14")
+)
+TRIAGE_TIMEZONE = os.environ.get("TRIAGE_TIMEZONE", "UTC")
