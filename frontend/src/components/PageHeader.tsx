@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Nav } from './Nav';
+import { ThemeToggle } from './ui';
 
 interface Props {
   current: string;
@@ -18,7 +19,12 @@ export function PageHeader({ current, title, subtitle, children }: Props) {
 
   return (
     <header>
-      <Nav current={current} />
+      {/* The theme control lives in the shell, so it is reachable from every
+          page rather than buried in settings. */}
+      <div className="shell-bar">
+        <Nav current={current} />
+        <ThemeToggle />
+      </div>
       <h1>{title}</h1>
       <p className="subtitle">{subtitle}</p>
       {children}
