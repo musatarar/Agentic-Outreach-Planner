@@ -865,10 +865,33 @@ the FE never counts.
   "unverified_count": 0,
   "checked_count": 4,
   "summary": "4 of 4 claims verified",   // server-rendered; FE prints verbatim
-  "can_approve": true,            // == (unverified_count == 0); SERVER decides
+  "can_approve": true,            // SERVER decides -- see the two causes below
   "claims": [ /* Claim[] ordered by start ASC, then end ASC, then id */ ]
 }
 ```
+
+**`can_approve` has two independent causes, and they compose:**
+
+```python
+BLOCKING_KINDS = {"unauthorized_offer"}
+
+can_approve = (unverified_count == 0) and not any(
+    c.kind in BLOCKING_KINDS for c in claims
+)
+```
+
+An earlier revision of this contract defined `can_approve` as `unverified_count == 0` alone. That
+was wrong. `unauthorized_offer` correctly has `counts_toward_summary: false` — it is a prohibition,
+not a claim about the record, and it must not pollute the `N of M` ratio — but that made copy
+promising "20% off your renewal" report `can_approve: true` while `plan_outreach()` was
+independently setting `needs_human=True` on it. The two halves of the system disagreeing about the
+most consequential thing generated copy can contain is a defect, not a design choice.
+
+The summary ratio and the approve gate answer two different questions. Do not define either in terms
+of the other.
+
+**MUS-40:** the warning state that replaces the primary button may therefore have to point at an
+offer span rather than a mismatched number.
 
 ### 4.5 Worked example A — all verified (`lead_001`, `today=2026-06-12`)
 
@@ -979,6 +1002,34 @@ disables the approve affordance from this same field; the server is authoritativ
   `verify_copy`'s existing by-message dedup for the returned `Violation` list.
 - `verify_spans` is pure: no DB, no LLM, duck-typed on the same lead attributes.
 - Spans round-trip through `json.dumps` — MUS-39 persists them to a JSONField.
+
+### 4.8 As-built deviations, accepted (MUS-42)
+
+MUS-42 built §3 and §4 as written and flagged where the contract was self-inconsistent. These are the
+resolutions. **Downstream tickets build against the as-built behaviour, not the earlier prose.**
+
+1. **`gone_quiet`'s pinned `operator: "all_of"` is not the real predicate.** `_gone_quiet()` is
+   `contact_old_enough AND (no_reply OR (contact >= 21d AND stall_phrase))`. The group carries the
+   pinned `operator` and `label`, but `passed` comes from the real predicate. Making the branch
+   follow `all_of` would change classifications and fail the golden eval — a contract that breaks the
+   product is the contract's problem, not the code's.
+2. **§3.3's formatter table and §3.5's worked example disagree** on `bool`/`none` rendering
+   (`{field} → {value}` vs the pinned `no_reply_email_present → false`, which uses the **id**) and on
+   `(none)` vs `(unset)`. **The worked example wins**; it is what four branches were shown.
+3. **`exists` / `absent` needed a formatter rule the table lacks**: `signed_up_date absent → 2026-04-22`.
+4. **Not every `if` becomes a `_cond()`.** Prose-decoration branches (e.g. the `if snippet:` guard)
+   emit no condition; every classifying or scoring branch does. §3.5's pinned `action.conditions`
+   confirms this — it omits that guard even though it is true for `lead_001`.
+5. **`can_approve` blocks on `unauthorized_offer`** — see §4.4 above. This one was fixed, not accepted.
+6. **§4.5 and §4.6 give the same `goal_reference` claim two different messages.** The short,
+   deterministic form in §4.6 wins.
+7. **`unsupported_year` records failures only**, and `field` for date claims is `"record_dates"`
+   rather than a single lead column — they check against a union of four sources, and `expected`
+   carries the sorted ISO list.
+
+27 condition `id`s are emitted, all reachable across the 41 golden records and asserted by
+`ConditionCoverageTests`. The 18 pinned in §3.5 are all present; rules R3–R5 had no pinned ids and
+contributed 9 more.
 
 ---
 
