@@ -42,16 +42,6 @@ if _env_file.exists():
 #   off | standard (default) | strict. See project/app/services/verify.py.
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 
-# HTTP Basic Auth credentials guarding the 3 LLM configuration endpoints
-# (/api/llm/catalog/, /api/llm/config/, /api/llm/config/test/) -- see
-# project/app/authentication.py. Unlike DJANGO_SECRET_KEY, this is NOT
-# required at Django boot: every other endpoint in this app is intentionally
-# AllowAny (see SECURITY.md), and these narrower admin endpoints only need
-# credentials configured once someone actually calls them. The auth class
-# raises a clear 401 if either is unset when a request hits one of the 3 views.
-LLM_ADMIN_USERNAME = os.environ.get("LLM_ADMIN_USERNAME", "")
-LLM_ADMIN_PASSWORD = os.environ.get("LLM_ADMIN_PASSWORD", "")
-
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
 # above for local/demo convenience; production should set these directly.
@@ -173,3 +163,55 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# --- Magic-link auth (MUS-37) -------------------------------------------------
+LOGIN_ALLOWED_EMAILS = {
+    e.strip().lower() for e in os.environ.get("LOGIN_ALLOWED_EMAILS", "").split(",") if e.strip()
+}
+LOGIN_LINK_DELIVERY = os.environ.get("LOGIN_LINK_DELIVERY", "console")  # console | email
+LOGIN_TOKEN_TTL_SECONDS = int(os.environ.get("LOGIN_TOKEN_TTL_SECONDS", "900"))
+LOGIN_LINK_BASE_URL = os.environ.get("LOGIN_LINK_BASE_URL", "http://127.0.0.1:8000")
+LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
+LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
+LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "project.app.authentication.SessionAuthenticationWith401",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "EXCEPTION_HANDLER": "project.app.exceptions.contract_exception_handler",
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_request_ip": LOGIN_RATE_LIMIT_IP,
+        "auth_consume_ip": "60/hour",
+        "queue_verify": "120/min",
+    },
+}
+
+# Console delivery of the sign-in link is the demo path, which means the link
+# has to actually reach the server log. Django's default logging attaches a
+# handler to the `django` logger only, so an INFO record from `project.app`
+# falls through to logging's last-resort handler (WARNING and above) and is
+# silently dropped -- `docker compose up` would print nothing to paste.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {
+        "project.app": {
+            "handlers": ["console"],
+            "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+        },
+    },
+}
+
+# --- Triage queue (MUS-39) ----------------------------------------------------
+TRIAGE_UNDO_WINDOW_SECONDS = int(os.environ.get("TRIAGE_UNDO_WINDOW_SECONDS", "300"))
+TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS = int(
+    os.environ.get("TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS", "14")
+)
+TRIAGE_TIMEZONE = os.environ.get("TRIAGE_TIMEZONE", "UTC")

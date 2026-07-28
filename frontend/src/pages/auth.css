@@ -1,0 +1,169 @@
+/* Sign-in and token-consumption surfaces (MUS-38).
+
+   Tokens only — no hex literal appears below this line, so both screens theme
+   dark for free off the same `data-theme` attribute the boot script sets.
+
+   Type discipline (CONTRACT §7.1): everything here is chrome, so --font-sans,
+   except the dev sign-in URL and the countdown, which are machine output and
+   are therefore --font-mono. Nothing on these screens is generated prose, so
+   --font-serif does not appear at all.
+
+   Colour discipline: red and amber belong to the priority ramp. The only
+   coloured pixel here is the one primary button in --color-accent; error text
+   uses the --color-danger alias, which the legacy pages already reserve for
+   transient form feedback. */
+
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+.auth-shell__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: var(--header-height);
+  padding: var(--space-3) var(--content-gutter);
+}
+
+.auth-wordmark {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* Optically centred: a shade above true centre reads as deliberate rather than
+   as a layout that failed to fill the page. */
+.auth-shell__main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5) var(--content-gutter) var(--space-8);
+}
+
+.auth-panel {
+  width: 100%;
+  /* Narrower than --card-max-width (46rem, sized for the triage draft) — a
+     single email field in a 46rem card looks abandoned. */
+  max-width: 24rem;
+}
+
+.auth-title {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-tight);
+  margin-bottom: var(--space-2);
+}
+
+.auth-lede {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-5);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The primary action owns the full width of the card: on a one-field screen
+   there is nothing for it to sit beside. */
+.auth-actions .ui-button {
+  width: 100%;
+}
+
+.auth-note {
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  color: var(--color-text-subtle);
+}
+
+.auth-address {
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+/* Errors in the app's own visual language — never a browser alert(). Announced
+   via role="alert" on the element, so colour is not the only signal. */
+.auth-alert {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-danger-bg);
+  border: var(--border-width-hair) solid var(--color-p1-border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--color-danger);
+}
+
+.auth-divider {
+  margin: var(--space-5) 0;
+  border: 0;
+  border-top: var(--border-width-hair) solid var(--color-border-subtle);
+}
+
+/* ---- Dev-mode link ----
+   Only rendered when the API returns one (DEBUG + console delivery). It is
+   visibly tagged rather than blended in, because a link that signs you in
+   without an inbox must never be mistakable for normal product chrome. */
+
+.auth-devlink {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface-sunken);
+  border: var(--border-width-hair) dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+
+.auth-devlink__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+}
+
+.auth-devlink__url {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  color: var(--color-accent);
+  overflow-wrap: anywhere;
+}
+
+/* The countdown is a number that ticks — machine output, so mono, and
+   tabular so the button does not jitter as it counts down. */
+.auth-countdown {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.auth-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}

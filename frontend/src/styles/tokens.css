@@ -1,0 +1,359 @@
+/* Design tokens — MUS-36. The single source of truth for colour, type, space,
+   radius, motion and layout. Every name here is pinned by CONTRACT-MUS-35 §7.1;
+   MUS-38/40/41 consume these names verbatim, so nothing may be renamed, and no
+   name outside §7.1 may be added.
+
+   No hex literal may appear anywhere in frontend/src outside this file.
+
+   Three blocks, in this order:
+     1. :root                                       -- light (the default)
+     2. [data-theme='dark']                         -- explicit dark
+     3. @media (prefers-color-scheme: dark)
+          :root:not([data-theme])                   -- OS dark, JS disabled
+
+   Block 3 duplicates block 2 by design. The boot script in spa_base.html always
+   stamps data-theme before first paint, so block 3 only ever applies when
+   scripting is off; keeping it a literal copy is safer than an indirection
+   layer of non-contract variable names. KEEP BLOCKS 2 AND 3 IN SYNC. */
+
+:root {
+  /* ---- Type families (3, exactly) -------------------------------------
+     Never mix. mono = machine output (rule trace, offsets, counts, keys,
+     timestamps). serif = generated prose (the draft body and subject, and
+     ONLY those). sans = chrome (nav, labels, buttons, everything else).
+     A number in the rule trace is mono; the same number inside the email
+     body is serif. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  --font-serif:
+    ui-serif, Georgia, 'Iowan Old Style', 'Times New Roman', Times, serif;
+
+  /* ---- Type scale ---------------------------------------------------- */
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.25rem;
+
+  --leading-tight: 1.15;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.7;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0em;
+  --tracking-wide: 0.02em;
+  --tracking-caps: 0.08em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---- Surfaces & text ------------------------------------------------
+     The boldness is the canvas-to-card gap: the canvas is a definite grey,
+     the card is paper white. No gradients, no glows. */
+  --color-bg: #e8ebf0;
+  --color-bg-subtle: #dde1e9;
+
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #f3f5f8;
+  --color-surface-hover: #eef1f6;
+
+  --color-overlay-scrim: rgba(11, 14, 20, 0.55);
+
+  --color-border: #c8cfda;
+  --color-border-subtle: #e0e4ec;
+  --color-border-strong: #96a0b1;
+
+  --color-text: #12151c;
+  --color-text-muted: #4a5464;
+  --color-text-subtle: #68717f;
+  --color-text-inverse: #ffffff;
+
+  /* ---- Accent (one, exactly) ------------------------------------------
+     The active queue row and the single primary button. Nothing else. */
+  --color-accent: #4338ca;
+  --color-accent-hover: #3730a3;
+  --color-accent-active: #312e81;
+  --color-accent-subtle: #eef0fe;
+  --color-accent-border: #c3c6f8;
+  --color-accent-contrast: #ffffff;
+  --color-focus-ring: #4338ca;
+
+  /* ---- Priority ramp (P1 red / P2 amber / P3 neutral) ------------------
+     No other element in the app may be red or amber. That is what makes a
+     coloured pixel legible as urgency at a glance. */
+  --color-p1-fg: #b42318;
+  --color-p1-bg: #fee4e2;
+  --color-p1-border: #fda29b;
+
+  --color-p2-fg: #b54708;
+  --color-p2-bg: #fef0c7;
+  --color-p2-border: #fec84b;
+
+  --color-p3-fg: #475467;
+  --color-p3-bg: #eaecf0;
+  --color-p3-border: #d0d5dd;
+
+  /* ---- Verification ramp ----------------------------------------------
+     Underlines on claims inside generated copy ONLY. Never a background,
+     never a text colour, never on chrome. */
+  --color-verified: #067647;
+  --color-verified-soft: #dcfae6;
+  --color-unverified: #d92d20;
+  --color-unverified-soft: #fee4e2;
+
+  --underline-thickness: 2px;
+  --underline-offset: 3px;
+  --underline-style-verified: solid;
+  --underline-style-unverified: wavy;
+
+  /* ---- Triage status --------------------------------------------------
+     Deliberately hueless: red/amber belong to priority and green belongs to
+     verification, so status reads as a lightness ramp instead. Approved is
+     the solid inverted chip -- the loudest neutral means "resolved". */
+  --color-status-pending-fg: #101828;
+  --color-status-pending-bg: #e2e6ed;
+
+  --color-status-approved-fg: #ffffff;
+  --color-status-approved-bg: #12151c;
+
+  --color-status-snoozed-fg: #4a5464;
+  --color-status-snoozed-bg: #f3f5f8;
+
+  --color-status-dismissed-fg: #666f80;
+  --color-status-dismissed-bg: #f3f5f8;
+
+  /* ---- Feedback aliases (aliases only -- no fourth ramp) --------------- */
+  --color-danger: var(--color-p1-fg);
+  --color-danger-bg: var(--color-p1-bg);
+  --color-warning: var(--color-p2-fg);
+  --color-warning-bg: var(--color-p2-bg);
+  --color-success: var(--color-verified);
+  --color-success-bg: var(--color-verified-soft);
+
+  /* ---- Spacing --------------------------------------------------------- */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* ---- Radius / borders ------------------------------------------------ */
+  --radius-none: 0;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 999px;
+
+  --border-width-hair: 1px;
+  --border-width-thick: 2px;
+
+  /* ---- Elevation -------------------------------------------------------
+     Restrained on purpose. Depth is the border and the canvas gap. */
+  --shadow-none: none;
+  --shadow-sm: 0 1px 2px rgba(11, 14, 20, 0.06);
+  --shadow-md: 0 2px 8px rgba(11, 14, 20, 0.08);
+  --shadow-lg: 0 8px 24px rgba(11, 14, 20, 0.12);
+  --shadow-focus: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
+
+  /* ---- Motion ----------------------------------------------------------
+     Keyboard triage: row advance must stay under ~120ms or holding J feels
+     laggy. Nothing interactive may use --duration-slow. */
+  --duration-instant: 0ms;
+  --duration-fast: 80ms;
+  --duration-base: 120ms;
+  --duration-slow: 200ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+
+  /* ---- Z-index ---------------------------------------------------------- */
+  --z-base: 0;
+  --z-sticky: 100;
+  --z-popover: 200;
+  --z-overlay: 300;
+  --z-toast: 400;
+
+  /* ---- Layout ----------------------------------------------------------- */
+  --rail-width: 180px;
+  --header-height: 56px;
+  --content-gutter: 1.5rem;
+  --card-max-width: 46rem;
+  --prose-measure: 68ch;
+
+  /* ---- Focus ------------------------------------------------------------ */
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  color-scheme: light;
+}
+
+/* ======================================================================
+   DARK -- explicit. Mirrored verbatim into the prefers-color-scheme block
+   below; edit both or neither.
+   ====================================================================== */
+
+[data-theme='dark'] {
+  --color-bg: #090b10;
+  --color-bg-subtle: #05070a;
+
+  --color-surface: #14181f;
+  --color-surface-raised: #1b212a;
+  --color-surface-sunken: #0f1319;
+  --color-surface-hover: #222936;
+
+  --color-overlay-scrim: rgba(0, 0, 0, 0.7);
+
+  --color-border: #2b3341;
+  --color-border-subtle: #1e242e;
+  --color-border-strong: #495468;
+
+  --color-text: #eef1f6;
+  --color-text-muted: #a6b0c0;
+  --color-text-subtle: #7a8598;
+  --color-text-inverse: #090b10;
+
+  --color-accent: #818cf8;
+  --color-accent-hover: #a5b4fc;
+  --color-accent-active: #c7d2fe;
+  --color-accent-subtle: #1b1e3a;
+  --color-accent-border: #3a3f7a;
+  --color-accent-contrast: #12151c;
+  --color-focus-ring: #a5b4fc;
+
+  --color-p1-fg: #fda29b;
+  --color-p1-bg: #3a1512;
+  --color-p1-border: #7a271a;
+
+  --color-p2-fg: #fec84b;
+  --color-p2-bg: #3a2408;
+  --color-p2-border: #93370d;
+
+  --color-p3-fg: #cbd3e0;
+  --color-p3-bg: #222936;
+  --color-p3-border: #39414f;
+
+  --color-verified: #4ade80;
+  --color-verified-soft: #0d2c1c;
+  --color-unverified: #f97066;
+  --color-unverified-soft: #3a1512;
+
+  --color-status-pending-fg: #eef1f6;
+  --color-status-pending-bg: #232a36;
+
+  --color-status-approved-fg: #090b10;
+  --color-status-approved-bg: #eef1f6;
+
+  --color-status-snoozed-fg: #a6b0c0;
+  --color-status-snoozed-bg: #1a202a;
+
+  --color-status-dismissed-fg: #7d8798;
+  --color-status-dismissed-bg: #14181f;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* ======================================================================
+   DARK -- OS preference, no explicit choice. Reached only with scripting
+   disabled; the boot script otherwise stamps data-theme before first paint.
+   Literal copy of the block above.
+   ====================================================================== */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --color-bg: #090b10;
+    --color-bg-subtle: #05070a;
+
+    --color-surface: #14181f;
+    --color-surface-raised: #1b212a;
+    --color-surface-sunken: #0f1319;
+    --color-surface-hover: #222936;
+
+    --color-overlay-scrim: rgba(0, 0, 0, 0.7);
+
+    --color-border: #2b3341;
+    --color-border-subtle: #1e242e;
+    --color-border-strong: #495468;
+
+    --color-text: #eef1f6;
+    --color-text-muted: #a6b0c0;
+    --color-text-subtle: #7a8598;
+    --color-text-inverse: #090b10;
+
+    --color-accent: #818cf8;
+    --color-accent-hover: #a5b4fc;
+    --color-accent-active: #c7d2fe;
+    --color-accent-subtle: #1b1e3a;
+    --color-accent-border: #3a3f7a;
+    --color-accent-contrast: #12151c;
+    --color-focus-ring: #a5b4fc;
+
+    --color-p1-fg: #fda29b;
+    --color-p1-bg: #3a1512;
+    --color-p1-border: #7a271a;
+
+    --color-p2-fg: #fec84b;
+    --color-p2-bg: #3a2408;
+    --color-p2-border: #93370d;
+
+    --color-p3-fg: #cbd3e0;
+    --color-p3-bg: #222936;
+    --color-p3-border: #39414f;
+
+    --color-verified: #4ade80;
+    --color-verified-soft: #0d2c1c;
+    --color-unverified: #f97066;
+    --color-unverified-soft: #3a1512;
+
+    --color-status-pending-fg: #eef1f6;
+    --color-status-pending-bg: #232a36;
+
+    --color-status-approved-fg: #090b10;
+    --color-status-approved-bg: #eef1f6;
+
+    --color-status-snoozed-fg: #a6b0c0;
+    --color-status-snoozed-bg: #1a202a;
+
+    --color-status-dismissed-fg: #7d8798;
+    --color-status-dismissed-bg: #14181f;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+
+    color-scheme: dark;
+  }
+}
+
+/* ======================================================================
+   Reduced motion -- mandatory (CONTRACT §7.2).
+   ====================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}

@@ -14,8 +14,8 @@ of an account exec digging through HubSpot and Slack every morning.
   is only used for copywriting, never for the judgment call. See
   [`services/outreach.py`](project/app/services/outreach.py).
 - **Provider-agnostic LLM layer.** Swap Claude / OpenAI / DeepSeek / Groq via the
-  Basic Auth-protected `/api/llm/config/` endpoint (backed by the `LLMConfiguration`
-  model, encrypted key storage, no code changes, no vendor lock-in). See
+  `/api/llm/config/` endpoint (backed by the `LLMConfiguration` model, encrypted key
+  storage, no code changes, no vendor lock-in). See
   [`services/llm/`](project/app/services/llm/).
 - **Safe default for the unknown.** Leads the rules can't classify are flagged
   `needs_human=True` and routed to a BD review queue instead of getting an
@@ -55,6 +55,10 @@ python manage.py runserver
 
 No `DATABASE_URL` is needed for this path — it falls back to SQLite at `./db.sqlite3`.
 
+Snoozed triage items return to the queue via `python manage.py unsnooze_due` (add `--dry-run`
+to see what it would do). It is idempotent and cheap — two conditional `UPDATE`s — so run it
+from cron every minute in anything long-lived.
+
 Open **http://127.0.0.1:8000/**, click **"Run Outreach Plan"**, watch prioritized cards
 with AI-drafted emails render in ~20–30s. Full walkthrough with sample results in
 [DEMO.md](DEMO.md).
@@ -64,13 +68,41 @@ with AI-drafted emails render in ~20–30s. Full walkthrough with sample results
 No local Python needed — just Docker:
 
 ```bash
-cp .env.example .env   # required: DJANGO_SECRET_KEY. Optionally set a provider key too.
-docker compose up
+cp .env.example .env   # required: DJANGO_SECRET_KEY and LOGIN_ALLOWED_EMAILS.
+docker compose up      # optionally set a provider key too
 ```
 
 This starts Postgres, builds the app image, applies migrations, seeds the demo pipeline, and
 serves the app at **http://127.0.0.1:8000/**. The server starts even without an LLM provider
 key — you just can't run the LLM copy step until one is set.
+
+### Signing in
+
+The API is authenticated by **magic link** — one operator, no passwords to store, reset or
+rotate. Add yourself to the allowlist in `.env` (there is no signup flow, so the allowlist
+is what decides who may request a link):
+
+```bash
+LOGIN_ALLOWED_EMAILS=you@example.com
+DJANGO_DEBUG=True          # so the link comes back in the API response too
+```
+
+Then open **http://127.0.0.1:8000/signin**, enter that address, and the link is printed to
+the server log:
+
+```
+INFO Magic sign-in link for you@example.com (expires in 900s):
+     http://127.0.0.1:8000/auth/consume?token=nJ7yQwVh3kR2mLpX8sTcAeB1dGfHiKoZuYvNqW0xMjE
+```
+
+Paste it into the browser and you're in. Links are single-use and expire after 15 minutes
+(`LOGIN_TOKEN_TTL_SECONDS`). **No SMTP is involved in the demo path** — delivery defaults to
+`LOGIN_LINK_DELIVERY=console`; set it to `email` to use Django's email backend instead.
+
+An address that isn't on the allowlist gets exactly the same response as one that is, so the
+endpoint can't be used to find out who has an account. The one exception is the `dev_link`
+field in the response body, which is populated only when `DJANGO_DEBUG=True` **and** delivery
+is `console` **and** the address is allowlisted.
 
 ## Architecture, 30 seconds
 
@@ -81,6 +113,26 @@ key — you just can't run the LLM copy step until one is set.
 | LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via the DB-backed `LLMConfiguration` (see `/api/llm/config/`) |
 | API | `project/app/views.py`, `urls.py` | DRF APIViews at `/api/*` |
 | Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: planner board, reports, BD dashboard — consumes the `/api/*` endpoints |
+
+### Triage queue
+
+`OutreachAction` carries a lifecycle — `pending → approved | snoozed | dismissed`, with a
+short server-timed undo window — behind `/api/queue/*`. Three things in it are worth knowing:
+
+- **`suggested_copy` is immutable, forever.** A reviewer's edits go in `edited_copy`, and every
+  edit appends an `OutreachEdit` row holding the before/after pair and its diff. That diff is the
+  quiet payoff of the whole product: every correction a human makes is labeled training data for
+  the copy evals, and it only exists at the moment of editing. Dump it with
+  `python manage.py dump_edit_corpus --committed-only > corpus.jsonl`.
+- **Snooze is not skip.** It takes a judgement about *when* the lead should come back —
+  `tomorrow`, `in_3_days`, `next_week`, a `custom` date, or `on_activity` ("come back when they
+  actually do something"). `on_activity` records a watermark so historical events can't wake it,
+  plus a 14-day backstop, because a lead that never acts would otherwise be indistinguishable
+  from a dismiss nobody chose. `manage.py unsnooze_due` sweeps both kinds.
+- **Dismiss is permanent.** It writes a suppression ledger row keyed on
+  `sha256("v1|{lead_id}|{action_type}")`, which `plan_outreach()` consults *before* generating
+  copy — so a re-run neither resurrects the recommendation nor pays for an LLM call to
+  rediscover it. Undo inside the window revokes the suppression in the same transaction.
 
 The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
 (`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`
