@@ -152,3 +152,42 @@ class ReviewDecision(models.Model):
     proposed_when = models.TextField(blank=True)
     reviewer = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+# --- Magic-link auth (MUS-37) -------------------------------------------------
+
+
+class LoginToken(models.Model):
+    """A single-use, short-lived magic-link login token (MUS-37).
+
+    The raw token is NEVER stored: ``secrets.token_urlsafe(32)`` is generated,
+    emailed/printed, and only ``sha256(token).hexdigest()`` is persisted. A
+    plain SHA-256 (not a slow KDF) is correct here because the token is 256
+    bits of CSPRNG output -- there is no dictionary to attack, and the verify
+    path must stay cheap enough to be rate-limited rather than DoS'd.
+
+    Single-use is enforced by a conditional UPDATE (see views_auth.py), not by
+    read-then-write, so two concurrent consumes cannot both succeed.
+    """
+
+    email = models.EmailField(db_index=True)
+    # sha256 hexdigest of the raw token -- 64 chars, unique so a replayed
+    # insert fails loudly at the DB rather than silently.
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    # NULL until redeemed; set exactly once by the conditional update.
+    consumed_at = models.DateTimeField(null=True, blank=True, default=None)
+    # Best-effort audit only -- never used for authorization decisions.
+    requested_ip = models.GenericIPAddressField(null=True, blank=True)
+    requested_user_agent = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["email", "-created_at"], name="logintoken_email_recent"),
+            models.Index(fields=["expires_at", "consumed_at"], name="logintoken_sweep"),
+        ]
+
+    def __str__(self):
+        return f"LoginToken({self.email}, expires {self.expires_at:%Y-%m-%d %H:%M})"

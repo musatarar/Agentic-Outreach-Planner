@@ -37,11 +37,20 @@ services:
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      # LLM configuration endpoints (MUS-32) -- see .env.example for what each
-      # of these is for. Only required once you actually call /api/llm/*.
-      LLM_ADMIN_USERNAME: ${LLM_ADMIN_USERNAME:-}
-      LLM_ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD:-}
+      # LLM configuration endpoints (MUS-32) -- see .env.example.
       LLM_KEY_ENCRYPTION_KEY: ${LLM_KEY_ENCRYPTION_KEY:-}
+      # Magic-link sign-in (MUS-37). The API is authenticated, so set
+      # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
+      # -- there is no signup flow, the allowlist is the whole gate. Delivery
+      # defaults to `console`: the link is printed to this container's log,
+      # which is the demo path. No SMTP is involved.
+      LOGIN_ALLOWED_EMAILS: ${LOGIN_ALLOWED_EMAILS:-}
+      LOGIN_LINK_DELIVERY: ${LOGIN_LINK_DELIVERY:-console}
+      LOGIN_LINK_BASE_URL: ${LOGIN_LINK_BASE_URL:-http://127.0.0.1:8000}
+      LOGIN_TOKEN_TTL_SECONDS: ${LOGIN_TOKEN_TTL_SECONDS:-900}
+      LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
+      LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
+      LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
 
 volumes:
   postgres_data:

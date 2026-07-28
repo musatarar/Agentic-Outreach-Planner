@@ -73,6 +73,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -r requirements-dev.txt
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run
       - name: Run tests with coverage
         run: |
           # dj_database_url treats a *present-but-empty* DATABASE_URL as
