@@ -1,5 +1,10 @@
 import { getJson, postJson, putJson } from './client';
 import type {
+  AuthConsumeInput,
+  AuthConsumeResult,
+  AuthMe,
+  AuthRequestLinkInput,
+  AuthRequestLinkResult,
   DismissInput,
   DoneResponse,
   EditCopyInput,
@@ -42,6 +47,18 @@ export const saveLLMConfig = (config: LLMConfigInput) =>
 
 export const testLLMConfig = (config: LLMConfigInput) =>
   postJson<LLMTestResult>('/api/llm/config/test/', config);
+
+// ===== MUS-37 / MUS-38: magic-link auth ============================
+
+export const fetchAuthMe = () => getJson<AuthMe>('/api/auth/me/');
+
+export const requestLoginLink = (body: AuthRequestLinkInput) =>
+  postJson<AuthRequestLinkResult>('/api/auth/request-link/', body);
+
+export const consumeLoginToken = (body: AuthConsumeInput) =>
+  postJson<AuthConsumeResult>('/api/auth/consume/', body);
+
+export const logout = () => postJson<void>('/api/auth/logout/', {});
 
 // ===== MUS-39 / MUS-40 / MUS-41: triage queue ======================
 

@@ -18,10 +18,28 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
-from project.app.views_frontend import index, next_actions, reports, settings
+from project.app.views_frontend import (
+    auth_consume,
+    done,
+    inbox,
+    index,
+    next_actions,
+    reports,
+    settings,
+    signin,
+)
 
+# There is no SPA catch-all: every React route in frontend/src/main.tsx needs a
+# matching entry below or a hard refresh 404s. Under `npm run dev` Vite serves
+# any path, so a missing route here only shows up against the built bundle.
+# The trailing slashes are asymmetric on purpose (CONTRACT §8.2): /signin,
+# /auth/consume, /inbox and /done have none; the legacy four keep theirs.
 urlpatterns = [
     path("", index),
+    path("signin", signin),
+    path("auth/consume", auth_consume),
+    path("inbox", inbox),
+    path("done", done),
     path("reports/", reports),
     path("next-actions/", next_actions),
     path("settings/", settings),
