@@ -1769,6 +1769,10 @@ name not on this list is broken.**
 --font-sans     /* chrome: nav, labels, buttons, everything else */
 ```
 
+> **The MUS-36 Linear ticket calls this `--font-voice`. The shipped token is `--font-serif`.**
+> The contract name wins; there is no `--font-voice` alias and referencing one is a build error.
+> MUS-38/40/41 read the ticket as well as this contract — this is the one place they disagree.
+
 Never mix. A number in the rule trace is mono; the same number inside the email body is serif. This
 is the single most distinctive thing in the design and it degrades instantly if applied loosely.
 
@@ -1954,6 +1958,11 @@ frontend/src/components/ui/Input.tsx
   <Input label id type? value onChange placeholder? error? autoFocus? />
 
 frontend/src/components/ui/index.ts   // barrel: export * from each of the above
+
+frontend/src/components/ui/ThemeToggle.tsx   // SHIPPED: a sixth file. The only
+  // consumer of useTheme, and every shell needs it. Exported from the barrel and
+  // rendered from PageHeader.tsx, which MUS-36 also owns as a two-line wrapper
+  // around the existing <Nav>. MUS-38 owns Nav.tsx; the hunks are disjoint.
 ```
 
 Import path for consumers: `import { Button, Badge, Card, KeyHint, Input } from '../components/ui';`
