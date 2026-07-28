@@ -18,9 +18,15 @@ from project.app.views_auth import (
     AuthRequestLinkView,
 )
 from project.app.views_queue import (
+    QueueApproveView,
     QueueDetailView,
+    QueueDismissView,
     QueueDoneView,
+    QueueEditView,
     QueueListView,
+    QueueSnoozeView,
+    QueueUndoView,
+    QueueVerifyView,
 )
 
 # Included at the `api/` prefix by project/urls.py:
@@ -42,6 +48,12 @@ urlpatterns = [
     path("queue/", QueueListView.as_view(), name="queue-list"),
     path("queue/done/", QueueDoneView.as_view(), name="queue-done"),
     path("queue/<int:pk>/", QueueDetailView.as_view(), name="queue-detail"),
+    path("queue/<int:pk>/edit/", QueueEditView.as_view(), name="queue-edit"),
+    path("queue/<int:pk>/verify/", QueueVerifyView.as_view(), name="queue-verify"),
+    path("queue/<int:pk>/approve/", QueueApproveView.as_view(), name="queue-approve"),
+    path("queue/<int:pk>/snooze/", QueueSnoozeView.as_view(), name="queue-snooze"),
+    path("queue/<int:pk>/dismiss/", QueueDismissView.as_view(), name="queue-dismiss"),
+    path("queue/<int:pk>/undo/", QueueUndoView.as_view(), name="queue-undo"),
     # --- existing ---
     path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
     path("outreach/", OutreachListView.as_view(), name="outreach-list"),
