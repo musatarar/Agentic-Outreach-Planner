@@ -1,0 +1,252 @@
+{
+  "_comment": "Frozen parity fixture for MUS-42 (CONTRACT-MUS-35 §3.6 item 3). Captured from determine_action/determine_priority BEFORE the _cond() trace transform, over all golden records in evals/golden/leads.jsonl at today=2026-06-12. The prose `reason` is displayed AND fed into generate_copy's prompt, so it must stay byte-identical.",
+  "today": "2026-06-12",
+  "records": [
+    {
+      "id": "gold_power_clear",
+      "action": "power_user_reward",
+      "reason": "Priya Nair is a power user: 19 quotes created, 14 submitted, 6 deals closed, last login 2026-05-26. HubSpot notes flag a volume-pricing conversation at the 20-deal milestone — only 14 deals away. Notes: \"Wants to understand volume pricing if she hits 20 closed deals.\"",
+      "priority": 2
+    },
+    {
+      "id": "gold_power_deals5_sub10",
+      "action": "power_user_reward",
+      "reason": "Owen Diaz is a power user: 12 quotes created, 10 submitted, 5 deals closed, last login 2026-06-02. Notes: \"Steady closer asking about volume pricing options.\"",
+      "priority": 2
+    },
+    {
+      "id": "gold_power_deals6_sub11",
+      "action": "power_user_reward",
+      "reason": "Grace Kim is a power user: 14 quotes created, 11 submitted, 6 deals closed, last login 2026-05-31. HubSpot notes flag a volume-pricing conversation at the 20-deal milestone — only 14 deals away. Notes: \"Notes flag volume pricing at the 20 closed deals milestone.\"",
+      "priority": 2
+    },
+    {
+      "id": "gold_power_deals4_sub12",
+      "action": "nudge_usage",
+      "reason": "Ravi Menon is active (last login 2026-06-04) with 4 deals closed but momentum is modest — encourage more volume.",
+      "priority": 2
+    },
+    {
+      "id": "gold_power_deals6_sub9",
+      "action": "unknown",
+      "reason": "No outreach pattern matched for Bianca Ford: stage=active_trial, quotes_created=11, quotes_submitted=9, deals_closed=6, last_login=2026-06-03, last_contacted=2026-06-02. BD should review the HubSpot notes and decide the next step manually.",
+      "priority": 2
+    },
+    {
+      "id": "gold_active_no_deals_gap",
+      "action": "unknown",
+      "reason": "No outreach pattern matched for Leo Park: stage=active_trial, quotes_created=5, quotes_submitted=3, deals_closed=0, last_login=2026-06-04, last_contacted=2026-05-31. BD should review the HubSpot notes and decide the next step manually.",
+      "priority": 2
+    },
+    {
+      "id": "gold_hold_budget_noreply",
+      "action": "follow_up_after_hold",
+      "reason": "Tom Kladis put us on hold and the hold reason has now passed. Notes: \"Waiting on Q2 budget approval to push it to his team.\" Last contacted 42 days ago and a follow-up email got no reply. Last portal login was 35 days ago (2026-05-08).",
+      "priority": 1
+    },
+    {
+      "id": "gold_hold_circle_back",
+      "action": "follow_up_after_hold",
+      "reason": "Rachel Okafor put us on hold and the hold reason has now passed. Notes: \"Said she'd circle back next quarter once renewal season wraps.\" Last contacted 30 days ago. Last portal login was 18 days ago (2026-05-25).",
+      "priority": 1
+    },
+    {
+      "id": "gold_hold_quiet14",
+      "action": "follow_up_after_hold",
+      "reason": "Hannah Cole put us on hold and the hold reason has now passed. Notes: \"Waiting for budget approval.\" Last contacted 14 days ago and a follow-up email got no reply. Last portal login was 20 days ago (2026-05-23).",
+      "priority": 2
+    },
+    {
+      "id": "gold_hold_quiet15",
+      "action": "follow_up_after_hold",
+      "reason": "Iris Vaughn put us on hold and the hold reason has now passed. Notes: \"Waiting on budget sign-off.\" Last contacted 15 days ago and a follow-up email got no reply. Last portal login was 25 days ago (2026-05-18).",
+      "priority": 2
+    },
+    {
+      "id": "gold_hold_quiet13_too_soon",
+      "action": "nudge_usage",
+      "reason": "Nate Bloom logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_hold_next_quarter_recent",
+      "action": "nudge_usage",
+      "reason": "Sofia Reyes is active (last login 2026-05-28) with 2 deals closed but momentum is modest — encourage more volume.",
+      "priority": 3
+    },
+    {
+      "id": "gold_dormant_clear",
+      "action": "reengage_dormant",
+      "reason": "Marcus Webb signed up on 2026-03-14 but hasn't logged in for 45 days (last login 2026-04-28) — the trial has gone dormant.",
+      "priority": 3
+    },
+    {
+      "id": "gold_dormant_never_login",
+      "action": "reengage_dormant",
+      "reason": "Elena Vasquez signed up on 2026-05-03 but has never logged in to the portal.",
+      "priority": 2
+    },
+    {
+      "id": "gold_dormant_bigbook_never_login",
+      "action": "reengage_dormant",
+      "reason": "Priyanka Rao signed up on 2026-04-03 but has never logged in to the portal.",
+      "priority": 2
+    },
+    {
+      "id": "gold_dormant_login22",
+      "action": "reengage_dormant",
+      "reason": "Caleb Turner signed up on 2026-04-13 but hasn't logged in for 22 days (last login 2026-05-21) — the trial has gone dormant.",
+      "priority": 3
+    },
+    {
+      "id": "gold_dormant_login21_active",
+      "action": "nudge_usage",
+      "reason": "Dana Wells logs in regularly (last login 2026-05-22) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_dormant_login20_active",
+      "action": "nudge_usage",
+      "reason": "Victor Hale logs in regularly (last login 2026-05-23) and has created 4 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_onboarding_bigbook",
+      "action": "complete_onboarding",
+      "reason": "Dana Mosely completed a demo but never signed up, and the agency's estimated book is $8,100,000. Notes say: \"Said she'd follow up in May.\" Last contact was 43 days ago with no reply since.",
+      "priority": 1
+    },
+    {
+      "id": "gold_onboarding_smallbook",
+      "action": "complete_onboarding",
+      "reason": "Greg Ames completed a demo but never signed up, and the agency's estimated book is $900,000. Last contact was 10 days ago.",
+      "priority": 2
+    },
+    {
+      "id": "gold_onboarding_book5M",
+      "action": "complete_onboarding",
+      "reason": "Nadia Frost completed a demo but never signed up, and the agency's estimated book is $5,000,000. Last contact was 5 days ago.",
+      "priority": 2
+    },
+    {
+      "id": "gold_onboarding_book2M",
+      "action": "complete_onboarding",
+      "reason": "Ellis Ward completed a demo but never signed up, and the agency's estimated book is $2,000,000. Last contact was 5 days ago.",
+      "priority": 2
+    },
+    {
+      "id": "gold_stale_stage_signed_up",
+      "action": "nudge_usage",
+      "reason": "Yusuf Demir logs in regularly (last login 2026-06-08) and has created 5 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 2
+    },
+    {
+      "id": "gold_nudge_created_nosubmit",
+      "action": "nudge_usage",
+      "reason": "Derek Sohn logs in regularly (last login 2026-05-27) and has created 2 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 2
+    },
+    {
+      "id": "gold_nudge_milestone",
+      "action": "nudge_usage",
+      "reason": "Susan Lakewood is using the portal steadily (7 quotes created, 2 deals closed, last login 2026-05-25) but is 3 deals short of the 5-deal commitment target in the notes — a well-timed push could convert the trial.",
+      "priority": 2
+    },
+    {
+      "id": "gold_nudge_modest_deals",
+      "action": "nudge_usage",
+      "reason": "Devon Pratt is active (last login 2026-05-31) with 2 deals closed but momentum is modest — encourage more volume.",
+      "priority": 3
+    },
+    {
+      "id": "gold_trial_risk_31",
+      "action": "nudge_usage",
+      "reason": "Amara Boyd logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_trial_risk_30",
+      "action": "nudge_usage",
+      "reason": "Cody Fisher logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_trial_risk_29",
+      "action": "nudge_usage",
+      "reason": "Maya Singh logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_stale_contact22",
+      "action": "nudge_usage",
+      "reason": "Ian Petrov logs in regularly (last login 2026-06-02) and has created 4 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 2
+    },
+    {
+      "id": "gold_stale_contact21",
+      "action": "nudge_usage",
+      "reason": "Jenna Ross logs in regularly (last login 2026-06-02) and has created 4 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_stale_contact20",
+      "action": "nudge_usage",
+      "reason": "Kurt Lang logs in regularly (last login 2026-06-02) and has created 4 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_unknown_mystery",
+      "action": "unknown",
+      "reason": "No outreach pattern matched for Mystery Mo: stage=active_trial, quotes_created=0, quotes_submitted=0, deals_closed=0, last_login=None, last_contacted=None. BD should review the HubSpot notes and decide the next step manually.",
+      "priority": 3
+    },
+    {
+      "id": "gold_unknown_no_signup_contact",
+      "action": "unknown",
+      "reason": "No outreach pattern matched for Percy Nolan: stage=active_trial, quotes_created=0, quotes_submitted=0, deals_closed=0, last_login=None, last_contacted=2026-05-03. BD should review the HubSpot notes and decide the next step manually.",
+      "priority": 3
+    },
+    {
+      "id": "gold_unknown_closed_lost",
+      "action": "unknown",
+      "reason": "No outreach pattern matched for Quinn Barr: stage=closed_lost, quotes_created=0, quotes_submitted=0, deals_closed=0, last_login=None, last_contacted=None. BD should review the HubSpot notes and decide the next step manually.",
+      "priority": 3
+    },
+    {
+      "id": "gold_adv_budget_recent",
+      "action": "nudge_usage",
+      "reason": "Tara Nguyen logs in regularly (last login 2026-06-04) and has created 4 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_adv_getback_positive",
+      "action": "nudge_usage",
+      "reason": "Omar Reid logs in regularly (last login 2026-06-07) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_adv_stall_positive",
+      "action": "nudge_usage",
+      "reason": "Bella Cruz logs in regularly (last login 2026-06-02) and has created 5 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    },
+    {
+      "id": "gold_book_5M",
+      "action": "nudge_usage",
+      "reason": "Hugo Bennett logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 2
+    },
+    {
+      "id": "gold_book_2M",
+      "action": "nudge_usage",
+      "reason": "Lena Ortiz logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 2
+    },
+    {
+      "id": "gold_book_below_2M",
+      "action": "nudge_usage",
+      "reason": "Milo Grant logs in regularly (last login 2026-06-02) and has created 3 quotes but has never submitted one — needs help getting a first quote over the line.",
+      "priority": 3
+    }
+  ]
+}
