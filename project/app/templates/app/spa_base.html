@@ -9,6 +9,26 @@ are fixed in frontend/vite.config.ts — no manifest lookup needed.
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Outreach Planner{% endblock %}</title>
+    {% comment %}
+    No-flash theme boot (MUS-36, CONTRACT §7.3). Blocking and inline, before the
+    stylesheet, so data-theme is on <html> at first paint and a dark-theme reload
+    never flashes light. Precedence: explicit localStorage.theme >
+    prefers-color-scheme > light. Kept verbatim; frontend/src/hooks/useTheme.ts
+    reads the same 'theme' key.
+    {% endcomment %}
+    <script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t !== 'light' && t !== 'dark') {
+      t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+    </script>
     <link rel="stylesheet" href="{% static 'frontend/assets/index.css' %}">
 </head>
 <body>
