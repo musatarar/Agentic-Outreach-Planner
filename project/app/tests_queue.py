@@ -668,3 +668,525 @@ class QueueDoneViewTests(AuthenticatedAPITestCase):
     def test_requires_authentication(self):
         self.client.logout()
         self.assertIn(self.client.get(reverse("queue-done")).status_code, (401, 403))
+
+
+class QueueEditViewTests(AuthenticatedAPITestCase):
+    """POST /api/queue/{id}/edit/ -- CONTRACT section 5.2."""
+
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+
+    def _edit(self, payload, action=None):
+        return self.client.post(
+            reverse("queue-edit", args=[(action or self.action).id]),
+            payload,
+            content_type="application/json",
+        )
+
+    def test_stores_the_edit_without_touching_the_original(self):
+        original = self.action.suggested_copy
+
+        resp = self._edit({"copy": "Subject: Mine\n\nHi there,\n\nBetter.\n"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.action.refresh_from_db()
+        # suggested_copy is immutable, forever: the diff IS the eval corpus.
+        self.assertEqual(self.action.suggested_copy, original)
+        self.assertEqual(self.action.edited_copy, "Subject: Mine\n\nHi there,\n\nBetter.\n")
+        self.assertEqual(resp.data["effective_copy"], self.action.edited_copy)
+        self.assertTrue(resp.data["is_edited"])
+
+    def test_appends_an_edit_row_with_a_diff(self):
+        self._edit({"copy": self.action.suggested_copy + " Extra."})
+
+        edit = OutreachEdit.objects.get()
+        self.assertEqual(edit.before_text, self.action.suggested_copy)
+        self.assertEqual(edit.after_text, self.action.suggested_copy + " Extra.")
+        self.assertEqual(edit.chars_added, 7)
+        self.assertEqual(edit.editor, self.TEST_EMAIL)
+        self.assertFalse(edit.committed)
+        self.assertEqual(edit.diff_ops[0]["op"], "insert")
+
+    def test_every_intermediate_edit_is_kept(self):
+        self._edit({"copy": "Subject: One\n\nFirst.\n"})
+        self._edit({"copy": "Subject: Two\n\nSecond.\n"})
+        self.assertEqual(OutreachEdit.objects.count(), 2)
+        # The corpus is append-only: the first draft is still there.
+        self.assertEqual(OutreachEdit.objects.first().after_text, "Subject: One\n\nFirst.\n")
+
+    def test_null_copy_reverts_to_the_original(self):
+        self._edit({"copy": "Subject: Mine\n\nHi.\n"})
+
+        resp = self._edit({"copy": None})
+
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.edited_copy, "")
+        self.assertEqual(resp.data["effective_copy"], self.action.suggested_copy)
+        self.assertFalse(resp.data["is_edited"])
+        # Reverting is itself a judgement worth keeping in the corpus.
+        self.assertEqual(OutreachEdit.objects.last().after_text, self.action.suggested_copy)
+
+    def test_line_endings_are_normalized_and_offsets_still_resolve(self):
+        """Section 9.1c -- \\r\\n counts as two characters in Python."""
+        resp = self._edit({"copy": "Subject: Hi\r\n\r\nHi there,\r\n\r\nA nudge.\r\n"})
+
+        self.action.refresh_from_db()
+        self.assertNotIn("\r", self.action.edited_copy)
+        self.assertNotIn("\r", resp.data["verification"]["copy"])
+        self.assertEqual(resp.data["verification"]["copy"], resp.data["effective_copy"])
+        self.assertEqual(resp.data["verification"]["copy_length"], len(resp.data["effective_copy"]))
+
+    def test_verification_is_rewritten_not_appended(self):
+        resp = self._edit({"copy": "Subject: Mine\n\nHi.\n"})
+        self.assertEqual(resp.data["verification"]["copy"], "Subject: Mine\n\nHi.\n")
+
+    def test_empty_copy_is_rejected(self):
+        resp = self._edit({"copy": "   \n  "})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "empty_copy")
+
+    def test_missing_and_non_string_copy_are_rejected(self):
+        self.assertEqual(self._edit({}).data["code"], "validation_error")
+        self.assertEqual(self._edit({"copy": 42}).data["code"], "validation_error")
+
+    def test_editing_an_approved_action_is_a_409(self):
+        self.action.status = OutreachAction.STATUS_APPROVED
+        self.action.save()
+
+        resp = self._edit({"copy": "Subject: Mine\n\nHi.\n"})
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "invalid_transition")
+        self.assertEqual(resp.data["detail"], 'Cannot edit an action with status "approved".')
+
+    def test_a_snoozed_action_is_still_editable(self):
+        self.action.status = OutreachAction.STATUS_SNOOZED
+        self.action.save()
+        self.assertEqual(self._edit({"copy": "Subject: Mine\n\nHi.\n"}).status_code, 200)
+
+    def test_unknown_id_is_a_404(self):
+        resp = self.client.post(
+            reverse("queue-edit", args=[9999]), {"copy": "x"}, content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.data["code"], "not_found")
+
+
+class QueueVerifyViewTests(AuthenticatedAPITestCase):
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+
+    def _verify(self, payload):
+        return self.client.post(
+            reverse("queue-verify", args=[self.action.id]),
+            payload,
+            content_type="application/json",
+        )
+
+    def test_is_a_dry_run(self):
+        resp = self._verify({"copy": "Subject: Draft\n\nHi.\n"})
+
+        self.assertEqual(resp.status_code, 200)
+        # The report envelope alone, not a QueueItem.
+        self.assertNotIn("status", resp.data)
+        self.assertEqual(resp.data["copy"], "Subject: Draft\n\nHi.\n")
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.edited_copy, "")
+        self.assertEqual(OutreachEdit.objects.count(), 0)
+
+    def test_echoes_the_exact_copy_it_verified(self):
+        # So a debounced out-of-order response can be discarded as stale
+        # rather than rendered over newer text (section 9.2).
+        resp = self._verify({"copy": "Subject: Draft\r\n\r\nHi.\n"})
+        self.assertEqual(resp.data["copy"], "Subject: Draft\n\nHi.\n")
+
+    def test_empty_copy_is_rejected(self):
+        self.assertEqual(self._verify({"copy": "  "}).data["code"], "empty_copy")
+        self.assertEqual(self._verify({}).data["code"], "empty_copy")
+
+
+class QueueApproveViewTests(AuthenticatedAPITestCase):
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+
+    def _approve(self):
+        return self.client.post(
+            reverse("queue-approve", args=[self.action.id]), {}, content_type="application/json"
+        )
+
+    def test_approves_a_pending_action(self):
+        resp = self._approve()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "approved")
+        self.assertTrue(resp.data["undo"]["available"])
+        self.assertIsNotNone(resp.data["undo"]["expires_at"])
+        self.action.refresh_from_db()
+        self.assertIsNotNone(self.action.status_changed_at)
+
+    def test_commits_the_latest_edit(self):
+        for text in ("Subject: One\n\nFirst.\n", "Subject: Two\n\nSecond.\n"):
+            self.client.post(
+                reverse("queue-edit", args=[self.action.id]),
+                {"copy": text},
+                content_type="application/json",
+            )
+
+        self._approve()
+
+        edits = list(OutreachEdit.objects.order_by("created_at", "id"))
+        self.assertFalse(edits[0].committed)
+        self.assertTrue(edits[1].committed)  # what a human actually sent
+
+    def test_unverified_claims_block_approval(self):
+        """Section 4.6 -- the server is authoritative, not the frontend."""
+        self.action.verification = {
+            "version": 1,
+            "copy": self.action.suggested_copy,
+            "verified_count": 2,
+            "unverified_count": 2,
+            "checked_count": 4,
+            "summary": "2 of 4 claims verified",
+            "can_approve": False,
+            "claims": [],
+        }
+        self.action.save()
+
+        resp = self._approve()
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "unverified_claims")
+        self.assertIn("2 of 4", resp.data["detail"])
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.status, OutreachAction.STATUS_PENDING)
+
+    def test_can_approve_mirrors_the_report(self):
+        self.action.verification = {
+            "copy": self.action.suggested_copy,
+            "can_approve": False,
+            "unverified_count": 1,
+            "checked_count": 1,
+        }
+        self.action.save()
+
+        item = self.client.get(reverse("queue-detail", args=[self.action.id])).data
+
+        self.assertFalse(item["can_approve"])
+        self.assertEqual(item["can_approve"], item["verification"]["can_approve"])
+
+    def test_approving_a_dismissed_action_is_a_409(self):
+        self.action.status = OutreachAction.STATUS_DISMISSED
+        self.action.save()
+
+        resp = self._approve()
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "invalid_transition")
+        self.assertEqual(resp.data["detail"], 'Cannot approve an action with status "dismissed".')
+
+    def test_a_snoozed_action_can_be_approved(self):
+        self.action.status = OutreachAction.STATUS_SNOOZED
+        self.action.save()
+        self.assertEqual(self._approve().status_code, 200)
+
+
+class QueueSnoozeViewTests(AuthenticatedAPITestCase):
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+
+    def _snooze(self, payload):
+        return self.client.post(
+            reverse("queue-snooze", args=[self.action.id]),
+            payload,
+            content_type="application/json",
+        )
+
+    def test_relative_triggers_return_at_0900(self):
+        for trigger, days in (("tomorrow", 1), ("in_3_days", 3)):
+            with self.subTest(trigger=trigger):
+                resp = self._snooze({"trigger": trigger, "until": None})
+                self.assertEqual(resp.status_code, 200)
+                self.action.refresh_from_db()
+                self.assertEqual(self.action.snooze_trigger, trigger)
+                self.assertEqual(self.action.snooze_until.hour, 9)
+                self.assertEqual(
+                    self.action.snooze_until.date(),
+                    timezone.now().date() + timedelta(days=days),
+                )
+                self.assertIsNone(self.action.snooze_activity_after)
+
+    def test_next_week_lands_on_a_monday(self):
+        self._snooze({"trigger": "next_week"})
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.snooze_until.weekday(), 0)
+        self.assertGreater(self.action.snooze_until, timezone.now())
+
+    def test_custom_requires_a_future_timestamp(self):
+        future = (timezone.now() + timedelta(days=5)).isoformat()
+
+        resp = self._snooze({"trigger": "custom", "until": future})
+
+        self.assertEqual(resp.status_code, 200)
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.snooze_until.isoformat(), future)
+
+    def test_custom_rejects_missing_and_past_timestamps(self):
+        past = (timezone.now() - timedelta(days=1)).isoformat()
+        for payload in ({"trigger": "custom"}, {"trigger": "custom", "until": past}):
+            with self.subTest(payload=payload):
+                resp = self._snooze(payload)
+                self.assertEqual(resp.status_code, 400)
+                self.assertEqual(resp.data["code"], "invalid_snooze")
+
+    def test_on_activity_records_a_watermark_and_a_backstop(self):
+        """Section 9.17 -- "when they do something" cannot mean "never"."""
+        before = timezone.now()
+
+        resp = self._snooze({"trigger": "on_activity"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.action.refresh_from_db()
+        self.assertGreaterEqual(self.action.snooze_activity_after, before)
+        # snooze_until is non-NULL for EVERY snoozed row, on_activity included.
+        self.assertIsNotNone(self.action.snooze_until)
+        self.assertAlmostEqual(
+            (self.action.snooze_until - self.action.snooze_activity_after).days, 14
+        )
+
+    def test_unknown_trigger_is_rejected(self):
+        resp = self._snooze({"trigger": "next_year"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "invalid_snooze")
+
+    def test_re_snoozing_refreshes_both_stamps(self):
+        self._snooze({"trigger": "tomorrow"})
+        self.action.refresh_from_db()
+        first = self.action.snooze_until
+
+        resp = self._snooze({"trigger": "next_week"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.action.refresh_from_db()
+        self.assertNotEqual(self.action.snooze_until, first)
+        self.assertEqual(self.action.snooze_trigger, "next_week")
+
+    def test_snoozing_an_approved_action_is_a_409(self):
+        self.action.status = OutreachAction.STATUS_APPROVED
+        self.action.save()
+        resp = self._snooze({"trigger": "tomorrow"})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "invalid_transition")
+
+
+class QueueDismissViewTests(AuthenticatedAPITestCase):
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+
+    def _dismiss(self, payload=None):
+        return self.client.post(
+            reverse("queue-dismiss", args=[self.action.id]),
+            payload if payload is not None else {},
+            content_type="application/json",
+        )
+
+    def test_dismiss_writes_the_suppression_ledger(self):
+        resp = self._dismiss({"reason": "not_a_fit"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "dismissed")
+        self.assertEqual(resp.data["dismiss_reason"], "not_a_fit")
+        key = DismissedOutreachKey.objects.get()
+        self.assertEqual(key.dedupe_key, dedupe.dedupe_key(self.action.lead_id, "nudge_usage"))
+        self.assertIsNone(key.revoked_at)
+        self.assertEqual(key.dismissed_by, self.TEST_EMAIL)
+        self.assertEqual(key.source_action_id, self.action.id)
+
+    def test_reason_is_optional(self):
+        self.assertEqual(self._dismiss().status_code, 200)
+        self.assertEqual(DismissedOutreachKey.objects.get().reason, "")
+
+    def test_unknown_reason_is_rejected(self):
+        resp = self._dismiss({"reason": "because"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "invalid_reason")
+        self.assertEqual(DismissedOutreachKey.objects.count(), 0)
+
+    def test_dismissing_twice_is_idempotent_at_the_ledger(self):
+        self._dismiss({"reason": "bad_timing"})
+        other = make_action(self.action.lead, action_type="nudge_usage")
+        self.client.post(
+            reverse("queue-dismiss", args=[other.id]), {}, content_type="application/json"
+        )
+        self.assertEqual(DismissedOutreachKey.objects.count(), 1)
+
+    def test_dismissing_an_approved_action_is_a_409(self):
+        self.action.status = OutreachAction.STATUS_APPROVED
+        self.action.save()
+        self.assertEqual(self._dismiss().status_code, 409)
+
+
+class QueueUndoViewTests(AuthenticatedAPITestCase):
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+
+    def _post(self, name, payload=None, action=None):
+        return self.client.post(
+            reverse(name, args=[(action or self.action).id]),
+            payload if payload is not None else {},
+            content_type="application/json",
+        )
+
+    def test_undo_of_approve_returns_to_pending(self):
+        self._post("queue-approve")
+
+        resp = self._post("queue-undo")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "pending")
+        self.assertEqual(resp.data["undo"], {"available": False, "expires_at": None})
+
+    def test_undo_of_snooze_clears_the_snooze(self):
+        self._post("queue-snooze", {"trigger": "on_activity"})
+
+        resp = self._post("queue-undo")
+
+        self.assertEqual(resp.data["status"], "pending")
+        self.assertEqual(
+            resp.data["snooze"], {"until": None, "trigger": "", "activity_after": None}
+        )
+
+    def test_undo_does_not_discard_the_edit(self):
+        self._post("queue-edit", {"copy": "Subject: Mine\n\nHi.\n"})
+        self._post("queue-approve")
+
+        resp = self._post("queue-undo")
+
+        # Undoing a decision is not undoing the writing.
+        self.assertEqual(resp.data["edited_copy"], "Subject: Mine\n\nHi.\n")
+        self.assertEqual(OutreachEdit.objects.count(), 1)
+
+    def test_undo_of_dismiss_revokes_the_suppression(self):
+        """Section 9.7 -- the highest-consequence silent bug in this ticket.
+
+        Asserting `status == pending` passes with the bug present. The only
+        assertion that catches it is that a fresh planner run raises the
+        recommendation again.
+        """
+        lead = make_lead("lead_undo", stage="demo_completed", signed_up_date=None)
+        with patch("project.app.services.outreach.generate_copy", return_value=GOOD_COPY):
+            plan_outreach()
+        action = OutreachAction.objects.get(lead=lead)
+
+        self._post("queue-dismiss", {"reason": "wrong_contact"}, action=action)
+        self.assertEqual(DismissedOutreachKey.objects.filter(revoked_at=None).count(), 1)
+
+        self._post("queue-undo", action=action)
+
+        # The load-bearing assertion. The reviewer undoes, then approves; days
+        # later the planner runs again and must be free to raise this
+        # recommendation. Approving first is what makes the test real -- an
+        # undone row is itself "open", so leaving it pending would satisfy
+        # "an action exists" even with the suppression still in force.
+        self._post("queue-approve", action=action)
+        with patch("project.app.services.outreach.generate_copy", return_value=GOOD_COPY):
+            plan_outreach()
+        self.assertTrue(
+            OutreachAction.objects.filter(
+                lead=lead, action_type=action.action_type, status="pending"
+            ).exists()
+        )
+        self.assertIsNotNone(DismissedOutreachKey.objects.get().revoked_at)
+
+    def test_undo_outside_the_window_is_a_409(self):
+        self._post("queue-approve")
+        self.action.refresh_from_db()
+        self.action.status_changed_at = timezone.now() - timedelta(seconds=301)
+        self.action.save(update_fields=["status_changed_at"])
+
+        resp = self._post("queue-undo")
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "undo_window_expired")
+        self.assertIn("5-minute", resp.data["detail"])
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.status, OutreachAction.STATUS_APPROVED)
+
+    @override_settings(TRIAGE_UNDO_WINDOW_SECONDS=600)
+    def test_the_window_is_configurable(self):
+        self._post("queue-approve")
+        self.action.refresh_from_db()
+        self.action.status_changed_at = timezone.now() - timedelta(seconds=400)
+        self.action.save(update_fields=["status_changed_at"])
+        self.assertEqual(self._post("queue-undo").status_code, 200)
+
+    def test_undoing_a_pending_action_is_a_409(self):
+        resp = self._post("queue-undo")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "invalid_transition")
+        self.assertIn("already pending", resp.data["detail"])
+
+
+class QueueLifecycleTests(AuthenticatedAPITestCase):
+    """The acceptance criterion: the whole lifecycle, driven from the API."""
+
+    def test_edit_verify_approve_undo_dismiss(self):
+        action = make_action()
+        edit_url = reverse("queue-edit", args=[action.id])
+
+        # 1. It shows up in the queue.
+        self.assertEqual(len(self.client.get(reverse("queue-list")).data["items"]), 1)
+
+        # 2. Verify a candidate without persisting it.
+        dry = self.client.post(
+            reverse("queue-verify", args=[action.id]),
+            {"copy": "Subject: Draft\n\nHi.\n"},
+            content_type="application/json",
+        )
+        self.assertEqual(dry.status_code, 200)
+
+        # 3. Persist the edit, then approve.
+        self.client.post(
+            edit_url, {"copy": "Subject: Final\n\nHi.\n"}, content_type="application/json"
+        )
+        approved = self.client.post(
+            reverse("queue-approve", args=[action.id]), {}, content_type="application/json"
+        )
+        self.assertEqual(approved.data["status"], "approved")
+
+        # 4. It has left the queue and joined /done.
+        self.assertEqual(self.client.get(reverse("queue-list")).data["counts"]["remaining"], 0)
+        done = self.client.get(reverse("queue-done")).data
+        self.assertEqual(done["summary"]["approved"], 1)
+        self.assertTrue(done["summary"]["queue_cleared"])
+
+        # 5. Undo puts it back, edit intact.
+        undone = self.client.post(
+            reverse("queue-undo", args=[action.id]), {}, content_type="application/json"
+        )
+        self.assertEqual(undone.data["status"], "pending")
+        self.assertEqual(undone.data["effective_copy"], "Subject: Final\n\nHi.\n")
+
+        # 6. Dismiss is final.
+        self.client.post(
+            reverse("queue-dismiss", args=[action.id]),
+            {"reason": "already_handled"},
+            content_type="application/json",
+        )
+        self.assertEqual(self.client.get(reverse("queue-list")).data["counts"]["remaining"], 0)
+        self.assertEqual(DismissedOutreachKey.objects.filter(revoked_at=None).count(), 1)
+
+    def test_mutations_require_authentication(self):
+        action = make_action()
+        self.client.logout()
+        for name in ("queue-edit", "queue-approve", "queue-snooze", "queue-dismiss", "queue-undo"):
+            with self.subTest(endpoint=name):
+                resp = self.client.post(
+                    reverse(name, args=[action.id]), {}, content_type="application/json"
+                )
+                self.assertIn(resp.status_code, (401, 403))
