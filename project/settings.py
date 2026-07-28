@@ -42,16 +42,6 @@ if _env_file.exists():
 #   off | standard (default) | strict. See project/app/services/verify.py.
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 
-# HTTP Basic Auth credentials guarding the 3 LLM configuration endpoints
-# (/api/llm/catalog/, /api/llm/config/, /api/llm/config/test/) -- see
-# project/app/authentication.py. Unlike DJANGO_SECRET_KEY, this is NOT
-# required at Django boot: every other endpoint in this app is intentionally
-# AllowAny (see SECURITY.md), and these narrower admin endpoints only need
-# credentials configured once someone actually calls them. The auth class
-# raises a clear 401 if either is unset when a request hits one of the 3 views.
-LLM_ADMIN_USERNAME = os.environ.get("LLM_ADMIN_USERNAME", "")
-LLM_ADMIN_PASSWORD = os.environ.get("LLM_ADMIN_PASSWORD", "")
-
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
 # above for local/demo convenience; production should set these directly.
@@ -187,11 +177,34 @@ LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
 LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "project.app.authentication.SessionAuthenticationWith401",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
     "EXCEPTION_HANDLER": "project.app.exceptions.contract_exception_handler",
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {
         "auth_request_ip": LOGIN_RATE_LIMIT_IP,
         "auth_consume_ip": "60/hour",
         "queue_verify": "120/min",
+    },
+}
+
+# Console delivery of the sign-in link is the demo path, which means the link
+# has to actually reach the server log. Django's default logging attaches a
+# handler to the `django` logger only, so an INFO record from `project.app`
+# falls through to logging's last-resort handler (WARNING and above) and is
+# silently dropped -- `docker compose up` would print nothing to paste.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {
+        "project.app": {
+            "handlers": ["console"],
+            "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+        },
     },
 }

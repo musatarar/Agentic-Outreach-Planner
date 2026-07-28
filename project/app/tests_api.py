@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 from datetime import date
@@ -6,10 +5,9 @@ from unittest import mock
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
-from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient
 
 from project.app.models import (
     Lead,
@@ -19,6 +17,7 @@ from project.app.models import (
     OutreachAction,
     ReviewDecision,
 )
+from project.app.tests_auth_utils import AuthenticatedAPITestCase
 
 
 def make_lead(lead_id, **overrides):
@@ -72,12 +71,7 @@ def make_llm_model(provider, model_id="model-a", **overrides):
     return LLMModel.objects.create(**defaults)
 
 
-def _basic_auth_header(username, password):
-    creds = base64.b64encode(f"{username}:{password}".encode()).decode()
-    return f"Basic {creds}"
-
-
-class LeadListViewTests(APITestCase):
+class LeadListViewTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lead_b = make_lead("lead_002", agency_name="Bravo")
@@ -104,7 +98,7 @@ class LeadListViewTests(APITestCase):
             self.assertIn(field, first)
 
 
-class OutreachListViewTests(APITestCase):
+class OutreachListViewTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lead1 = make_lead("lead_001")
@@ -172,7 +166,7 @@ class OutreachListViewTests(APITestCase):
         )
 
 
-class OutreachRunViewTests(APITestCase):
+class OutreachRunViewTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lead1 = make_lead("lead_001", agency_name="Alpha")
@@ -213,7 +207,7 @@ class OutreachRunViewTests(APITestCase):
         self.assertEqual(resp.data[0]["lead"]["agency_name"], "Alpha")
 
 
-class OutreachReportViewTests(APITestCase):
+class OutreachReportViewTests(AuthenticatedAPITestCase):
     """GET /api/reports/ returns the FULL action history, newest first."""
 
     @classmethod
@@ -263,7 +257,7 @@ class OutreachReportViewTests(APITestCase):
         self.assertEqual(item["lead"]["agency_name"], "Alpha")
 
 
-class ReviewQueueViewTests(APITestCase):
+class ReviewQueueViewTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lead1 = make_lead("lead_001")
@@ -328,7 +322,7 @@ class ReviewQueueViewTests(APITestCase):
             self.assertEqual(set(opt.keys()), {"value", "label", "urgency"})
 
 
-class ReviewDecisionCreateTests(APITestCase):
+class ReviewDecisionCreateTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lead = make_lead("lead_001")
@@ -449,7 +443,7 @@ class ReviewDecisionCreateTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-class ReviewDecisionListTests(APITestCase):
+class ReviewDecisionListTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.lead = make_lead("lead_001")
@@ -499,7 +493,7 @@ class ReviewDecisionListTests(APITestCase):
 # ---------------------------------------------------------------------------
 
 
-class LLMCatalogViewTests(APITestCase):
+class LLMCatalogViewTests(AuthenticatedAPITestCase):
     """GET /api/llm/catalog/ -- read-only, no auth required."""
 
     @classmethod
@@ -548,9 +542,8 @@ class LLMCatalogViewTests(APITestCase):
         self.assertIsInstance(rendered_model["input_price_per_mtok_usd"], float)
 
 
-@override_settings(LLM_ADMIN_USERNAME="admin", LLM_ADMIN_PASSWORD="s3cret")
-class LLMConfigViewTests(APITestCase):
-    """GET/PUT /api/llm/config/ -- Basic Auth-protected."""
+class LLMConfigViewTests(AuthenticatedAPITestCase):
+    """GET/PUT /api/llm/config/ -- behind the magic-link session (MUS-37)."""
 
     @classmethod
     def setUpTestData(cls):
@@ -560,7 +553,7 @@ class LLMConfigViewTests(APITestCase):
         cls.llama = make_llm_model(cls.groq, "llama", context_window=100_000)
 
     def setUp(self):
-        self.client.credentials(HTTP_AUTHORIZATION=_basic_auth_header("admin", "s3cret"))
+        super().setUp()
         self._fernet_key = Fernet.generate_key().decode()
         self._patcher = mock.patch.dict(os.environ, {"LLM_KEY_ENCRYPTION_KEY": self._fernet_key})
         self._patcher.start()
@@ -569,9 +562,10 @@ class LLMConfigViewTests(APITestCase):
         self._patcher.stop()
 
     def test_unauthenticated_request_401(self):
-        self.client.credentials()  # drop the auth header
-        resp = self.client.get(reverse("llm-config"))
+        # 401, not 403: see SessionAuthenticationWith401 and contract 9.4.
+        resp = APIClient().get(reverse("llm-config"))
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(resp.data["code"], "not_authenticated")
 
     def test_get_with_no_saved_row_falls_back_to_provider_default(self):
         resp = self.client.get(reverse("llm-config"))

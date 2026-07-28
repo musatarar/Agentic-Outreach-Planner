@@ -3,11 +3,9 @@ import time
 from django.db import IntegrityError, transaction
 from django.db.models import Prefetch
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from project.app.authentication import LLMAdminBasicAuthentication
 from project.app.models import (
     Lead,
     LLMConfiguration,
@@ -154,7 +152,7 @@ class LeadListView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# LLM configuration (MUS-32) -- Basic Auth-protected, unlike everything above.
+# LLM configuration (MUS-32). Authenticated by session like everything above.
 # ---------------------------------------------------------------------------
 
 # Error kinds the config-test endpoint may report. Never the raw SDK
@@ -170,8 +168,8 @@ _ERROR_MESSAGES = {
 class LLMCatalogView(APIView):
     """GET /api/llm/catalog/ — all enabled providers and their models.
 
-    Read-only reference data (seeded by ``manage.py seed_llm_catalog``); no
-    auth required, same as the rest of the read endpoints in this API.
+    Read-only reference data (seeded by ``manage.py seed_llm_catalog``).
+    Authenticated, same as the rest of this API since MUS-37.
     """
 
     def get(self, request, *args, **kwargs):
@@ -194,12 +192,10 @@ class LLMCatalogView(APIView):
 class LLMConfigView(APIView):
     """GET/PUT /api/llm/config/ — the active provider/model/key selection.
 
-    Basic Auth-protected: this is the one place a stored provider API key can
-    be written, so unlike every other endpoint in this API it is not AllowAny.
+    This is the one place a stored provider API key can be written. Since
+    MUS-37 it sits behind the same magic-link session as everything else --
+    see SECURITY.md; the separate Basic Auth credential is retired.
     """
-
-    authentication_classes = [LLMAdminBasicAuthentication]
-    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         return Response(self._current_state(), status=status.HTTP_200_OK)
@@ -269,9 +265,6 @@ class LLMConfigTestView(APIView):
     to testing the already-saved configuration, preserving the previous
     no-body behavior.
     """
-
-    authentication_classes = [LLMAdminBasicAuthentication]
-    permission_classes = [IsAuthenticated]
 
     _TEST_PROMPT = "Reply with exactly one word: pong"
     _TEST_TIMEOUT_SECONDS = 10
