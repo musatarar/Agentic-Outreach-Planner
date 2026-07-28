@@ -1,4 +1,5 @@
 import { Badge, Button, KeyHint } from '../ui';
+import { CopyButton } from '../CopyButton';
 import type { VerificationReport } from '../../api/types';
 import { blockerCause, findBlockingClaim } from './spans';
 
@@ -27,6 +28,10 @@ export interface ActionBarProps {
   approving: boolean;
   onApprove: () => void;
   onEdit: () => void;
+  onSnooze: () => void;
+  onDismiss: () => void;
+  /** The text a plain copy (no approval) should put on the clipboard. */
+  copyText: string;
   /** Back to `suggested_copy` via POST /edit/ with {"copy": null}. */
   onRevert: () => void;
   editing: boolean;
@@ -52,12 +57,39 @@ export function ActionBar({
   onApprove,
   onEdit,
   onRevert,
+  onSnooze,
+  onDismiss,
+  copyText,
   editing,
   isEdited,
   hasPendingEdit,
 }: ActionBarProps) {
   const blocker = canApprove ? null : findBlockingClaim(report);
   const cause = blockerCause(blocker);
+
+  // The same secondary row in both states: the alternatives to approving do not
+  // change just because approving is blocked.
+  const secondary = (
+    <>
+      <Button variant="ghost" onClick={onSnooze}>
+        Snooze
+      </Button>
+      <KeyHint keys={['S']} />
+      <Button variant="ghost" onClick={onDismiss}>
+        Dismiss
+      </Button>
+      <KeyHint keys={['X']} />
+      {/* Copy without approving. Reuses the existing clipboard-with-feedback
+          button rather than reimplementing it. */}
+      <CopyButton text={copyText} />
+      {/* `suggested_copy` is immutable, so an edit is always undoable. */}
+      {isEdited && (
+        <Button variant="ghost" onClick={onRevert}>
+          Revert to original
+        </Button>
+      )}
+    </>
+  );
 
   return (
     <div className="action-bar">
@@ -81,12 +113,8 @@ export function ActionBar({
               Edit
             </Button>
           )}
-          {/* `suggested_copy` is immutable, so an edit is always undoable. */}
-          {isEdited && (
-            <Button variant="ghost" onClick={onRevert}>
-              Revert to original
-            </Button>
-          )}
+          <KeyHint keys={['E']} />
+          {secondary}
         </div>
       ) : (
         <div className="action-bar__blocked">
@@ -110,11 +138,7 @@ export function ActionBar({
                 Edit the draft
               </Button>
             )}
-            {isEdited && (
-              <Button variant="ghost" onClick={onRevert}>
-                Revert to original
-              </Button>
-            )}
+            {secondary}
           </div>
         </div>
       )}
