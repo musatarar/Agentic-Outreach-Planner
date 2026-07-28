@@ -58,6 +58,9 @@ export interface UndoControlProps {
 export function UndoControl({ item, onUndo, sending, expired }: UndoControlProps) {
   const remaining = useUndoCountdown(item.undo.expires_at);
   const lapsed = remaining !== null && remaining <= 0;
+  // Keyed off status, never off `snooze.until` being non-null: approve and
+  // dismiss leave the snooze fields in place (CONTRACT §5.2 clears them for
+  // undo only), so a formerly-snoozed approved row still carries them.
   const label = item.status === 'snoozed' ? 'Un-snooze' : 'Undo';
 
   if (expired || (item.undo.available && lapsed)) {
