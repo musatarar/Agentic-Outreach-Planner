@@ -669,7 +669,10 @@ class LLMConfigViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("model", resp.data)
+        # MUS-37: every non-2xx body is now the {code, detail} contract envelope;
+        # the offending field name is carried in `detail` rather than as a key.
+        self.assertEqual(resp.data["code"], "validation_error")
+        self.assertIn("model", resp.data["detail"])
 
     def test_put_max_tokens_exceeding_context_window_400(self):
         resp = self.client.put(
@@ -678,7 +681,8 @@ class LLMConfigViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("max_tokens", resp.data)
+        self.assertEqual(resp.data["code"], "validation_error")
+        self.assertIn("max_tokens", resp.data["detail"])
 
     def test_put_unknown_provider_400(self):
         resp = self.client.put(
@@ -687,7 +691,8 @@ class LLMConfigViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("provider", resp.data)
+        self.assertEqual(resp.data["code"], "validation_error")
+        self.assertIn("provider", resp.data["detail"])
 
     def test_key_source_database_when_key_stored(self):
         self.client.put(

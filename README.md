@@ -72,6 +72,34 @@ This starts Postgres, builds the app image, applies migrations, seeds the demo p
 serves the app at **http://127.0.0.1:8000/**. The server starts even without an LLM provider
 key — you just can't run the LLM copy step until one is set.
 
+### Signing in
+
+The API is authenticated by **magic link** — one operator, no passwords to store, reset or
+rotate. Add yourself to the allowlist in `.env` (there is no signup flow, so the allowlist
+is what decides who may request a link):
+
+```bash
+LOGIN_ALLOWED_EMAILS=you@example.com
+DJANGO_DEBUG=True          # so the link comes back in the API response too
+```
+
+Then open **http://127.0.0.1:8000/signin**, enter that address, and the link is printed to
+the server log:
+
+```
+INFO Magic sign-in link for you@example.com (expires in 900s):
+     http://127.0.0.1:8000/auth/consume?token=nJ7yQwVh3kR2mLpX8sTcAeB1dGfHiKoZuYvNqW0xMjE
+```
+
+Paste it into the browser and you're in. Links are single-use and expire after 15 minutes
+(`LOGIN_TOKEN_TTL_SECONDS`). **No SMTP is involved in the demo path** — delivery defaults to
+`LOGIN_LINK_DELIVERY=console`; set it to `email` to use Django's email backend instead.
+
+An address that isn't on the allowlist gets exactly the same response as one that is, so the
+endpoint can't be used to find out who has an account. The one exception is the `dev_link`
+field in the response body, which is populated only when `DJANGO_DEBUG=True` **and** delivery
+is `console` **and** the address is allowlisted.
+
 ## Architecture, 30 seconds
 
 | Layer | Where | What |
