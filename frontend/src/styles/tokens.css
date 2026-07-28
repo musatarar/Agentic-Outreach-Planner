@@ -76,7 +76,7 @@
 
   --color-text: #12151c;
   --color-text-muted: #4a5464;
-  --color-text-subtle: #6e7889;
+  --color-text-subtle: #68717f;
   --color-text-inverse: #ffffff;
 
   /* ---- Accent (one, exactly) ------------------------------------------
@@ -130,7 +130,7 @@
   --color-status-snoozed-fg: #4a5464;
   --color-status-snoozed-bg: #f3f5f8;
 
-  --color-status-dismissed-fg: #8a94a5;
+  --color-status-dismissed-fg: #666f80;
   --color-status-dismissed-bg: #f3f5f8;
 
   /* ---- Feedback aliases (aliases only -- no fourth ramp) --------------- */
@@ -229,13 +229,13 @@
   --color-text-subtle: #7a8598;
   --color-text-inverse: #090b10;
 
-  --color-accent: #6366f1;
-  --color-accent-hover: #7c7ff5;
-  --color-accent-active: #8b8ef8;
+  --color-accent: #818cf8;
+  --color-accent-hover: #a5b4fc;
+  --color-accent-active: #c7d2fe;
   --color-accent-subtle: #1b1e3a;
   --color-accent-border: #3a3f7a;
-  --color-accent-contrast: #ffffff;
-  --color-focus-ring: #8b8ef8;
+  --color-accent-contrast: #12151c;
+  --color-focus-ring: #a5b4fc;
 
   --color-p1-fg: #fda29b;
   --color-p1-bg: #3a1512;
@@ -263,7 +263,7 @@
   --color-status-snoozed-fg: #a6b0c0;
   --color-status-snoozed-bg: #1a202a;
 
-  --color-status-dismissed-fg: #6d7686;
+  --color-status-dismissed-fg: #7d8798;
   --color-status-dismissed-bg: #14181f;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
@@ -300,13 +300,13 @@
     --color-text-subtle: #7a8598;
     --color-text-inverse: #090b10;
 
-    --color-accent: #6366f1;
-    --color-accent-hover: #7c7ff5;
-    --color-accent-active: #8b8ef8;
+    --color-accent: #818cf8;
+    --color-accent-hover: #a5b4fc;
+    --color-accent-active: #c7d2fe;
     --color-accent-subtle: #1b1e3a;
     --color-accent-border: #3a3f7a;
-    --color-accent-contrast: #ffffff;
-    --color-focus-ring: #8b8ef8;
+    --color-accent-contrast: #12151c;
+    --color-focus-ring: #a5b4fc;
 
     --color-p1-fg: #fda29b;
     --color-p1-bg: #3a1512;
@@ -334,7 +334,7 @@
     --color-status-snoozed-fg: #a6b0c0;
     --color-status-snoozed-bg: #1a202a;
 
-    --color-status-dismissed-fg: #6d7686;
+    --color-status-dismissed-fg: #7d8798;
     --color-status-dismissed-bg: #14181f;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
