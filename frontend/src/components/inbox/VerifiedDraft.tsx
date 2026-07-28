@@ -23,6 +23,8 @@ export interface VerifiedDraftProps {
    * the response from `/verify/`, which echoes the exact string it verified.
    */
   report: VerificationReport;
+  /** Overridden by the editor, which stacks this as an underlay layer. */
+  className?: string;
 }
 
 /**
@@ -36,7 +38,7 @@ export interface VerifiedDraftProps {
  * They are reserved for claims inside generated copy: never a fill, never on
  * chrome, never anywhere but here.
  */
-export function VerifiedDraft({ report }: VerifiedDraftProps) {
+export function VerifiedDraft({ report, className = 'draft' }: VerifiedDraftProps) {
   const segments = useMemo(() => buildDraftSegments(report), [report]);
 
   // The astral canary. If offsets ever stop lining up with the text they
@@ -54,7 +56,7 @@ export function VerifiedDraft({ report }: VerifiedDraftProps) {
   }, [report]);
 
   return (
-    <div className="draft">
+    <div className={className}>
       {segments.map((segment) =>
         segment.role === 'subject-label' ? (
           <span key={segment.key} className="draft__subject-label">

@@ -26,6 +26,14 @@ export interface ActionBarProps {
   canApprove: boolean;
   approving: boolean;
   onApprove: () => void;
+  onEdit: () => void;
+  /** Back to `suggested_copy` via POST /edit/ with {"copy": null}. */
+  onRevert: () => void;
+  editing: boolean;
+  /** Server-computed (§9.11); the frontend never compares the copy strings. */
+  isEdited: boolean;
+  /** Local edits not yet sent to /edit/. */
+  hasPendingEdit: boolean;
 }
 
 /**
@@ -37,7 +45,17 @@ export interface ActionBarProps {
  * A greyed-out button with no explanation is the failure mode this design
  * exists to avoid.
  */
-export function ActionBar({ report, canApprove, approving, onApprove }: ActionBarProps) {
+export function ActionBar({
+  report,
+  canApprove,
+  approving,
+  onApprove,
+  onEdit,
+  onRevert,
+  editing,
+  isEdited,
+  hasPendingEdit,
+}: ActionBarProps) {
   const blocker = canApprove ? null : findBlockingClaim(report);
   const cause = blockerCause(blocker);
 
@@ -49,6 +67,7 @@ export function ActionBar({ report, canApprove, approving, onApprove }: ActionBa
         </Badge>
         {/* Server-rendered, printed verbatim (§9.3). */}
         <span className="action-bar__summary-text">{report.summary}</span>
+        {hasPendingEdit && <span className="action-bar__pending">unsaved</span>}
       </div>
 
       {canApprove ? (
@@ -57,6 +76,17 @@ export function ActionBar({ report, canApprove, approving, onApprove }: ActionBa
             Approve &amp; copy
           </Button>
           <KeyHint keys={['A']} />
+          {!editing && (
+            <Button variant="ghost" onClick={onEdit}>
+              Edit
+            </Button>
+          )}
+          {/* `suggested_copy` is immutable, so an edit is always undoable. */}
+          {isEdited && (
+            <Button variant="ghost" onClick={onRevert}>
+              Revert to original
+            </Button>
+          )}
         </div>
       ) : (
         <div className="action-bar__blocked">
@@ -73,6 +103,18 @@ export function ActionBar({ report, canApprove, approving, onApprove }: ActionBa
             <Button variant="danger" disabled>
               {BLOCKER_BUTTON[cause]}
             </Button>
+            {/* The way out of a block is to change the copy, so editing is the
+                affordance that has to be loudest here. */}
+            {!editing && (
+              <Button variant="secondary" onClick={onEdit}>
+                Edit the draft
+              </Button>
+            )}
+            {isEdited && (
+              <Button variant="ghost" onClick={onRevert}>
+                Revert to original
+              </Button>
+            )}
           </div>
         </div>
       )}
