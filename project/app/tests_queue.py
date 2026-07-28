@@ -12,13 +12,15 @@ from datetime import timezone as dt_timezone
 from io import StringIO
 from unittest.mock import patch
 
-from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.settings import api_settings
+from rest_framework.throttling import ScopedRateThrottle
 
 from project.app.models import (
     DismissedOutreachKey,
@@ -29,28 +31,8 @@ from project.app.models import (
 )
 from project.app.services import dedupe, queue_copy
 from project.app.services.outreach import plan_outreach
-
-try:  # pragma: no cover - the fallback disappears the moment MUS-37 merges
-    from project.app.tests_auth_utils import AuthenticatedAPITestCase
-except ImportError:
-    # MUS-37 owns tests_auth_utils.py; its name and API are frozen in CONTRACT
-    # section 8.2 precisely so MUS-39 can write against it before it lands.
-    # This local twin keeps the branch green standalone and is deleted by the
-    # import above the moment MUS-37 merges.
-    class AuthenticatedAPITestCase(TestCase):
-        """TestCase whose ``self.client`` is already signed in."""
-
-        TEST_EMAIL = "tester@example.com"
-
-        def setUp(self):
-            super().setUp()
-            self.user = get_user_model().objects.create(
-                username=self.TEST_EMAIL, email=self.TEST_EMAIL
-            )
-            self.user.set_unusable_password()
-            self.user.save()
-            self.client.force_login(self.user)
-
+from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.views_queue import QueueVerifyView
 
 # A well-shaped, grounded draft: passes both the shape gate (MUS-23) and the
 # grounding gate (MUS-22) so plan_outreach() leaves needs_human False.
@@ -288,10 +270,14 @@ class BuildVerificationTests(TestCase):
         self.assertEqual(report["version"], 1)
         self.assertIn("claims verified", report["summary"])
 
-    def test_can_approve_defaults_open_and_honours_the_report(self):
-        self.assertTrue(queue_copy.can_approve(None))
-        self.assertTrue(queue_copy.can_approve({}))
+    def test_can_approve_fails_closed_on_a_blank_report(self):
+        # "We could not check this copy" must block approval loudly, not read
+        # as "nothing contradicts". Every caller rebuilds the report first, so
+        # a blank one means the verifier did not run.
+        self.assertFalse(queue_copy.can_approve(None))
+        self.assertFalse(queue_copy.can_approve({}))
         self.assertFalse(queue_copy.can_approve({"can_approve": False}))
+        self.assertTrue(queue_copy.can_approve({"can_approve": True}))
 
 
 class DiffEditTests(TestCase):
@@ -333,8 +319,9 @@ class PlanOutreachDedupeTests(TestCase):
         self._plan()
         action = OutreachAction.objects.get()
         self.assertEqual(action.dedupe_key, dedupe.dedupe_key(action.lead_id, action.action_type))
-        # rule_trace is a snapshot; MUS-42 fills it, until then it is {}.
-        self.assertIsInstance(action.rule_trace, dict)
+        # A real trace from MUS-42's explain(), snapshotted once.
+        self.assertEqual(action.rule_trace["version"], 1)
+        self.assertTrue(action.rule_trace["priority"]["signals"])
         # verification always describes the copy in play.
         self.assertEqual(action.verification["copy"], action.effective_copy)
 
@@ -443,12 +430,19 @@ def make_event(lead, **overrides):
 class QueueListViewTests(AuthenticatedAPITestCase):
     """GET /api/queue/ -- CONTRACT section 5.2."""
 
-    def test_requires_authentication(self):
+    def test_anonymous_gets_401_not_403(self):
+        """Section 9.4 -- the assertion MUS-38's route guard depends on.
+
+        DRF answers 403, not 401, when the first authenticator's
+        `authenticate_header()` returns None. A 403 here means MUS-38 ships 401
+        handling that never fires and the guard silently never redirects, with
+        every test still green. 401 exactly; `in (401, 403)` cannot tell them
+        apart.
+        """
         self.client.logout()
         resp = self.client.get(reverse("queue-list"))
-        # 401 once MUS-37's SessionAuthenticationWith401 is the default; 403
-        # from stock DRF SessionAuthentication until then. Never 200.
-        self.assertIn(resp.status_code, (401, 403))
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.data["code"], "not_authenticated")
 
     def test_returns_only_pending_items(self):
         lead = make_lead()
@@ -670,9 +664,9 @@ class QueueDoneViewTests(AuthenticatedAPITestCase):
         make_action(make_lead("lead_002"))  # one still pending
         self.assertFalse(self.client.get(reverse("queue-done")).data["summary"]["queue_cleared"])
 
-    def test_requires_authentication(self):
+    def test_anonymous_gets_401_not_403(self):
         self.client.logout()
-        self.assertIn(self.client.get(reverse("queue-done")).status_code, (401, 403))
+        self.assertEqual(self.client.get(reverse("queue-done")).status_code, 401)
 
 
 class QueueEditViewTests(AuthenticatedAPITestCase):
@@ -1108,6 +1102,68 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         )
         self.assertIsNotNone(DismissedOutreachKey.objects.get().revoked_at)
 
+    def test_un_snooze_is_not_time_boxed(self):
+        """A deferral reversed is a new decision, not a corrected mistake.
+
+        Paired deliberately with the approved case below: capping un-snooze at
+        the undo window would leave /done showing a dead control on nearly
+        every snoozed row it lists, since /done lists a whole day's decisions
+        and the window is five minutes.
+        """
+        self._post("queue-snooze", {"trigger": "next_week"})
+        self.action.refresh_from_db()
+        self.action.status_changed_at = timezone.now() - timedelta(days=3)
+        self.action.save(update_fields=["status_changed_at"])
+
+        resp = self._post("queue-undo")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "pending")
+        self.assertEqual(
+            resp.data["snooze"], {"until": None, "trigger": "", "activity_after": None}
+        )
+
+    def test_a_snoozed_row_reports_an_open_ended_undo(self):
+        # null expires_at means "no deadline", not "expired" -- the frontend
+        # hides the control when the countdown lapses, so this field has to say
+        # the server would still honour it.
+        self._post("queue-snooze", {"trigger": "next_week"})
+        self.action.refresh_from_db()
+        self.action.status_changed_at = timezone.now() - timedelta(days=3)
+        self.action.save(update_fields=["status_changed_at"])
+
+        item = self.client.get(reverse("queue-detail", args=[self.action.id])).data
+
+        self.assertEqual(item["undo"], {"available": True, "expires_at": None})
+
+    def test_an_approved_row_outside_the_window_is_still_a_409(self):
+        """The other half of the pair: irreversible acts stay time-boxed."""
+        self._post("queue-approve")
+        self.action.refresh_from_db()
+        self.action.status_changed_at = timezone.now() - timedelta(days=3)
+        self.action.save(update_fields=["status_changed_at"])
+
+        resp = self._post("queue-undo")
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "undo_window_expired")
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.status, OutreachAction.STATUS_APPROVED)
+
+    def test_a_dismissed_row_outside_the_window_is_still_a_409(self):
+        # Dismiss suppresses the recommendation permanently; that is exactly
+        # the class of mistake the window exists to catch.
+        self._post("queue-dismiss", {"reason": "not_a_fit"})
+        self.action.refresh_from_db()
+        self.action.status_changed_at = timezone.now() - timedelta(days=3)
+        self.action.save(update_fields=["status_changed_at"])
+
+        resp = self._post("queue-undo")
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["code"], "undo_window_expired")
+        self.assertIsNone(DismissedOutreachKey.objects.get().revoked_at)
+
     def test_undo_outside_the_window_is_a_409(self):
         self._post("queue-approve")
         self.action.refresh_from_db()
@@ -1186,15 +1242,22 @@ class QueueLifecycleTests(AuthenticatedAPITestCase):
         self.assertEqual(self.client.get(reverse("queue-list")).data["counts"]["remaining"], 0)
         self.assertEqual(DismissedOutreachKey.objects.filter(revoked_at=None).count(), 1)
 
-    def test_mutations_require_authentication(self):
+    def test_mutations_are_401_when_anonymous(self):
         action = make_action()
         self.client.logout()
-        for name in ("queue-edit", "queue-approve", "queue-snooze", "queue-dismiss", "queue-undo"):
+        for name in (
+            "queue-edit",
+            "queue-verify",
+            "queue-approve",
+            "queue-snooze",
+            "queue-dismiss",
+            "queue-undo",
+        ):
             with self.subTest(endpoint=name):
                 resp = self.client.post(
                     reverse(name, args=[action.id]), {}, content_type="application/json"
                 )
-                self.assertIn(resp.status_code, (401, 403))
+                self.assertEqual(resp.status_code, 401)
 
 
 class UnsnoozeDueCommandTests(TestCase):
@@ -1370,3 +1433,186 @@ class DumpEditCorpusCommandTests(TestCase):
             call_command("dump_edit_corpus", "--output", path, stdout=StringIO(), stderr=StringIO())
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), "")
+
+
+# A lead and a draft that between them exercise every grounded claim kind the
+# verifier checks: contact name, deal count, quote count and dollar amount.
+GROUNDED_COPY = (
+    "Subject: Volume pricing ahead of your next milestone\n\n"
+    "Hi Priya,\n\n"
+    "You have closed 6 deals from 14 quotes submitted so far, which puts Summit Risk "
+    "Advisors well on the way to the volume-pricing conversation your notes mention. "
+    "On a $1,400,000 book that pace is genuinely impressive, and it is usually the "
+    "point where agencies start asking what changes at the next tier. I would rather "
+    "walk you through it than write it all out here, because the useful part is "
+    "seeing the numbers against your own book and the way your producers actually "
+    "work through submissions each week. Would you have twenty minutes this week to "
+    "talk it through?\n\n"
+    "Best,\nDana"
+)
+
+
+def make_grounded_lead(lead_id="lead_001"):
+    """A power user: deals >= 5 and submissions >= 10, so classification is
+    date-independent (rule R2) and the copy above is fully grounded."""
+    return make_lead(
+        lead_id,
+        agency_name="Summit Risk Advisors",
+        contact_name="Priya Nair",
+        contact_email="priya.nair@summitrisk.com",
+        state="CO",
+        num_producers=4,
+        estimated_book_size_usd=1_400_000,
+        quotes_created=19,
+        quotes_submitted=14,
+        deals_closed=6,
+        hubspot_notes="Wants volume pricing at the 20-deal milestone.",
+    )
+
+
+class QueuePayloadIsWiredToTheServicesTests(AuthenticatedAPITestCase):
+    """The trace and the spans are REAL, not well-formed blanks.
+
+    Both were reached through indirection while MUS-42 was unmerged. The
+    failure mode of leaving that indirection in place is silent: `rule_trace`
+    and `verification` keep their keys, every existing assertion still passes,
+    and the inbox renders no trace rows and no underlines at all. These tests
+    assert content, not shape.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.lead = make_grounded_lead()
+        with patch("project.app.services.outreach.generate_copy", return_value=GROUNDED_COPY):
+            plan_outreach()
+        self.action = OutreachAction.objects.get()
+
+    def _item(self):
+        return self.client.get(reverse("queue-list")).data["items"][0]
+
+    def test_a_queued_item_carries_a_populated_rule_trace(self):
+        trace = self._item()["rule_trace"]
+
+        self.assertEqual(trace["version"], 1)
+        self.assertEqual(trace["action"]["rule_id"], "R2_power_user")
+        self.assertTrue(trace["action"]["conditions"])
+        self.assertTrue(trace["priority"]["signals"])
+        # Every signal carries the server-rendered mono line the FE prints
+        # verbatim; an empty `display` means nothing renders (section 9.10).
+        for signal in trace["priority"]["signals"]:
+            self.assertTrue(signal["display"], signal)
+            self.assertIn(signal["kind"], ("condition", "group"))
+
+    def test_a_queued_item_carries_claims_that_slice_back(self):
+        report = self._item()["verification"]
+
+        self.assertEqual(report["version"], 1)
+        self.assertGreaterEqual(report["checked_count"], 1)
+        self.assertGreaterEqual(report["verified_count"], 1)
+        self.assertEqual(report["summary"], "4 of 4 claims verified")
+        self.assertTrue(report["can_approve"])
+
+        copy = report["copy"]
+        self.assertEqual(copy, self._item()["effective_copy"])
+        spans = [c for c in report["claims"] if c["start"] is not None]
+        self.assertTrue(spans)
+        for claim in spans:
+            # The offsets index into report["copy"] -- if they don't, every
+            # underline in the inbox lands on the wrong words.
+            self.assertEqual(copy[claim["start"] : claim["end"]], claim["text"])
+            self.assertEqual(claim["text"], claim["text"].strip())
+
+    def test_a_contradicted_edit_blocks_approval_end_to_end(self):
+        """No hand-written verification dict: the real verifier decides."""
+        wrong = GROUNDED_COPY.replace("closed 6 deals", "closed 9 deals")
+        edited = self.client.post(
+            reverse("queue-edit", args=[self.action.id]),
+            {"copy": wrong},
+            content_type="application/json",
+        )
+
+        self.assertEqual(edited.status_code, 200)
+        self.assertFalse(edited.data["can_approve"])
+        self.assertEqual(edited.data["verification"]["summary"], "3 of 4 claims verified")
+        self.assertEqual(edited.data["verification"]["unverified_count"], 1)
+
+        blocked = self.client.post(
+            reverse("queue-approve", args=[self.action.id]), {}, content_type="application/json"
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.data["code"], "unverified_claims")
+        self.assertIn("1 of 4", blocked.data["detail"])
+
+        # Reverting restores a groundable draft and unblocks approval.
+        reverted = self.client.post(
+            reverse("queue-edit", args=[self.action.id]),
+            {"copy": None},
+            content_type="application/json",
+        )
+        self.assertTrue(reverted.data["can_approve"])
+        self.assertEqual(
+            self.client.post(
+                reverse("queue-approve", args=[self.action.id]),
+                {},
+                content_type="application/json",
+            ).status_code,
+            200,
+        )
+
+    def test_the_trace_is_a_snapshot_not_a_live_computation(self):
+        """Section 9.9 -- relative figures are only true as of trace.today."""
+        before = self.client.get(reverse("queue-list")).data["items"][0]["rule_trace"]
+
+        with patch("django.utils.timezone.now", return_value=timezone.now() + timedelta(days=10)):
+            after = self.client.get(reverse("queue-list")).data["items"][0]["rule_trace"]
+
+        self.assertEqual(json.dumps(before, sort_keys=True), json.dumps(after, sort_keys=True))
+
+
+class QueueVerifyThrottleTests(AuthenticatedAPITestCase):
+    """The `queue_verify` scope actually engages.
+
+    Same failure shape as the service shims: a `throttle_scope` with no
+    configured rate, or no DEFAULT_THROTTLE_CLASSES, throttles nothing at all
+    and nothing goes red.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    def _verify(self):
+        return self.client.post(
+            reverse("queue-verify", args=[self.action.id]),
+            {"copy": "Subject: Draft\n\nHi.\n"},
+            content_type="application/json",
+        )
+
+    def test_the_scope_is_wired_to_a_configured_rate(self):
+        self.assertEqual(QueueVerifyView.throttle_scope, "queue_verify")
+        self.assertEqual(
+            [type(t).__name__ for t in QueueVerifyView().get_throttles()],
+            ["ScopedRateThrottle"],
+        )
+        self.assertEqual(api_settings.DEFAULT_THROTTLE_RATES["queue_verify"], "120/min")
+
+    def test_key_repeat_is_rate_limited(self):
+        with patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"queue_verify": "2/min"}):
+            first, second, third = self._verify(), self._verify(), self._verify()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(third.status_code, 429)
+        self.assertEqual(third.data["code"], "rate_limited")
+        self.assertIn("Too many verification requests.", third.data["detail"])
+        self.assertGreaterEqual(third.data["retry_after"], 1)
+
+    def test_the_read_endpoints_are_not_throttled(self):
+        with patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"queue_verify": "1/min"}):
+            for _ in range(4):
+                self.assertEqual(self.client.get(reverse("queue-list")).status_code, 200)

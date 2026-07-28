@@ -342,9 +342,13 @@ class QueueVerifyView(QueueMutationView):
     than rendered over newer text (section 9.2).
     """
 
-    # Picked up by the global ScopedRateThrottle MUS-37 configures, so key
-    # repeat in the editor cannot hammer the verifier.
+    # Picked up by the global ScopedRateThrottle in settings.REST_FRAMEWORK, so
+    # key repeat in the inline editor cannot hammer the verifier. The scope name
+    # must match a key in DEFAULT_THROTTLE_RATES or DRF raises
+    # ImproperlyConfigured -- there is no silently-inert middle state.
     throttle_scope = "queue_verify"
+    # Read by the contract exception handler to lead the 429 sentence.
+    throttle_detail = "Too many verification requests."
 
     def mutate(self, request, action):
         raw = body_of(request).get("copy")
@@ -493,13 +497,29 @@ class QueueDismissView(QueueMutationView):
         return Response(self.serialize(action, now=now), status=status.HTTP_200_OK)
 
 
+#: Statuses whose reversal is time-boxed. The undo window exists to catch a
+#: fat-fingered IRREVERSIBLE act -- an approve that put text on someone's
+#: clipboard, a dismiss that suppresses a recommendation permanently. Snooze is
+#: neither: it is a deferral, and bringing a deferred lead back early is a new
+#: decision rather than the correction of a mistake, so it is never time-boxed.
+UNDO_WINDOWED_STATUSES = (
+    OutreachAction.STATUS_APPROVED,
+    OutreachAction.STATUS_DISMISSED,
+)
+
+
 class QueueUndoView(QueueMutationView):
-    """POST /api/queue/{id}/undo/ -- reverse the last decision, briefly.
+    """POST /api/queue/{id}/undo/ -- reverse the last decision.
 
     Undoing a DISMISS also revokes the suppression, in the same transaction.
     Without that the row goes back to pending and the UI looks perfectly
     correct, while the ledger keeps suppressing -- so the next plan_outreach()
     run, days later, quietly drops the lead (section 9.7).
+
+    Un-snoozing is deliberately NOT time-boxed. Capping it at the undo window
+    would leave `/done` showing an un-snooze control that is dead for every row
+    snoozed more than five minutes ago -- which, on a view that lists a whole
+    day's decisions, is nearly all of them.
     """
 
     def mutate(self, request, action):
@@ -514,13 +534,14 @@ class QueueUndoView(QueueMutationView):
 
         window = settings.TRIAGE_UNDO_WINDOW_SECONDS
         now = timezone.now()
-        expires_at = action.status_changed_at + datetime.timedelta(seconds=window)
-        if now >= expires_at:
-            return error(
-                "undo_window_expired",
-                f"The {window // 60}-minute undo window has passed.",
-                status.HTTP_409_CONFLICT,
-            )
+        if action.status in UNDO_WINDOWED_STATUSES:
+            expires_at = action.status_changed_at + datetime.timedelta(seconds=window)
+            if now >= expires_at:
+                return error(
+                    "undo_window_expired",
+                    f"The {window // 60}-minute undo window has passed.",
+                    status.HTTP_409_CONFLICT,
+                )
 
         was_dismissed = action.status == OutreachAction.STATUS_DISMISSED
         with transaction.atomic():

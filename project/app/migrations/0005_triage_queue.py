@@ -5,11 +5,8 @@ import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
-    # CONTRACT MUS-39: this dependency is repointed to ("app", "0004_logintoken")
-    # in the rebase-onto-feature-branch commit, once MUS-37 has merged. Do not
-    # merge this file with the 0003 dependency still in place.
     dependencies = [
-        ('app', '0003_llmprovider_llmmodel_llmconfiguration_and_more'),
+        ('app', '0004_logintoken'),
     ]
 
     operations = [

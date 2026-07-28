@@ -10,10 +10,9 @@ a service must not import from the API layer.
    The server normalizes *before* storing copy and *before* computing any
    offset (CONTRACT MUS-35 section 9.1c).
 
-2. **Verification envelopes.** ``verify.verify_spans()`` lands with MUS-42,
-   which merges before MUS-39. Until then this module returns a well-formed
-   but empty v1 envelope, so the API shape is correct on either side of that
-   merge and nothing downstream needs a null branch.
+2. **Verification envelopes.** One place that calls ``verify.verify_spans()``
+   and one place that decides whether a report permits approval, so the queue
+   payload's ``verification`` and its ``can_approve`` mirror cannot disagree.
 
 3. **Edit diffs.** The ``(suggested, edited)`` pair plus its opcodes is the
    copy eval corpus (MUS-21): every correction a human makes is labeled
@@ -52,24 +51,6 @@ def _default_level() -> str:
     return getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
 
 
-def empty_report(copy: str, level: str, today: datetime.date) -> dict:
-    """A well-formed, claim-free v1 verification envelope (section 4.4)."""
-    return {
-        "version": 1,
-        "level": level,
-        "today": today.isoformat(),
-        "copy": copy,
-        "copy_length": len(copy),
-        "is_astral_safe": is_astral_safe(copy),
-        "verified_count": 0,
-        "unverified_count": 0,
-        "checked_count": 0,
-        "summary": "0 of 0 claims verified",
-        "can_approve": True,
-        "claims": [],
-    }
-
-
 def build_verification(
     lead: Any,
     copy: str | None,
@@ -85,22 +66,27 @@ def build_verification(
     copy in play -- planning, editing, reverting -- and never appended to.
     """
     normalized = normalize_copy(copy)
-    level = level or _default_level()
-    today = today or datetime.date.today()
-
-    verify_spans = getattr(verify, "verify_spans", None)
-    if verify_spans is None:  # MUS-42 not merged yet
-        return empty_report(normalized, level, today)
-
-    report = verify_spans(lead, normalized, action_type, level=level, today=today)
+    report = verify.verify_spans(
+        lead,
+        normalized,
+        action_type,
+        level=level or _default_level(),
+        today=today or datetime.date.today(),
+    )
     return dict(report)
 
 
 def can_approve(report: dict | None) -> bool:
-    """Server-side approve gate. Absent/blank report => nothing contradicts."""
+    """Server-side approve gate: the one reading of a verification report.
+
+    Fails CLOSED on a missing or blank report. Every path that reaches here
+    rebuilds the report first, so a blank one means the verifier did not run --
+    and "we could not check this copy" must block approval loudly rather than
+    wave it through as "nothing contradicts".
+    """
     if not report:
-        return True
-    return bool(report.get("can_approve", True))
+        return False
+    return bool(report.get("can_approve", False))
 
 
 def diff_edit(before: str, after: str) -> dict:

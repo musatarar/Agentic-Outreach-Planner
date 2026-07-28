@@ -1236,24 +1236,6 @@ def format_shape_problems(problems):
 # --------------------------------------------------------------------------
 
 
-def _rule_trace_snapshot(lead):
-    """Snapshot MUS-42's structured rule trace for one lead (MUS-39 hook).
-
-    Stored once, at planning time, and never recomputed: every relative figure
-    in it ("28d since last contact") is only true as of ``trace.today``, so a
-    read-time recomputation would silently contradict the ``reason`` prose
-    persisted alongside it (CONTRACT MUS-35 section 9.9).
-
-    ``explain()`` arrives with MUS-42, which merges ahead of MUS-39. It is
-    looked up through ``globals()`` rather than referenced directly so this
-    hunk stays disjoint from MUS-42's (section 9.19) and this branch is green
-    standalone; until then the trace is an empty dict and the queue payload
-    degrades to "no trace" rather than the planner failing.
-    """
-    explain_fn = globals().get("explain")
-    return explain_fn(lead) if explain_fn is not None else {}
-
-
 def plan_outreach():
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority."""
@@ -1345,7 +1327,11 @@ def plan_outreach():
             needs_human=needs_human,
             further_action=further_action,
             dedupe_key=key,
-            rule_trace=_rule_trace_snapshot(lead),
+            # Snapshot, taken once at planning time and never recomputed: every
+            # relative figure in it ("28d since last contact") is only true as
+            # of `trace.today`, so recomputing at read time would silently
+            # contradict the `reason` prose persisted beside it (section 9.9).
+            rule_trace=explain(lead),
             verification=queue_copy.build_verification(
                 lead, suggested_copy, action_type, level=level
             ),

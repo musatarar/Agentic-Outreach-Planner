@@ -187,9 +187,17 @@ class QueueItemSerializer(serializers.ModelSerializer):
         ``expires_at`` is an absolute server timestamp. Clock skew between a
         browser and the server is real and unbounded, so the frontend renders a
         countdown from it but never gates the request on it.
+
+        A SNOOZED row is ``{"available": true, "expires_at": null}`` -- null
+        meaning "no deadline", not "expired". Un-snoozing is a new decision
+        rather than the correction of a mistake, so it is never time-boxed, and
+        this field has to say so or the UI hides a control the server would
+        have honoured. See ``views_queue.UNDO_WINDOWED_STATUSES``.
         """
         if obj.status == OutreachAction.STATUS_PENDING or obj.status_changed_at is None:
             return {"available": False, "expires_at": None}
+        if obj.status == OutreachAction.STATUS_SNOOZED:
+            return {"available": True, "expires_at": None}
         expires_at = obj.status_changed_at + timedelta(seconds=settings.TRIAGE_UNDO_WINDOW_SECONDS)
         now = self.context.get("now") or timezone.now()
         return {
