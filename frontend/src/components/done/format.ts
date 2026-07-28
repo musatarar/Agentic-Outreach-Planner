@@ -38,6 +38,11 @@ export function formatTimeOfDay(iso: string, timeZone: string): string {
   });
 }
 
+/** `08:41` — the ends of the session range, where seconds would be noise. */
+export function formatHourMinute(iso: string, timeZone: string): string {
+  return withZone(iso, timeZone, { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 /** `4 Aug, 09:00` — a future return time (snooze) or a past boundary. */
 export function formatDateTime(iso: string, timeZone: string): string {
   return withZone(iso, timeZone, {
