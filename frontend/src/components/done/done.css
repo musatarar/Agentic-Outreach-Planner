@@ -1,0 +1,262 @@
+/* /done — MUS-41. Imported once, from pages/DonePage.tsx; Vite folds it into
+   the single assets/index.css alongside styles.css.
+
+   Rules this file lives by (CONTRACT §7):
+     - Tokens only. No hex literal, no raw colour, anywhere below.
+     - Type discipline: mono = machine output (timestamps, counts, money,
+       countdowns); sans = chrome. There is no generated prose on this page, so
+       --font-serif does not appear here at all.
+     - Red and amber belong to the priority ramp; green/red belong to the
+       verification underlines. Neither ramp is a status ramp, so status here is
+       a lightness ramp built from --color-status-*.
+     - The accent is the active row and the one primary button. /done has
+       neither, so it spends no accent. */
+
+.done-page {
+  padding-top: var(--space-5);
+  padding-bottom: var(--space-8);
+}
+
+/* ---- The strip under the page title -------------------------------------
+   The date comes from DoneResponse.date, computed by the server in
+   TRIAGE_TIMEZONE (CONTRACT §9.5). The zone is printed next to it so a
+   reviewer in another zone can see which clock the page is keeping. */
+
+.done-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.done-summary__date {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.done-summary__zone {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+  letter-spacing: var(--tracking-normal);
+}
+
+.done-summary__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.done-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--border-width-hair) solid var(--color-border-subtle);
+  background: var(--color-surface-sunken);
+}
+
+.done-count__n {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.done-count__label {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--color-text-subtle);
+}
+
+/* ---- Day grouping -------------------------------------------------------
+   The endpoint returns today only, so the heading is suppressed for a single
+   group rather than repeating the date that is already in the page header.
+   The moment the range widens, the headings appear on their own. */
+
+.done-day + .done-day {
+  margin-top: var(--space-6);
+}
+
+.done-day__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: var(--border-width-hair) solid var(--color-border);
+}
+
+.done-day__label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.done-day__key {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+}
+
+.done-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ---- One actioned row ---------------------------------------------------
+   Left rule carries the status: solid for approved, a hairline for snoozed,
+   nothing at all for dismissed. Dismissed rows are archived, not pending, so
+   they sit back — no fill, subtle text, no rule. */
+
+.done-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: var(--border-width-hair) solid var(--color-border-subtle);
+  border-left: var(--border-width-thick) solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.done-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.done-row--approved {
+  border-left-color: var(--color-status-approved-bg);
+}
+
+.done-row--snoozed {
+  border-left-color: var(--color-border-strong);
+}
+
+.done-row--dismissed {
+  background: var(--color-bg-subtle);
+  border-color: var(--color-border-subtle);
+  border-left-color: var(--color-border-subtle);
+}
+
+.done-row--dismissed:hover {
+  background: var(--color-surface-sunken);
+}
+
+.done-row__status {
+  padding-top: var(--space-1);
+}
+
+.done-row__body {
+  min-width: 0;
+}
+
+.done-row__who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  line-height: var(--leading-snug);
+}
+
+.done-row__contact {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.done-row__agency {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.done-row__action {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  line-height: var(--leading-snug);
+}
+
+.done-row__outcome {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  line-height: var(--leading-snug);
+}
+
+.done-row--dismissed .done-row__contact {
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+}
+
+.done-row--dismissed .done-row__agency,
+.done-row--dismissed .done-row__action,
+.done-row--dismissed .done-row__outcome {
+  color: var(--color-text-subtle);
+}
+
+.done-row__aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.done-row__time {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- Page-level states -------------------------------------------------
+   Deliberately not .error-message: that class is built from the
+   --color-danger aliases, and red on this surface would compete with the
+   priority ramp. Weight and a strong rule carry the emphasis instead. */
+
+.done-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-sunken);
+  border: var(--border-width-hair) solid var(--color-border);
+  border-left: var(--border-width-thick) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.done-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 40rem) {
+  .done-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .done-row__aside {
+    grid-column: 2;
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
