@@ -7,6 +7,8 @@ import { isUndoWindowExpired } from '../components/done/apiError';
 import { DoneList } from '../components/done/DoneList';
 import type { RowUndo } from '../components/done/DoneRow';
 import { formatDayLabel } from '../components/done/format';
+import { NothingDoneYet } from '../components/done/NothingDoneYet';
+import { QueueCleared } from '../components/done/QueueCleared';
 import { PageHeader } from '../components/PageHeader';
 import '../components/done/done.css';
 
@@ -158,6 +160,18 @@ export function DonePage() {
           </div>
         )}
 
+        {/* The two empty states are selected by the server, never inferred
+            (CONTRACT §5.2): `summary.total === 0` is "the day has not started";
+            `summary.queue_cleared` is "there is nothing left in the queue".
+            They are not opposites of one list being empty — an undo can flip
+            queue_cleared back off while the list stays full, which is why the
+            undo handler refetches instead of splicing. */}
+        {data && data.summary.total === 0 && (
+          <NothingDoneYet date={data.date} timeZone={data.timezone} />
+        )}
+
+        {data && data.summary.queue_cleared && <QueueCleared data={data} />}
+
         {data && data.items.length > 0 && (
           <DoneList
             items={data.items}
@@ -165,11 +179,6 @@ export function DonePage() {
             onUndo={(item) => void handleUndo(item)}
             undoState={undoState}
           />
-        )}
-
-        {/* Replaced wholesale by the two real empty states in mus-41-c. */}
-        {data && data.summary.total === 0 && (
-          <p className="done-notice">Nothing done yet today.</p>
         )}
       </main>
     </>
