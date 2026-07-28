@@ -173,3 +173,15 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# --- Magic-link auth (MUS-37) -------------------------------------------------
+LOGIN_ALLOWED_EMAILS = {
+    e.strip().lower() for e in os.environ.get("LOGIN_ALLOWED_EMAILS", "").split(",") if e.strip()
+}
+LOGIN_LINK_DELIVERY = os.environ.get("LOGIN_LINK_DELIVERY", "console")  # console | email
+LOGIN_TOKEN_TTL_SECONDS = int(os.environ.get("LOGIN_TOKEN_TTL_SECONDS", "900"))
+LOGIN_LINK_BASE_URL = os.environ.get("LOGIN_LINK_BASE_URL", "http://127.0.0.1:8000")
+LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
+LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
+LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
