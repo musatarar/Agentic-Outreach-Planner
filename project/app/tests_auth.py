@@ -12,19 +12,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core import mail
-from django.db import connections
+from django.core.cache import cache
+from django.db import OperationalError, connections
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
-from rest_framework.test import APITestCase
+from rest_framework.parsers import JSONParser
+from rest_framework.request import Request
+from rest_framework.test import APIRequestFactory, APITestCase
+from rest_framework.throttling import SimpleRateThrottle
 
 from project.app.models import LoginToken
 from project.app.services import login_links
+from project.app.throttling import LoginEmailRateThrottle
 
 ALLOWED = "tester@example.com"
 NOT_ALLOWED = "stranger@example.com"
@@ -218,18 +225,31 @@ class ConcurrentConsumeTests(TransactionTestCase):
     threads, on real connections, catch that -- hence ``TransactionTestCase``.
     """
 
+    WORKERS = 8
+
     def test_concurrent_consume_yields_exactly_one_success(self):
         issued = login_links.issue_login_link(ALLOWED)
+        start = threading.Barrier(self.WORKERS)
 
         def redeem(_i):
             try:
-                outcome, _token = login_links.consume_login_token(issued.raw_token)
-                return outcome
+                start.wait(timeout=5)
+                # SQLite's shared-cache mode raises "table is locked" rather
+                # than waiting, and only under test. Retrying is honest here:
+                # the property under test is that no number of attempts, by
+                # any number of clients, can redeem the same link twice.
+                for _attempt in range(20):
+                    try:
+                        outcome, _token = login_links.consume_login_token(issued.raw_token)
+                        return outcome
+                    except OperationalError:
+                        time.sleep(0.02)
+                raise AssertionError("never got a turn at the database")
             finally:
                 connections.close_all()
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            outcomes = list(pool.map(redeem, range(8)))
+        with ThreadPoolExecutor(max_workers=self.WORKERS) as pool:
+            outcomes = list(pool.map(redeem, range(self.WORKERS)))
 
         successes = [o for o in outcomes if o == login_links.ConsumeOutcome.OK]
         self.assertEqual(len(successes), 1, outcomes)
@@ -241,13 +261,30 @@ class ConcurrentConsumeTests(TransactionTestCase):
 # ---------------------------------------------------------------------------
 
 
+class AuthAPITestCase(APITestCase):
+    """Endpoint tests, with the throttle history reset between them.
+
+    DRF keeps rate-limit history in the default cache, which outlives an
+    individual test. Without this, whichever test happens to run 21st in the
+    process gets a 429 instead of whatever it was asserting.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+
 @override_settings(
     LOGIN_ALLOWED_EMAILS={ALLOWED},
     LOGIN_LINK_DELIVERY="console",
     LOGIN_TOKEN_TTL_SECONDS=900,
     LOGIN_RESEND_COOLDOWN_SECONDS=30,
 )
-class RequestLinkEndpointTests(APITestCase):
+class RequestLinkEndpointTests(AuthAPITestCase):
     URL = "/api/auth/request-link/"
 
     def test_allowlisted_request_mints_a_token_and_returns_the_pinned_shape(self):
@@ -304,7 +341,7 @@ class RequestLinkEndpointTests(APITestCase):
 
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
-class DevLinkExposureTests(APITestCase):
+class DevLinkExposureTests(AuthAPITestCase):
     """``dev_link`` leaking in production is a full auth bypass.
 
     Three conditions, all required: DEBUG, console delivery, allowlisted.
@@ -350,7 +387,7 @@ class DevLinkExposureTests(APITestCase):
 
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED}, DEBUG=False, LOGIN_LINK_DELIVERY="console")
-class EnumerationOracleTests(APITestCase):
+class EnumerationOracleTests(AuthAPITestCase):
     """Contract section 9.18: the identical-response guarantee, scoped.
 
     ``dev_link`` and "always return the same response" genuinely conflict, and
@@ -374,7 +411,7 @@ class EnumerationOracleTests(APITestCase):
 
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED}, LOGIN_LINK_DELIVERY="console")
-class ConsumeEndpointTests(APITestCase):
+class ConsumeEndpointTests(AuthAPITestCase):
     URL = "/api/auth/consume/"
 
     def _issue(self, email=ALLOWED):
@@ -466,7 +503,7 @@ class ConsumeEndpointTests(APITestCase):
 
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
-class MeAndLogoutTests(APITestCase):
+class MeAndLogoutTests(AuthAPITestCase):
     def _sign_in(self):
         issued = login_links.issue_login_link(ALLOWED)
         resp = self.client.post("/api/auth/consume/", {"token": issued.raw_token}, format="json")
@@ -497,3 +534,140 @@ class MeAndLogoutTests(APITestCase):
 
         self.assertEqual(consumed.status_code, 200)
         self.assertEqual(self.client.get("/api/auth/me/").data["email"], ALLOWED)
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+
+def scoped_rate(scope, rate):
+    """Override one entry in ``DEFAULT_THROTTLE_RATES`` for a single test.
+
+    ``override_settings(REST_FRAMEWORK=...)`` does not reach here:
+    ``SimpleRateThrottle.THROTTLE_RATES`` is bound to the settings dict once,
+    at class-definition time, so a reloaded ``api_settings`` never propagates
+    to it. Patching the dict in place is the honest way to say "this rate, for
+    this test".
+    """
+    return mock.patch.dict(SimpleRateThrottle.THROTTLE_RATES, {scope: rate})
+
+
+@override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED}, DEBUG=False, LOGIN_LINK_DELIVERY="console")
+class RequestLinkRateLimitTests(AuthAPITestCase):
+    """Without these caps the endpoint is a free spam relay."""
+
+    URL = "/api/auth/request-link/"
+
+    def _request(self, email=ALLOWED, ip="127.0.0.1"):
+        return self.client.post(self.URL, {"email": email}, format="json", REMOTE_ADDR=ip)
+
+    @override_settings(LOGIN_RATE_LIMIT_EMAIL="100/hour")
+    @scoped_rate("auth_request_ip", "3/hour")
+    def test_per_ip_cap_trips_with_the_pinned_envelope(self):
+        for _ in range(3):
+            self.assertEqual(self._request().status_code, 200)
+
+        resp = self._request()
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.data["code"], "rate_limited")
+        self.assertTrue(resp.data["detail"].startswith("Too many login links requested."))
+        self.assertIn("Try again in", resp.data["detail"])
+        self.assertIsInstance(resp.data["retry_after"], int)
+        self.assertGreater(resp.data["retry_after"], 0)
+        self.assertIn("Retry-After", resp.headers)
+
+    @override_settings(LOGIN_RATE_LIMIT_EMAIL="100/hour")
+    @scoped_rate("auth_request_ip", "2/hour")
+    def test_the_429_does_not_depend_on_the_allowlist(self):
+        # Rate limiting runs in DRF's initial(), before the view body, so a
+        # throttled unknown address and a throttled known one are identical.
+        for _ in range(2):
+            self._request(email=NOT_ALLOWED)
+
+        blocked_known = self._request(email=ALLOWED)
+        blocked_unknown = self._request(email=NOT_ALLOWED)
+
+        self.assertEqual(blocked_known.status_code, 429)
+        self.assertEqual(blocked_unknown.status_code, 429)
+        self.assertEqual(blocked_known.data["code"], blocked_unknown.data["code"])
+        self.assertEqual(blocked_known.data["detail"], blocked_unknown.data["detail"])
+
+    @override_settings(LOGIN_RATE_LIMIT_EMAIL="3/hour")
+    def test_per_email_cap_survives_a_change_of_source_ip(self):
+        # The IP cap cannot see a distributed mailbomb aimed at one address.
+        for i in range(3):
+            self.assertEqual(self._request(ip=f"198.51.100.{i}").status_code, 200)
+
+        resp = self._request(ip="198.51.100.99")
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.data["code"], "rate_limited")
+
+    @override_settings(LOGIN_RATE_LIMIT_EMAIL="2/hour")
+    def test_per_email_cap_does_not_bleed_between_addresses(self):
+        for _ in range(2):
+            self._request(email=ALLOWED)
+
+        self.assertEqual(self._request(email=ALLOWED).status_code, 429)
+        self.assertEqual(self._request(email=NOT_ALLOWED).status_code, 200)
+
+    @override_settings(LOGIN_RATE_LIMIT_EMAIL="1/hour")
+    def test_the_email_cap_is_case_insensitive(self):
+        self.assertEqual(self._request(email="TESTER@EXAMPLE.COM").status_code, 200)
+        self.assertEqual(self._request(email="tester@example.com").status_code, 429)
+
+    @override_settings(LOGIN_RATE_LIMIT_EMAIL="1/hour")
+    def test_a_body_with_no_email_is_a_400_not_a_429(self):
+        # Bucketing every malformed body together would let one client's junk
+        # lock out everyone else's sign-in.
+        for _ in range(5):
+            resp = self.client.post(self.URL, {}, format="json")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.data["code"], "invalid_email")
+
+
+@override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
+class ConsumeRateLimitTests(AuthAPITestCase):
+    URL = "/api/auth/consume/"
+
+    @scoped_rate("auth_consume_ip", "3/hour")
+    def test_brute_forcing_tokens_is_capped_per_ip(self):
+        for _ in range(3):
+            self.assertEqual(
+                self.client.post(self.URL, {"token": "x"}, format="json").status_code, 400
+            )
+
+        resp = self.client.post(self.URL, {"token": "x"}, format="json")
+
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.data["code"], "rate_limited")
+        self.assertTrue(resp.data["detail"].startswith("Too many sign-in attempts."))
+
+
+class ThrottleCacheKeyTests(TestCase):
+    """The address must not sit in the throttle cache in the clear."""
+
+    @staticmethod
+    def _cache_key(body):
+        raw = APIRequestFactory().post("/api/auth/request-link/", body, format="json")
+        return LoginEmailRateThrottle().get_cache_key(Request(raw, parsers=[JSONParser()]), None)
+
+    def test_cache_key_is_a_hash_not_the_address(self):
+        key = self._cache_key({"email": ALLOWED})
+
+        self.assertIsNotNone(key)
+        self.assertNotIn(ALLOWED, key)
+        self.assertIn(hashlib.sha256(ALLOWED.encode("utf-8")).hexdigest(), key)
+
+    def test_cache_key_is_case_normalized_before_hashing(self):
+        self.assertEqual(
+            self._cache_key({"email": " TESTER@Example.COM "}), self._cache_key({"email": ALLOWED})
+        )
+
+    def test_cache_key_is_none_without_an_email(self):
+        self.assertIsNone(self._cache_key({}))
+
+    def test_a_non_dict_body_does_not_crash_the_throttle(self):
+        self.assertIsNone(self._cache_key(["nope"]))

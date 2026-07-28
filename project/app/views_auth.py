@@ -42,12 +42,14 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from project.app.exceptions import ContractError
 from project.app.serializers_auth import ConsumeTokenSerializer, RequestLinkSerializer
 from project.app.services import login_links
 from project.app.services.login_links import ConsumeOutcome
+from project.app.throttling import LoginEmailRateThrottle
 
 INVALID_EMAIL_DETAIL = "Enter a valid email address."
 INVALID_TOKEN_DETAIL = "This sign-in link is not valid."
@@ -78,6 +80,11 @@ class AuthRequestLinkView(APIView):
     """
 
     permission_classes = [AllowAny]
+    # Two independent caps: per source IP (scoped, DRF's own) and per
+    # recipient address. Neither alone is enough -- see throttling.py. Both
+    # run in DRF's initial(), i.e. before the allowlist check below, so a 429
+    # cannot be used to enumerate the allowlist either.
+    throttle_classes = [ScopedRateThrottle, LoginEmailRateThrottle]
     throttle_scope = "auth_request_ip"
     throttle_detail = "Too many login links requested."
 
