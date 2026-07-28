@@ -56,6 +56,19 @@ budget, named clients like Pacific Rim Imports) — not generic templates.
 
 ## API (the page is just a viewer over these)
 
+Since MUS-37 the API needs a session, so sign in first and reuse the cookie jar
+(`README.md` → "Signing in" for where the link comes from):
+
+```bash
+curl -c jar -X POST -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com"}' http://127.0.0.1:8000/api/auth/request-link/
+# copy the token out of the server log, then:
+curl -c jar -b jar -X POST -H 'Content-Type: application/json' \
+  -d '{"token":"<token>"}' http://127.0.0.1:8000/api/auth/consume/
+```
+
+Then add `-b jar` to each call below (and an `X-CSRFToken` header to the POST):
+
 ```bash
 curl -X POST http://127.0.0.1:8000/api/outreach/run/   # run planner + generate copy
 curl http://127.0.0.1:8000/api/outreach/               # latest plan (no Claude calls)

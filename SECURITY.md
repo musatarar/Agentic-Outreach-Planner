@@ -139,36 +139,111 @@ indistinguishable from a legitimate one.
 
 ---
 
-# Security: LLM Configuration Endpoints (MUS-32)
+# Security: API Authentication (MUS-32, superseded by MUS-37)
 
 ## Authentication
 
-As of MUS-32, three endpoints require HTTP Basic Auth:
+The whole API is authenticated. `DEFAULT_PERMISSION_CLASSES` in
+`project/settings.py` is `IsAuthenticated`, and exactly three endpoints are
+exempt:
 
-- `GET /api/llm/catalog/` — actually **unauthenticated** (read-only reference
-  data: the list of supported providers/models, no secrets).
-- `GET|PUT /api/llm/config/` — **Basic Auth required.** Reads/writes the
-  active LLM provider/model/key selection; `PUT` is the only place a
-  provider API key can be written.
-- `POST /api/llm/config/test/` — **Basic Auth required.** Fires one live
-  completion against the currently configured provider/key to verify it
-  works.
+```
+POST /api/auth/request-link/
+POST /api/auth/consume/
+GET  /api/auth/me/
+```
 
-Credentials are a single username/password pair from `LLM_ADMIN_USERNAME` /
-`LLM_ADMIN_PASSWORD` (env vars, see `.env.example`), compared with
-`hmac.compare_digest` (constant-time) in
-`project/app/authentication.py::LLMAdminBasicAuthentication`. There is no
-user model, no sessions, and no per-user accounts backing this — it's one
-shared credential pair gating write access to stored provider API keys.
+Everything else — `/api/leads/`, `/api/outreach/*`, `/api/reports/`,
+`/api/review-queue/`, `/api/review-decisions/`, `/api/queue/*` and all three
+`/api/llm/*` endpoints — requires a session. That closes the gap this
+document listed as a known gap through MUS-32.
 
-Every other endpoint in this API (`/api/leads/`, `/api/outreach/*`,
-`/api/reports/`, `/api/review-queue/`, `/api/review-decisions/`) remains
-**unauthenticated (`AllowAny`)**. This is a known, existing gap — anyone who
-can reach the server can read/write lead and outreach data — and is
-explicitly **out of scope** for this change. There is no global
-`REST_FRAMEWORK` auth default in `project/settings.py`; Basic Auth is applied
-only to the two `/api/llm/*` views listed above, deliberately, because those
-are the only endpoints that touch a stored secret (the provider API key).
+The Django HTML shells (`/`, `/signin`, `/auth/consume`, `/reports/`,
+`/next-actions/`, `/settings/`) stay public **on purpose**. They render an
+empty `#root` and contain no data; access control for those pages is the
+client-side route guard, which produces a designed sign-in redirect rather
+than a Django 302.
+
+### Magic link, not passwords
+
+One operator, no roles, no invites. Magic links mean no password hashing, no
+reset flow, no credential rotation and no shared secret to leak — strictly
+less code *and* strictly less risk than passwords at this scale.
+
+- The raw token is `secrets.token_urlsafe(32)` — 256 bits of CSPRNG output.
+  **Only `sha256(token).hexdigest()` is persisted**, never the token, for the
+  same reason passwords are hashed: a database read must not yield a working
+  credential. A plain SHA-256 rather than a slow KDF is deliberate — there is
+  no dictionary to attack against 256 random bits, and the verify path has to
+  stay cheap enough to rate-limit rather than to DoS.
+- Links are **single use**, enforced by a conditional `UPDATE`
+  (`filter(consumed_at__isnull=True, expires_at__gt=now).update(...)`), not by
+  read-then-write. Two concurrent redemptions therefore race in the database
+  and exactly one wins.
+- Links expire after `LOGIN_TOKEN_TTL_SECONDS` (default 900).
+- The allowlist is re-checked at redeem time, so removing an address from
+  `LOGIN_ALLOWED_EMAILS` immediately invalidates links already in flight.
+- `django.contrib.auth.login()` rotates the CSRF token, so a client holding a
+  pre-sign-in `csrftoken` is rejected on its first authenticated `POST`. The
+  frontend reads the cookie per request rather than caching it.
+
+### The allowlist is not an enumeration oracle
+
+There is no signup flow, so `LOGIN_ALLOWED_EMAILS` decides who may request a
+link — which makes `POST /api/auth/request-link/` exactly the kind of endpoint
+that leaks who has an account. Three channels, all closed:
+
+| Channel | Mitigation |
+|---|---|
+| Response body | Same status, same keys, same values for an allowlisted and an unknown address |
+| Timing | The non-allowlisted branch performs an equivalent `token_urlsafe(32)` + SHA-256 and discards it |
+| Throttling | Rate limits are applied *before* the allowlist check, so a 429 is identical either way |
+
+**One scoped exception, `dev_link`.** In `DEBUG` + `console` delivery the
+response carries the link itself, which is non-null only for an allowlisted
+address. The identical-response guarantee is therefore scoped precisely: it
+holds whenever `DEBUG=False` **or** `LOGIN_LINK_DELIVERY == "email"`, which is
+every deployment that is not a developer's laptop. `dev_link` requires all
+three of `DEBUG=True`, `console` delivery and an allowlisted address — a
+`dev_link` reaching production would be a full authentication bypass, so it is
+guarded on all three and covered by a `DEBUG=False` absence test.
+
+`POST /api/auth/consume/` does distinguish `expired_token` from
+`invalid_token`. That is deliberate: possessing a token already implies a link
+was issued, so the distinction leaks nothing about which addresses exist, and
+the sign-in page needs a third state that offers "send me a new one".
+
+### Rate limiting
+
+| Scope | Setting | Default | What it stops |
+|---|---|---|---|
+| `auth_request_ip` | `LOGIN_RATE_LIMIT_IP` | `20/hour` | One host spraying links at a list of addresses |
+| `auth_request_email` | `LOGIN_RATE_LIMIT_EMAIL` | `5/hour` | Distributed hosts mailbombing one address |
+| `auth_consume_ip` | pinned | `60/hour` | Brute-forcing tokens |
+
+Without the first two, `request-link` is a free email relay pointed at
+whatever address an attacker types. The per-email bucket is keyed on a
+SHA-256 of the normalised address, so the throttle cache does not accumulate a
+plaintext list of every address anyone has ever typed into the sign-in box.
+
+### 401, not 403
+
+`DEFAULT_AUTHENTICATION_CLASSES` is
+`project/app/authentication.py::SessionAuthenticationWith401`. DRF picks 401
+vs 403 by asking the first authenticator for an `authenticate_header`, and
+stock `SessionAuthentication` returns `None` — which would make every
+anonymous request a 403 and the frontend's 401 handling dead code. The
+subclass returns a scheme; a test asserts 401 (never 403) across the whole
+previously-public surface.
+
+### HTTP Basic Auth is retired
+
+MUS-32 guarded `/api/llm/config/` and `/api/llm/config/test/` with a shared
+`LLM_ADMIN_USERNAME` / `LLM_ADMIN_PASSWORD` credential pair. Both the class
+and the settings are **deleted**. Two auth systems in a single-operator tool is
+one too many, and the stored provider API key — the actually-sensitive thing
+in this database — has no business sitting behind a *different* credential
+from everything else. `/settings/` is reachable once signed in.
 
 ## Secrets at rest
 
@@ -198,7 +273,17 @@ being written to the database (`LLMConfiguration.encrypted_api_key`, a
 
 ## Known gaps (tracked separately, not fixed here)
 
-- The rest of the API (leads, outreach actions, review queue/decisions) has
-  no authentication or authorization at all.
-- There's no rate limiting on any endpoint, including the two Basic
-  Auth-protected ones.
+- **No authorization, only authentication.** Every signed-in user can do
+  everything. Correct for a single-operator tool; the moment a second role
+  exists this needs revisiting.
+- **Rate limiting is per-process.** It uses Django's default local-memory
+  cache, so the caps are per worker rather than global. Point `CACHES` at a
+  shared backend before running more than one process.
+- **Sessions do not expire early on their own.** They use Django's default
+  `SESSION_COOKIE_AGE` (two weeks); there is no idle timeout and no
+  server-side session revocation beyond logging out.
+- **Consumed and expired `LoginToken` rows are never pruned.** They are
+  harmless (hashes of dead tokens) but the table grows without bound; the
+  `logintoken_sweep` index exists so a future cleanup command is cheap.
+- **Endpoints other than the auth ones are not rate limited.** A signed-in
+  client can hammer `/api/outreach/run/`, which makes paid LLM calls.

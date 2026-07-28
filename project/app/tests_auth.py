@@ -22,15 +22,18 @@ from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
 from django.db import OperationalError, connections
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.parsers import JSONParser
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory, APITestCase
 from rest_framework.throttling import SimpleRateThrottle
 
+from project.app import urls as app_urls
 from project.app.models import LoginToken
 from project.app.services import login_links
+from project.app.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.throttling import LoginEmailRateThrottle
 
 ALLOWED = "tester@example.com"
@@ -671,3 +674,149 @@ class ThrottleCacheKeyTests(TestCase):
 
     def test_a_non_dict_body_does_not_crash_the_throttle(self):
         self.assertIsNone(self._cache_key(["nope"]))
+
+
+# ---------------------------------------------------------------------------
+# Global authentication -- contract sections 5.1.4, 9.4 and 9.12
+# ---------------------------------------------------------------------------
+
+
+class UnauthenticatedAccessTests(APITestCase):
+    """Contract 9.4: **401, not 403.**
+
+    DRF picks 401 vs 403 by asking the first authenticator for an
+    ``authenticate_header``; stock ``SessionAuthentication`` returns None, so
+    anonymous requests get 403. MUS-38 would then ship 401 handling that never
+    fires -- and every one of its route-guard tests would still pass, because
+    they mock the 401. `SessionAuthenticationWith401` is the whole fix, and
+    these assertions are what keep it in place.
+    """
+
+    PREVIOUSLY_PUBLIC = [
+        ("get", "/api/leads/"),
+        ("get", "/api/outreach/"),
+        ("get", "/api/reports/"),
+        ("get", "/api/review-queue/"),
+        ("get", "/api/review-decisions/"),
+        ("get", "/api/llm/catalog/"),
+        ("get", "/api/llm/config/"),
+        ("post", "/api/outreach/run/"),
+        ("post", "/api/review-decisions/"),
+        ("post", "/api/llm/config/test/"),
+    ]
+
+    def test_every_previously_public_endpoint_is_401_when_anonymous(self):
+        for method, url in self.PREVIOUSLY_PUBLIC:
+            with self.subTest(url=url):
+                resp = getattr(self.client, method)(url)
+                self.assertEqual(resp.status_code, 401, f"{method.upper()} {url}")
+                self.assertEqual(resp.data["code"], "not_authenticated")
+
+    def test_logout_is_401_when_anonymous(self):
+        # One endpoint from MUS-37's own surface.
+        resp = self.client.post("/api/auth/logout/", {}, format="json")
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.data["code"], "not_authenticated")
+
+    def test_the_401_carries_a_www_authenticate_header(self):
+        # This header is *why* the status is 401 rather than 403.
+        resp = self.client.get("/api/leads/")
+        self.assertEqual(resp.headers["WWW-Authenticate"], 'Session realm="api"')
+
+    def test_queue_surface_is_401_when_anonymous(self):
+        """Contract 9.4 wants this for MUS-39's surface too.
+
+        `/api/queue/` does not exist on this branch -- MUS-39 uncomments it in
+        `urls.py`. Asserting it here rather than leaving it to integration is
+        the point: a 403 there is invisible until the route guard silently
+        stops working.
+        """
+        resp = self.client.get("/api/queue/")
+        if resp.status_code == 404:
+            self.skipTest("/api/queue/ arrives with MUS-39; this assertion activates then")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_the_allow_any_exemption_list_is_exactly_three_endpoints(self):
+        exempt = {
+            pattern.name
+            for pattern in app_urls.urlpatterns
+            if AllowAny in getattr(pattern.callback, "cls", type(None)).permission_classes
+        }
+        self.assertEqual(exempt, {"auth-request-link", "auth-consume", "auth-me"})
+
+    def test_the_html_shells_stay_public(self):
+        # They render an empty #root. @login_required here would break
+        # tests_frontend.py and hand users a Django 302 instead of MUS-38's
+        # designed sign-in redirect.
+        for url in ("/", "/reports/", "/next-actions/", "/settings/"):
+            with self.subTest(url=url):
+                self.assertEqual(Client().get(url).status_code, 200)
+
+
+@override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
+class CsrfAcrossTheLoginBoundaryTests(TestCase):
+    """Contract 9.12: ``login()`` rotates the CSRF token.
+
+    A client that captured `csrftoken` before consuming the link and reuses it
+    afterwards 403s on its first authenticated POST. That is correct behaviour
+    and the frontend must re-read the cookie per request -- this test is what
+    stops someone "optimising" it into a module-level constant.
+    """
+
+    def test_stale_csrf_token_is_rejected_and_the_fresh_one_is_accepted(self):
+        client = Client(enforce_csrf_checks=True)
+        client.get("/")  # @ensure_csrf_cookie shell
+        stale = client.cookies["csrftoken"].value
+
+        issued = login_links.issue_login_link(ALLOWED)
+        consumed = client.post(
+            "/api/auth/consume/",
+            json.dumps({"token": issued.raw_token}),
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN=stale,
+        )
+        self.assertEqual(consumed.status_code, 200)
+
+        fresh = client.cookies["csrftoken"].value
+        self.assertNotEqual(fresh, stale)
+
+        with_stale = client.post(
+            "/api/review-decisions/",
+            json.dumps({}),
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN=stale,
+        )
+        self.assertEqual(with_stale.status_code, 403)
+        self.assertEqual(with_stale.json()["code"], "csrf_failed")
+
+        with_fresh = client.post(
+            "/api/review-decisions/",
+            json.dumps({}),
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN=fresh,
+        )
+        self.assertNotEqual(with_fresh.status_code, 403)
+
+
+class AuthenticatedAPITestCaseTests(AuthenticatedAPITestCase):
+    """The helper MUS-39 is writing against right now, in parallel.
+
+    Its name and API are frozen by contract 8.2, so it gets its own test
+    rather than being only implicitly exercised by the suites that inherit it.
+    """
+
+    def test_the_client_is_signed_in(self):
+        resp = self.client.get("/api/auth/me/")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["email"], self.TEST_EMAIL)
+
+    def test_the_user_has_no_usable_password(self):
+        self.assertFalse(self.user.has_usable_password())
+
+    def test_json_format_requests_still_work(self):
+        # The reason client_class is APIClient: 49 existing call sites pass
+        # format="json", and none of their bodies were allowed to change.
+        resp = self.client.post("/api/review-decisions/", {}, format="json")
+        self.assertEqual(resp.status_code, 400)

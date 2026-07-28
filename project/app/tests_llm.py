@@ -1,14 +1,12 @@
 """Tests for the provider-agnostic LLM layer (project/app/services/llm/)."""
 
-import base64
 import os
 import unittest
 from unittest import mock
 
 from cryptography.fernet import Fernet
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from rest_framework import status
-from rest_framework.test import APITestCase as DRFAPITestCase
 
 from project.app import checks as app_checks
 from project.app.models import LLMConfiguration, LLMModel, LLMProvider
@@ -16,6 +14,7 @@ from project.app.services import crypto, llm
 from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import config
 from project.app.services.llm.groq import GroqClient
+from project.app.tests_auth_utils import AuthenticatedAPITestCase
 
 # ---------------------------------------------------------------------------
 # Claude adapter (anthropic SDK mocked)
@@ -262,8 +261,7 @@ class CacheInvalidationRegressionTests(TestCase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(LLM_ADMIN_USERNAME="admin", LLM_ADMIN_PASSWORD="secret")
-class ConfigTestEndpointTests(DRFAPITestCase):
+class ConfigTestEndpointTests(AuthenticatedAPITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.provider = LLMProvider.objects.create(
@@ -282,10 +280,6 @@ class ConfigTestEndpointTests(DRFAPITestCase):
             input_price_per_mtok_usd="1.00",
             output_price_per_mtok_usd="1.00",
         )
-
-    def setUp(self):
-        creds = base64.b64encode(b"admin:secret").decode()
-        self.client.credentials(HTTP_AUTHORIZATION=f"Basic {creds}")
 
     def test_no_stored_or_env_key_maps_to_auth_error_kind(self):
         # No LLMConfiguration row's key AND no provider env var set -- the

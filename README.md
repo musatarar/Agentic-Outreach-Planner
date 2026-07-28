@@ -14,8 +14,8 @@ of an account exec digging through HubSpot and Slack every morning.
   is only used for copywriting, never for the judgment call. See
   [`services/outreach.py`](project/app/services/outreach.py).
 - **Provider-agnostic LLM layer.** Swap Claude / OpenAI / DeepSeek / Groq via the
-  Basic Auth-protected `/api/llm/config/` endpoint (backed by the `LLMConfiguration`
-  model, encrypted key storage, no code changes, no vendor lock-in). See
+  `/api/llm/config/` endpoint (backed by the `LLMConfiguration` model, encrypted key
+  storage, no code changes, no vendor lock-in). See
   [`services/llm/`](project/app/services/llm/).
 - **Safe default for the unknown.** Leads the rules can't classify are flagged
   `needs_human=True` and routed to a BD review queue instead of getting an
@@ -64,8 +64,8 @@ with AI-drafted emails render in ~20–30s. Full walkthrough with sample results
 No local Python needed — just Docker:
 
 ```bash
-cp .env.example .env   # required: DJANGO_SECRET_KEY. Optionally set a provider key too.
-docker compose up
+cp .env.example .env   # required: DJANGO_SECRET_KEY and LOGIN_ALLOWED_EMAILS.
+docker compose up      # optionally set a provider key too
 ```
 
 This starts Postgres, builds the app image, applies migrations, seeds the demo pipeline, and
