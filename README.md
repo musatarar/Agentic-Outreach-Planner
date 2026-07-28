@@ -55,6 +55,10 @@ python manage.py runserver
 
 No `DATABASE_URL` is needed for this path — it falls back to SQLite at `./db.sqlite3`.
 
+Snoozed triage items return to the queue via `python manage.py unsnooze_due` (add `--dry-run`
+to see what it would do). It is idempotent and cheap — two conditional `UPDATE`s — so run it
+from cron every minute in anything long-lived.
+
 Open **http://127.0.0.1:8000/**, click **"Run Outreach Plan"**, watch prioritized cards
 with AI-drafted emails render in ~20–30s. Full walkthrough with sample results in
 [DEMO.md](DEMO.md).
@@ -81,6 +85,26 @@ key — you just can't run the LLM copy step until one is set.
 | LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via the DB-backed `LLMConfiguration` (see `/api/llm/config/`) |
 | API | `project/app/views.py`, `urls.py` | DRF APIViews at `/api/*` |
 | Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: planner board, reports, BD dashboard — consumes the `/api/*` endpoints |
+
+### Triage queue
+
+`OutreachAction` carries a lifecycle — `pending → approved | snoozed | dismissed`, with a
+short server-timed undo window — behind `/api/queue/*`. Three things in it are worth knowing:
+
+- **`suggested_copy` is immutable, forever.** A reviewer's edits go in `edited_copy`, and every
+  edit appends an `OutreachEdit` row holding the before/after pair and its diff. That diff is the
+  quiet payoff of the whole product: every correction a human makes is labeled training data for
+  the copy evals, and it only exists at the moment of editing. Dump it with
+  `python manage.py dump_edit_corpus --committed-only > corpus.jsonl`.
+- **Snooze is not skip.** It takes a judgement about *when* the lead should come back —
+  `tomorrow`, `in_3_days`, `next_week`, a `custom` date, or `on_activity` ("come back when they
+  actually do something"). `on_activity` records a watermark so historical events can't wake it,
+  plus a 14-day backstop, because a lead that never acts would otherwise be indistinguishable
+  from a dismiss nobody chose. `manage.py unsnooze_due` sweeps both kinds.
+- **Dismiss is permanent.** It writes a suppression ledger row keyed on
+  `sha256("v1|{lead_id}|{action_type}")`, which `plan_outreach()` consults *before* generating
+  copy — so a re-run neither resurrects the recommendation nor pays for an LLM call to
+  rediscover it. Undo inside the window revokes the suppression in the same transaction.
 
 The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
 (`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`

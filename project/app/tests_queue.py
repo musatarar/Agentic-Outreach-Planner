@@ -4,11 +4,16 @@ Kept in its own module: MUS-39 never edits ``tests_api.py`` (CONTRACT MUS-35
 section 8.2), so the two suites can be reviewed and merged independently.
 """
 
+import json
+import os
+import tempfile
 from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
+from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -1190,3 +1195,178 @@ class QueueLifecycleTests(AuthenticatedAPITestCase):
                     reverse(name, args=[action.id]), {}, content_type="application/json"
                 )
                 self.assertIn(resp.status_code, (401, 403))
+
+
+class UnsnoozeDueCommandTests(TestCase):
+    """`manage.py unsnooze_due` -- CONTRACT section 5.2, safe to run every minute."""
+
+    def _snoozed(self, lead_id, **overrides):
+        defaults = dict(
+            status=OutreachAction.STATUS_SNOOZED,
+            status_changed_at=timezone.now(),
+            snooze_until=timezone.now() + timedelta(days=1),
+            snooze_trigger=OutreachAction.TRIGGER_TOMORROW,
+        )
+        defaults.update(overrides)
+        return make_action(make_lead(lead_id), **defaults)
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command("unsnooze_due", *args, stdout=out)
+        return out.getvalue().strip()
+
+    def test_restores_due_snoozes_and_leaves_future_ones_alone(self):
+        due = self._snoozed("lead_due", snooze_until=timezone.now() - timedelta(minutes=1))
+        future = self._snoozed("lead_future")
+
+        output = self._run()
+
+        due.refresh_from_db()
+        future.refresh_from_db()
+        self.assertEqual(due.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(future.status, OutreachAction.STATUS_SNOOZED)
+        self.assertEqual(output, "unsnoozed 1 (1 due, 0 on activity)")
+
+    def test_clears_every_snooze_field_on_wake(self):
+        due = self._snoozed("lead_due", snooze_until=timezone.now() - timedelta(minutes=1))
+        self._run()
+        due.refresh_from_db()
+        self.assertIsNone(due.snooze_until)
+        self.assertEqual(due.snooze_trigger, "")
+        self.assertIsNone(due.snooze_activity_after)
+        self.assertIsNotNone(due.status_changed_at)
+
+    def test_on_activity_wakes_only_after_a_new_event(self):
+        watermark = timezone.now()
+        action = self._snoozed(
+            "lead_activity",
+            snooze_trigger=OutreachAction.TRIGGER_ON_ACTIVITY,
+            snooze_activity_after=watermark,
+            snooze_until=timezone.now() + timedelta(days=14),
+        )
+        # An event from BEFORE the reviewer said "come back when" must not count.
+        make_event(action.lead, timestamp=watermark - timedelta(hours=1))
+
+        self._run()
+        action.refresh_from_db()
+        self.assertEqual(action.status, OutreachAction.STATUS_SNOOZED)
+
+        make_event(action.lead, type="quote_submitted", timestamp=watermark + timedelta(hours=1))
+        output = self._run()
+
+        action.refresh_from_db()
+        self.assertEqual(action.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(output, "unsnoozed 1 (0 due, 1 on activity)")
+
+    def test_on_activity_still_returns_via_the_backstop(self):
+        """Section 9.17 -- a lead that never acts must not be hidden forever."""
+        action = self._snoozed(
+            "lead_silent",
+            snooze_trigger=OutreachAction.TRIGGER_ON_ACTIVITY,
+            snooze_activity_after=timezone.now() - timedelta(days=15),
+            snooze_until=timezone.now() - timedelta(days=1),  # 14-day backstop passed
+        )
+
+        self._run()
+
+        action.refresh_from_db()
+        self.assertEqual(action.status, OutreachAction.STATUS_PENDING)
+
+    def test_is_idempotent(self):
+        self._snoozed("lead_due", snooze_until=timezone.now() - timedelta(minutes=1))
+
+        first = self._run()
+        second = self._run()
+
+        self.assertEqual(first, "unsnoozed 1 (1 due, 0 on activity)")
+        self.assertEqual(second, "unsnoozed 0 (0 due, 0 on activity)")
+
+    def test_dry_run_writes_nothing(self):
+        action = self._snoozed("lead_due", snooze_until=timezone.now() - timedelta(minutes=1))
+
+        output = self._run("--dry-run")
+
+        action.refresh_from_db()
+        self.assertEqual(action.status, OutreachAction.STATUS_SNOOZED)
+        self.assertEqual(output, "would unsnooze 1 (1 due, 0 on activity)")
+
+    def test_ignores_actions_that_are_not_snoozed(self):
+        approved = make_action(
+            make_lead("lead_appr"),
+            status=OutreachAction.STATUS_APPROVED,
+            status_changed_at=timezone.now(),
+            snooze_until=timezone.now() - timedelta(days=1),
+        )
+        self._run()
+        approved.refresh_from_db()
+        self.assertEqual(approved.status, OutreachAction.STATUS_APPROVED)
+
+
+class DumpEditCorpusCommandTests(TestCase):
+    """The eval corpus dump -- every human correction is labeled training data."""
+
+    def setUp(self):
+        super().setUp()
+        self.action = make_action()
+        self.first = OutreachEdit.objects.create(
+            outreach_action=self.action,
+            before_text=self.action.suggested_copy,
+            after_text="Subject: One\n\nFirst.\n",
+            editor="tester@example.com",
+            chars_added=3,
+        )
+        self.committed = OutreachEdit.objects.create(
+            outreach_action=self.action,
+            before_text="Subject: One\n\nFirst.\n",
+            after_text="Subject: Two\n\nSecond.\n",
+            committed=True,
+        )
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command("dump_edit_corpus", *args, stdout=out, stderr=StringIO())
+        return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+
+    def test_dumps_suggested_edited_pairs_as_jsonl(self):
+        records = self._run()
+
+        self.assertEqual(len(records), 2)
+        first = records[0]
+        self.assertEqual(first["suggested"], self.action.suggested_copy)
+        self.assertEqual(first["edited"], "Subject: One\n\nFirst.\n")
+        self.assertEqual(first["lead_id"], self.action.lead_id)
+        self.assertEqual(first["action_type"], "nudge_usage")
+        self.assertFalse(first["committed"])
+
+    def test_committed_only_returns_what_a_human_actually_sent(self):
+        records = self._run("--committed-only")
+        self.assertEqual([r["edit_id"] for r in records], [self.committed.id])
+
+    def test_since_filters_by_date(self):
+        tomorrow = (timezone.now() + timedelta(days=1)).date().isoformat()
+        self.assertEqual(self._run("--since", tomorrow), [])
+        today = timezone.now().date().isoformat()
+        self.assertEqual(len(self._run("--since", today)), 2)
+
+    def test_bad_since_date_is_reported_not_raised(self):
+        err = StringIO()
+        call_command("dump_edit_corpus", "--since", "yesterday", stdout=StringIO(), stderr=err)
+        self.assertIn("unrecognized", err.getvalue())
+
+    def test_writes_to_a_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "corpus.jsonl")
+            out = StringIO()
+            call_command("dump_edit_corpus", "--output", path, stdout=out, stderr=StringIO())
+            with open(path, encoding="utf-8") as handle:
+                lines = [line for line in handle.read().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("wrote 2 edit(s)", out.getvalue())
+
+    def test_empty_corpus_writes_an_empty_file(self):
+        OutreachEdit.objects.all().delete()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "corpus.jsonl")
+            call_command("dump_edit_corpus", "--output", path, stdout=StringIO(), stderr=StringIO())
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "")
