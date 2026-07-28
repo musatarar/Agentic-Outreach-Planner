@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { SignOutButton } from './SignOutButton';
 
 // Mirrors the route table in main.tsx, which in turn mirrors project/urls.py.
 // The trailing-slash asymmetry is deliberate and load-bearing: /inbox and /done
@@ -13,7 +14,14 @@ const LINKS = [
   { to: '/settings/', label: 'Settings' },
 ];
 
-/** Shared header. The current page renders as bold text rather than a link. */
+/**
+ * Shared header. The current page renders as bold text rather than a link.
+ *
+ * Nav only ever renders inside RequireAuth, so the sign-out control lives here
+ * rather than in PageHeader (MUS-36's file): every surface that shows this nav
+ * is by definition a signed-in one, and the logged-out screens use AuthShell
+ * instead.
+ */
 export function Nav({ current }: { current: string }) {
   return (
     <nav>
@@ -27,6 +35,8 @@ export function Nav({ current }: { current: string }) {
           )}
         </span>
       ))}
+      <span className="sep">|</span>
+      <SignOutButton />
     </nav>
   );
 }
