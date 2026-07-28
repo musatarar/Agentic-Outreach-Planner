@@ -1,7 +1,7 @@
 # Agentic Outreach Planner
 
 [![CI](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml)
-![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)
 
 A Django + DRF backend that reads an agency's sales pipeline, decides which leads need
 outreach *today* and *why*, and drafts personalized follow-up copy with an LLM — instead
