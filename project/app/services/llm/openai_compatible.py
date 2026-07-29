@@ -34,12 +34,13 @@ class OpenAICompatibleClient(LLMClient):
     # Subclasses must override these.
     base_url: str
     api_key_env: str
-    provider_label = "OpenAI-compatible"
     # Our config.toml name for this provider ("groq", "chatgpt", ...), carried
-    # on LLMError.provider so a failure joins back to [llm.<name>]. Distinct
-    # from provider_label, which is the human-facing name used in the messages
-    # an operator reads.
-    provider_name = "openai_compatible"
+    # on LLMError.provider so a failure joins back to [llm.<name>]. Annotated
+    # rather than defaulted, like base_url above: a subclass that forgets it
+    # should fail loudly instead of tagging its errors with a provider name
+    # that matches no config section.
+    provider_name: str
+    provider_label = "OpenAI-compatible"
 
     def complete(self, prompt, max_tokens=None):
         api_key = os.environ.get(self.api_key_env)
@@ -69,10 +70,13 @@ class OpenAICompatibleClient(LLMClient):
             )
             response.raise_for_status()
             data = response.json()
-        except (httpx.HTTPError, json.JSONDecodeError) as exc:
-            # Narrow on purpose: transport failures, HTTP status failures and a
-            # non-JSON body are the three things this call can legitimately do.
-            # Anything else is our bug and should keep its own traceback.
+        except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as exc:
+            # Narrow on purpose: transport failures, HTTP status failures, a
+            # malformed base_url and a non-JSON body are what this call can
+            # legitimately do. Anything else is our bug and keeps its traceback.
+            # InvalidURL is listed separately because — unlike every other httpx
+            # failure — it derives from Exception, not from httpx.HTTPError, so
+            # a bad base_url would otherwise escape the LLM layer untyped.
             raise map_httpx_error(exc, self.provider_name) from exc
 
         return self._extract_text(data)

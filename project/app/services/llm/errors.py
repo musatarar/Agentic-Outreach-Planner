@@ -39,6 +39,12 @@ import httpx
 _STATUS_RATE_LIMIT = 429
 _STATUS_AUTH = frozenset({401, 403})
 _STATUS_BAD_REQUEST = frozenset({400, 404, 409, 413, 422})
+# 408 Request Timeout and 425 Too Early are the two 4xx codes that are NOT
+# "you sent something wrong": 408 is a gateway/proxy giving up on a request it
+# never finished reading, 425 is TLS early-data replay protection. Both clear on
+# their own, so they must not fall into the non-retryable 4xx bucket below.
+_STATUS_REQUEST_TIMEOUT = 408
+_STATUS_TOO_EARLY = 425
 
 
 class LLMError(RuntimeError):
@@ -132,6 +138,12 @@ class LLMMalformedResponseError(LLMError):
 # ---------------------------------------------------------------------------
 
 
+# Upper bound on an honoured Retry-After. Five minutes is already far longer
+# than any real LLM free-tier throttle window; beyond it, waiting is worse for
+# the caller than failing and letting the planner report a transient failure.
+MAX_RETRY_AFTER_SECONDS = 300.0
+
+
 def _parse_retry_after(headers: Any) -> float | None:
     """Read a numeric ``Retry-After`` (in seconds) out of response headers.
 
@@ -140,12 +152,22 @@ def _parse_retry_after(headers: Any) -> float | None:
     Groq all emit delta-seconds — so parsing it would be untestable dead code.
     A date-form header simply yields ``None`` and the caller's own backoff
     schedule takes over, which is the correct degradation.
+
+    The value is clamped to :data:`MAX_RETRY_AFTER_SECONDS`. ``retry_after``
+    flows into a ``sleep()`` in the retry helper, and ``base_url`` is operator-
+    configurable — so a proxy (or a provider having a bad day) answering
+    ``Retry-After: 86400000`` must not be able to park a worker for a millennium.
+    Clamping in the parser means every consumer inherits the bound instead of
+    each one having to remember it.
     """
     if headers is None:
         return None
     try:
         raw = headers.get("retry-after")
     except (AttributeError, TypeError):
+        # Defensive: httpx always hands us a Headers mapping, but `headers` is
+        # read off the exception with getattr, so a test double or a future SDK
+        # could put anything here. A bad header is never worth an exception.
         return None
     if raw is None:
         return None
@@ -157,7 +179,7 @@ def _parse_retry_after(headers: Any) -> float | None:
     # rather than letting it flow into a sleep() call.
     if not math.isfinite(value) or value < 0:
         return None
-    return value
+    return min(value, MAX_RETRY_AFTER_SECONDS)
 
 
 def _response_headers(exc: BaseException) -> Any:
@@ -193,13 +215,18 @@ def _from_status_code(
         return LLMRateLimitError(message, **kwargs)
     if status_code is not None and status_code >= 500:
         return LLMTransientError(message, **kwargs)
+    if status_code == _STATUS_REQUEST_TIMEOUT:
+        return LLMTimeoutError(message, **kwargs)
+    if status_code == _STATUS_TOO_EARLY:
+        return LLMTransientError(message, **kwargs)
     if status_code in _STATUS_AUTH:
         return LLMAuthError(message, **kwargs)
     if status_code in _STATUS_BAD_REQUEST:
         return LLMBadRequestError(message, **kwargs)
     if status_code is not None and 400 <= status_code < 500:
-        # Unenumerated 4xx (e.g. 405, 451). Client-side by definition, so not
-        # retryable — the same request would be rejected identically.
+        # Unenumerated 4xx (e.g. 405, 451). Client-side, so not retryable —
+        # the same request would be rejected identically. 408 and 425, the two
+        # exceptions to that rule, are handled above.
         return LLMBadRequestError(message, **kwargs)
     return LLMError(message, **kwargs)
 
@@ -264,6 +291,12 @@ def map_anthropic_error(exc: BaseException, provider: str | None = None) -> LLME
         ),
     ):
         return build(LLMBadRequestError)
+
+    if isinstance(exc, anthropic.RetryableError):
+        # Signalled by SDK middleware, not by the API. Rare, but its whole
+        # meaning is "try again" — falling through to the non-retryable base
+        # would invert it.
+        return build(LLMTransientError)
 
     if isinstance(exc, anthropic.APIStatusError):
         # A status-carrying error the SDK models with a class we don't name
@@ -337,11 +370,13 @@ def map_httpx_error(exc: BaseException, provider: str | None = None) -> LLMError
             cause=exc,
         )
 
-    if isinstance(exc, httpx.HTTPError):
-        # Residual httpx error (InvalidURL, TooManyRedirects, ...). Unknown
-        # retryability, so fall back to the non-retryable base.
-        return LLMError(message, provider=provider, cause=exc)
-
+    # Residual httpx error (TooManyRedirects, InvalidURL, ...) or anything else
+    # an adapter chose to route here. Unknown retryability, so it falls back to
+    # the non-retryable base rather than being retried on a guess.
+    #
+    # Note httpx.InvalidURL is NOT an httpx.HTTPError — it derives straight from
+    # Exception — so a malformed base_url only reaches the taxonomy because the
+    # adapter names it explicitly in its except clause.
     return LLMError(message, provider=provider, cause=exc)
 
 
