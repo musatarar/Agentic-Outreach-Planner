@@ -6,6 +6,10 @@ to obtain the configured adapter; all adapters expose the same
 
 To add a provider: implement an :class:`LLMClient` subclass and register it in
 ``_REGISTRY`` below.
+
+Every adapter raises only the typed errors in
+:mod:`project.app.services.llm.errors`, re-exported here so callers import the
+whole LLM contract — client factory and failure taxonomy — from one place.
 """
 
 from functools import lru_cache
@@ -15,6 +19,15 @@ from .base import LLMClient
 from .chatgpt import ChatGPTClient
 from .claude import ClaudeClient
 from .deepseek import DeepSeekClient
+from .errors import (
+    LLMAuthError,
+    LLMBadRequestError,
+    LLMError,
+    LLMMalformedResponseError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    LLMTransientError,
+)
 from .groq import GroqClient
 
 _REGISTRY = {
@@ -59,4 +72,15 @@ def build_client(provider):
     return _build_client(provider)
 
 
-__all__ = ["LLMClient", "get_llm_client", "build_client"]
+__all__ = [
+    "LLMClient",
+    "get_llm_client",
+    "build_client",
+    "LLMError",
+    "LLMRateLimitError",
+    "LLMTimeoutError",
+    "LLMTransientError",
+    "LLMAuthError",
+    "LLMBadRequestError",
+    "LLMMalformedResponseError",
+]

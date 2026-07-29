@@ -87,8 +87,17 @@ def _estimate_tokens(text):
 
 
 def _retry_after_seconds(exc, default):
-    """Honor a provider's ``Retry-After`` header when present (free tiers send a
-    real wait on 429/token-per-minute throttle), else fall back to ``default``."""
+    """Honor a provider's ``Retry-After`` when present (free tiers send a real
+    wait on 429/token-per-minute throttle), else fall back to ``default``.
+
+    Reads ``LLMError.retry_after`` first: the LLM layer now parses the header
+    itself (MUS-43) and the typed error it raises carries no ``.response``, so
+    the legacy path below would silently always fall through to ``default``.
+    That path is kept for any caller still handing us a raw provider exception.
+    """
+    typed = getattr(exc, "retry_after", None)
+    if typed is not None:
+        return typed
     resp = getattr(exc, "response", None)
     header = resp.headers.get("retry-after") if resp is not None else None
     if header:
@@ -116,6 +125,11 @@ async def _complete_with_retry(client, prompt, max_tokens, attempts=6):
             return text, time.perf_counter() - t0
         except Exception as exc:  # noqa: BLE001 -- provider errors vary; retry then surface
             last_exc = exc
+            # The taxonomy (MUS-43) tells us when retrying is pointless. A
+            # missing API key used to cost six attempts and ~40s of sleeps
+            # before failing with the same message it had at attempt one.
+            if not getattr(exc, "retryable", True):
+                raise
             if i < attempts - 1:
                 delay = _retry_after_seconds(exc, default=2.0 * (i + 1))
                 await asyncio.sleep(min(delay, 65.0))
