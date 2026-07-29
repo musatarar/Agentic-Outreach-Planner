@@ -1,12 +1,16 @@
 """Tests for the provider-agnostic LLM layer (project/app/services/llm/)."""
 
+import json
 import os
 import unittest
 from unittest import mock
 
+import anthropic
+import httpx
+
 from project.app.services import llm
 from project.app.services.llm import claude as claude_mod
-from project.app.services.llm import config
+from project.app.services.llm import config, errors
 from project.app.services.llm.groq import GroqClient
 
 # ---------------------------------------------------------------------------
@@ -128,6 +132,312 @@ class GetLLMClientTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 llm.get_llm_client()
         self.assertIn("bogus", str(ctx.exception))
+
+
+# ---------------------------------------------------------------------------
+# Error taxonomy (MUS-43) -- pure mapping functions, no network, no mocking
+# ---------------------------------------------------------------------------
+
+
+def _httpx_response(status_code, headers=None):
+    """A real httpx.Response, not a Mock: the mappers read .status_code and
+    .headers, and a Mock would happily satisfy an assertion the SDK never
+    could."""
+    request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+    return httpx.Response(status_code, headers=headers or {}, request=request)
+
+
+def _anthropic_status_error(cls, status_code, headers=None):
+    """Build an anthropic APIStatusError subclass the way the SDK does."""
+    response = _httpx_response(status_code, headers)
+    return cls("boom", response=response, body=None)
+
+
+# (status_code, expected LLMError subclass) -- the table both mappers share.
+STATUS_TABLE = (
+    (400, errors.LLMBadRequestError),
+    (401, errors.LLMAuthError),
+    (403, errors.LLMAuthError),
+    (404, errors.LLMBadRequestError),
+    (409, errors.LLMBadRequestError),
+    (413, errors.LLMBadRequestError),
+    (422, errors.LLMBadRequestError),
+    (429, errors.LLMRateLimitError),
+    (500, errors.LLMTransientError),
+    (502, errors.LLMTransientError),
+    (503, errors.LLMTransientError),
+    (529, errors.LLMTransientError),
+)
+
+RETRYABLE_CLASSES = (
+    errors.LLMRateLimitError,
+    errors.LLMTimeoutError,
+    errors.LLMTransientError,
+)
+
+
+class ErrorTaxonomyTests(unittest.TestCase):
+    """Shape of the taxonomy itself, independent of any mapping."""
+
+    def test_llm_error_is_a_runtime_error(self):
+        # Load-bearing: openai_compatible's missing-key raise becomes
+        # LLMAuthError and every existing `assertRaises(RuntimeError)` caller
+        # keeps working. If this ever fails, the base class is wrong.
+        self.assertTrue(issubclass(errors.LLMError, RuntimeError))
+
+    def test_retryability_is_declared_per_class(self):
+        self.assertFalse(errors.LLMError.retryable)
+        for cls in RETRYABLE_CLASSES:
+            self.assertTrue(cls.retryable, cls.__name__)
+        for cls in (
+            errors.LLMAuthError,
+            errors.LLMBadRequestError,
+            errors.LLMMalformedResponseError,
+        ):
+            self.assertFalse(cls.retryable, cls.__name__)
+
+    def test_carries_provider_status_and_cause(self):
+        cause = ValueError("underlying")
+        exc = errors.LLMTransientError(
+            "boom", provider="groq", status_code=503, retry_after=1.5, cause=cause
+        )
+        self.assertEqual(str(exc), "boom")
+        self.assertEqual(exc.provider, "groq")
+        self.assertEqual(exc.status_code, 503)
+        self.assertEqual(exc.retry_after, 1.5)
+        self.assertIs(exc.cause, cause)
+
+    def test_defaults_are_none(self):
+        exc = errors.LLMError("boom")
+        self.assertIsNone(exc.provider)
+        self.assertIsNone(exc.status_code)
+        self.assertIsNone(exc.retry_after)
+        self.assertIsNone(exc.cause)
+
+    def test_taxonomy_is_re_exported_from_the_package(self):
+        self.assertIs(llm.LLMError, errors.LLMError)
+        self.assertIs(llm.LLMRateLimitError, errors.LLMRateLimitError)
+
+
+class HttpxErrorMappingTests(unittest.TestCase):
+    def test_status_codes_map_to_expected_classes(self):
+        for status_code, expected in STATUS_TABLE:
+            with self.subTest(status_code=status_code):
+                response = _httpx_response(status_code)
+                exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+                mapped = errors.map_httpx_error(exc, "groq")
+                self.assertIsInstance(mapped, expected)
+                self.assertEqual(mapped.status_code, status_code)
+                self.assertEqual(mapped.provider, "groq")
+                self.assertIs(mapped.cause, exc)
+                self.assertEqual(mapped.retryable, isinstance(mapped, RETRYABLE_CLASSES))
+
+    def test_unenumerated_4xx_is_a_non_retryable_bad_request(self):
+        response = _httpx_response(451)
+        exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+        mapped = errors.map_httpx_error(exc, "groq")
+        self.assertIsInstance(mapped, errors.LLMBadRequestError)
+        self.assertFalse(mapped.retryable)
+
+    def test_retry_after_is_parsed_from_the_header(self):
+        response = _httpx_response(429, headers={"Retry-After": "30"})
+        exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+        self.assertEqual(errors.map_httpx_error(exc, "groq").retry_after, 30.0)
+
+    def test_retry_after_is_none_without_the_header(self):
+        response = _httpx_response(429)
+        exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+        self.assertIsNone(errors.map_httpx_error(exc, "groq").retry_after)
+
+    def test_unusable_retry_after_values_are_ignored(self):
+        # A date-form (legal per RFC 9110, never sent by an LLM provider) or a
+        # negative value must degrade to "no guidance", not to a bad sleep().
+        for raw in ("Wed, 21 Oct 2015 07:28:00 GMT", "-5", "", "soon"):
+            with self.subTest(raw=raw):
+                response = _httpx_response(429, headers={"Retry-After": raw})
+                exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+                self.assertIsNone(errors.map_httpx_error(exc, "groq").retry_after)
+
+    def test_timeouts_map_to_timeout_not_transient(self):
+        for cls in (
+            httpx.TimeoutException,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+        ):
+            with self.subTest(cls=cls.__name__):
+                mapped = errors.map_httpx_error(cls("slow"), "groq")
+                self.assertIsInstance(mapped, errors.LLMTimeoutError)
+                self.assertTrue(mapped.retryable)
+
+    def test_transport_errors_are_transient(self):
+        for exc in (
+            httpx.ConnectError("refused"),
+            httpx.ReadError("reset"),
+            httpx.RemoteProtocolError("bad frame"),
+        ):
+            with self.subTest(cls=type(exc).__name__):
+                mapped = errors.map_httpx_error(exc, "groq")
+                self.assertIsInstance(mapped, errors.LLMTransientError)
+                self.assertTrue(mapped.retryable)
+
+    def test_response_shape_failures_are_malformed(self):
+        for exc in (
+            json.JSONDecodeError("no json", "<html>", 0),
+            KeyError("choices"),
+            IndexError("list index out of range"),
+            TypeError("'NoneType' object is not subscriptable"),
+            AttributeError("'int' object has no attribute 'strip'"),
+        ):
+            with self.subTest(cls=type(exc).__name__):
+                mapped = errors.map_httpx_error(exc, "groq")
+                self.assertIsInstance(mapped, errors.LLMMalformedResponseError)
+                self.assertFalse(mapped.retryable)
+
+    def test_residual_httpx_error_is_the_non_retryable_base(self):
+        mapped = errors.map_httpx_error(httpx.TooManyRedirects("looping"), "groq")
+        self.assertIs(type(mapped), errors.LLMError)
+        self.assertFalse(mapped.retryable)
+
+
+class AnthropicErrorMappingTests(unittest.TestCase):
+    def test_status_carrying_classes_map_to_expected_classes(self):
+        table = (
+            (anthropic.BadRequestError, 400, errors.LLMBadRequestError),
+            (anthropic.AuthenticationError, 401, errors.LLMAuthError),
+            (anthropic.PermissionDeniedError, 403, errors.LLMAuthError),
+            (anthropic.NotFoundError, 404, errors.LLMBadRequestError),
+            (anthropic.ConflictError, 409, errors.LLMBadRequestError),
+            (anthropic.RequestTooLargeError, 413, errors.LLMBadRequestError),
+            (anthropic.UnprocessableEntityError, 422, errors.LLMBadRequestError),
+            (anthropic.RateLimitError, 429, errors.LLMRateLimitError),
+            (anthropic.InternalServerError, 500, errors.LLMTransientError),
+            (anthropic.OverloadedError, 529, errors.LLMTransientError),
+        )
+        for cls, status_code, expected in table:
+            with self.subTest(cls=cls.__name__):
+                exc = _anthropic_status_error(cls, status_code)
+                mapped = errors.map_anthropic_error(exc, "claude")
+                self.assertIsInstance(mapped, expected)
+                self.assertEqual(mapped.provider, "claude")
+                self.assertIs(mapped.cause, exc)
+                self.assertEqual(mapped.retryable, isinstance(mapped, RETRYABLE_CLASSES))
+
+    def test_unnamed_api_status_error_falls_back_to_the_status_code(self):
+        # A future SDK release adding a subclass we don't enumerate must still
+        # land in the right bucket -- RequestTooLargeError arrived that way.
+        for status_code, expected in STATUS_TABLE:
+            with self.subTest(status_code=status_code):
+                exc = _anthropic_status_error(anthropic.APIStatusError, status_code)
+                mapped = errors.map_anthropic_error(exc, "claude")
+                self.assertIsInstance(mapped, expected)
+                self.assertEqual(mapped.status_code, status_code)
+
+    def test_timeout_maps_to_timeout_not_transient(self):
+        # REGRESSION GUARD: APITimeoutError subclasses APIConnectionError, so an
+        # isinstance chain in the wrong order silently classifies every timeout
+        # as a generic transient failure. Both are retryable, so nothing would
+        # break loudly -- we would just lose the distinction in traces and in
+        # the message a BD reviewer reads.
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        mapped = errors.map_anthropic_error(anthropic.APITimeoutError(request), "claude")
+        self.assertIsInstance(mapped, errors.LLMTimeoutError)
+        self.assertNotIsInstance(mapped, errors.LLMTransientError)
+        self.assertTrue(mapped.retryable)
+
+    def test_connection_error_is_transient(self):
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        exc = anthropic.APIConnectionError(request=request)
+        mapped = errors.map_anthropic_error(exc, "claude")
+        self.assertIsInstance(mapped, errors.LLMTransientError)
+        self.assertTrue(mapped.retryable)
+
+    def test_response_validation_error_is_malformed(self):
+        exc = anthropic.APIResponseValidationError(response=_httpx_response(200), body=None)
+        mapped = errors.map_anthropic_error(exc, "claude")
+        self.assertIsInstance(mapped, errors.LLMMalformedResponseError)
+        self.assertFalse(mapped.retryable)
+
+    def test_rate_limit_retry_after_is_parsed_and_optional(self):
+        with_header = _anthropic_status_error(
+            anthropic.RateLimitError, 429, headers={"retry-after": "12.5"}
+        )
+        self.assertEqual(errors.map_anthropic_error(with_header, "claude").retry_after, 12.5)
+
+        without_header = _anthropic_status_error(anthropic.RateLimitError, 429)
+        self.assertIsNone(errors.map_anthropic_error(without_header, "claude").retry_after)
+
+    def test_residual_anthropic_error_is_the_non_retryable_base(self):
+        mapped = errors.map_anthropic_error(anthropic.AnthropicError("odd"), "claude")
+        self.assertIs(type(mapped), errors.LLMError)
+        self.assertFalse(mapped.retryable)
+
+
+# ---------------------------------------------------------------------------
+# Adapters raise the taxonomy, not vendor exceptions
+# ---------------------------------------------------------------------------
+
+
+class AdapterErrorTranslationTests(unittest.TestCase):
+    @mock.patch.dict(os.environ, {}, clear=True)
+    def test_missing_key_is_a_non_retryable_auth_error(self):
+        with self.assertRaises(errors.LLMAuthError) as ctx:
+            GroqClient().complete("a prompt")
+        self.assertFalse(ctx.exception.retryable)
+        self.assertEqual(ctx.exception.provider, "groq")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_http_429_becomes_a_rate_limit_error(self):
+        response = _httpx_response(429, headers={"Retry-After": "7"})
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = response
+            with self.assertRaises(errors.LLMRateLimitError) as ctx:
+                GroqClient().complete("a prompt")
+        self.assertEqual(ctx.exception.retry_after, 7.0)
+        self.assertTrue(ctx.exception.retryable)
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_unreadable_body_becomes_a_malformed_response_error(self):
+        for payload in ({}, {"choices": []}, {"choices": [{"message": {"content": None}}]}):
+            with self.subTest(payload=payload):
+                response = mock.Mock()
+                response.raise_for_status.return_value = None
+                response.json.return_value = payload
+                with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+                    post.return_value = response
+                    with self.assertRaises(errors.LLMMalformedResponseError):
+                        GroqClient().complete("a prompt")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_whitespace_only_completion_is_malformed(self):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"choices": [{"message": {"content": "   \n "}}]}
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = response
+            with self.assertRaises(errors.LLMMalformedResponseError):
+                GroqClient().complete("a prompt")
+
+    def test_claude_sdk_error_becomes_a_taxonomy_error(self):
+        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
+            client = mock_cls.return_value
+            client.messages.create.side_effect = _anthropic_status_error(
+                anthropic.InternalServerError, 500
+            )
+            with self.assertRaises(errors.LLMTransientError) as ctx:
+                claude_mod.ClaudeClient().complete("p")
+        self.assertEqual(ctx.exception.provider, "claude")
+        self.assertTrue(ctx.exception.retryable)
+
+    def test_claude_response_with_no_text_block_is_malformed(self):
+        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
+            client = mock_cls.return_value
+            response = mock.Mock()
+            response.content = []
+            client.messages.create.return_value = response
+            with self.assertRaises(errors.LLMMalformedResponseError):
+                claude_mod.ClaudeClient().complete("p")
 
 
 if __name__ == "__main__":

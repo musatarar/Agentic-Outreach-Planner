@@ -12,6 +12,7 @@ DEFAULT_MODEL = "llama-3.3-70b-versatile"
 class GroqClient(OpenAICompatibleClient):
     base_url = "https://api.groq.com/openai/v1"
     api_key_env = "GROQ_API_KEY"
+    provider_name = "groq"
     provider_label = "Groq"
 
     def __init__(self, model=DEFAULT_MODEL, default_max_tokens=500):
