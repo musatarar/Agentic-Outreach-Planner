@@ -7,8 +7,12 @@ can be unit-tested without Django or a database. Django models are only
 imported inside `plan_outreach()`.
 """
 
+from __future__ import annotations
+
 import datetime
 import re
+from dataclasses import dataclass
+from typing import Any
 
 from project.app.services import actions, sanitize, verify
 from project.app.services.llm import get_llm_client
@@ -434,13 +438,19 @@ Write the email now. Requirements:
 - Output only the email (subject + body), no commentary."""
 
 
-def generate_copy(lead, action_type, reason):
+def generate_copy(lead, action_type, reason, *, prompt=None):
     """Generate a personalized outreach email via the configured LLM provider.
 
     The provider (Claude, ChatGPT, DeepSeek, Groq, ...) is selected in
     ``config.toml``; see :mod:`project.app.services.llm`. Returns the text.
+
+    ``prompt`` lets a caller supply a prompt it has already built. The planner
+    does, because building one touches ``lead.events`` — see :class:`WorkItem`.
+    Omitted, this builds the prompt itself, which is the single-lead path every
+    other caller uses and the one the tests exercise.
     """
-    prompt = _build_copy_prompt(lead, action_type, reason)
+    if prompt is None:
+        prompt = _build_copy_prompt(lead, action_type, reason)
     return get_llm_client().complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
 
@@ -503,6 +513,144 @@ def format_shape_problems(problems):
 # --------------------------------------------------------------------------
 # planner
 # --------------------------------------------------------------------------
+#
+# `plan_outreach` runs as five explicit phases. It is still serial, still sync,
+# and still writes one row per lead -- the split changes the shape, not the
+# behaviour. The shape is what matters:
+#
+#   1. read the leads
+#   2. classify each one AND build its prompt      -> WorkItem
+#   3. call the provider                           -> CopyOutcome
+#   4. run the two output gates                    -> ReviewOutcome
+#   5. write the rows
+#
+# **Phase 2 builds the prompt, and that is the point of the split.** Prompt
+# construction reaches the ORM -- `_build_copy_prompt` -> `_build_untrusted_block`
+# -> `_format_events_for_prompt` -> `_events_list` all touch `lead.events`. Doing
+# it here means phase 3 holds nothing but network I/O, so making phase 3
+# concurrent cannot accidentally drag a lazy query into an event loop. That is a
+# structural guarantee rather than one resting on a `prefetch_related` string
+# staying in step with whatever the prompt builder happens to read next year.
+# It also means a provider-call span would time the provider, not our f-strings.
+
+
+@dataclass(frozen=True, slots=True)
+class WorkItem:
+    """Everything phase 3 needs about one lead, with the ORM already behind us.
+
+    ``prompt`` is ``None`` exactly when no copy is to be generated (an
+    ``UNKNOWN`` classification goes straight to a human), which is also the
+    signal phase 3 uses to skip the provider entirely.
+    """
+
+    lead: Any
+    priority: int
+    action_type: str
+    reason: str
+    prompt: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CopyOutcome:
+    """What the provider gave us for one lead: text, or the failure instead.
+
+    The exception is carried rather than raised so one lead's dead API call
+    cannot sink the run -- the same guarantee the old inline ``try`` gave, now
+    expressed as a value that phase 4 can read.
+    """
+
+    text: str = ""
+    error: BaseException | None = None
+    skipped: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewOutcome:
+    """The three fields phase 4 decides and phase 5 writes."""
+
+    suggested_copy: str
+    needs_human: bool
+    further_action: str
+
+
+def _build_work_item(lead):
+    """Phase 2 for one lead: classify it, and build its prompt while we still
+    have cheap access to the ORM."""
+    priority = determine_priority(lead)
+    action_type, reason = determine_action(lead)
+    prompt = None
+    if action_type != actions.UNKNOWN:
+        prompt = _build_copy_prompt(lead, action_type, reason)
+    return WorkItem(
+        lead=lead,
+        priority=priority,
+        action_type=action_type,
+        reason=reason,
+        prompt=prompt,
+    )
+
+
+def _generate_for(item):
+    """Phase 3 for one lead: the provider call, and nothing else.
+
+    Goes through the module-level ``generate_copy`` rather than reaching for the
+    client directly, so the single-lead path and the planner's path stay the
+    same function.
+    """
+    if item.prompt is None:
+        return CopyOutcome(skipped=True)
+    try:
+        text = generate_copy(item.lead, item.action_type, item.reason, prompt=item.prompt)
+    except Exception as exc:  # don't let one API failure sink the run
+        return CopyOutcome(error=exc)
+    return CopyOutcome(text=text)
+
+
+def _review(item, outcome, level):
+    """Phase 4 for one lead: decide whether a human needs to see this."""
+    if outcome.skipped:
+        return ReviewOutcome(
+            suggested_copy="",
+            needs_human=True,
+            further_action=(
+                f"BD review needed for {item.lead.contact_name} ({item.lead.agency_name}): "
+                f"no automated outreach pattern matched. Review HubSpot notes and "
+                f"recent activity, then decide whether to contact, hold, or disqualify."
+            ),
+        )
+
+    if outcome.error is not None:
+        return ReviewOutcome(
+            suggested_copy="",
+            needs_human=True,
+            further_action=(
+                f"Copy generation failed ({outcome.error}). AE should draft the "
+                f"{item.action_type} email manually using the reason above."
+            ),
+        )
+
+    # Two independent output gates, both fail-closed:
+    #   1. SHAPE (MUS-23): is the output still a well-formed email, or
+    #      did an injection steer it off-task? (validate_copy)
+    #   2. GROUNDING (MUS-22): does the copy contradict the record or
+    #      make an unauthorized promise? (verify.verify_copy)
+    # Any problem from either gate routes the (kept) draft to a human
+    # with the specific issues spelled out.
+    shape_problems = validate_copy(outcome.text)
+    violations = verify.verify_copy(item.lead, outcome.text, item.action_type, level=level)
+    if not (shape_problems or violations):
+        return ReviewOutcome(suggested_copy=outcome.text, needs_human=False, further_action="")
+
+    messages = []
+    if shape_problems:
+        messages.append(format_shape_problems(shape_problems))
+    if violations:
+        messages.append(verify.format_violations(violations))
+    return ReviewOutcome(
+        suggested_copy=outcome.text,
+        needs_human=True,
+        further_action="\n\n".join(messages),
+    )
 
 
 def plan_outreach():
@@ -516,58 +664,28 @@ def plan_outreach():
     # Copy grounding strictness (off | standard | strict); see verify.py.
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
 
-    planned = []
-    for lead in Lead.objects.all():
-        priority = determine_priority(lead)
-        action_type, reason = determine_action(lead)
-        needs_human = action_type == actions.UNKNOWN
-        suggested_copy = ""
-        further_action = ""
+    # 1. read
+    leads = list(Lead.objects.all())
+    # 2. classify + build prompts (the last phase that touches the ORM)
+    work = [_build_work_item(lead) for lead in leads]
+    # 3. call the provider
+    outcomes = [_generate_for(item) for item in work]
+    # 4. run the output gates
+    reviews = [_review(item, outcome, level) for item, outcome in zip(work, outcomes)]
 
-        if needs_human:
-            further_action = (
-                f"BD review needed for {lead.contact_name} ({lead.agency_name}): "
-                f"no automated outreach pattern matched. Review HubSpot notes and "
-                f"recent activity, then decide whether to contact, hold, or disqualify."
-            )
-        else:
-            try:
-                suggested_copy = generate_copy(lead, action_type, reason)
-            except Exception as exc:  # don't let one API failure sink the run
-                needs_human = True
-                further_action = (
-                    f"Copy generation failed ({exc}). AE should draft the "
-                    f"{action_type} email manually using the reason above."
-                )
-            else:
-                # Two independent output gates, both fail-closed:
-                #   1. SHAPE (MUS-23): is the output still a well-formed email, or
-                #      did an injection steer it off-task? (validate_copy)
-                #   2. GROUNDING (MUS-22): does the copy contradict the record or
-                #      make an unauthorized promise? (verify.verify_copy)
-                # Any problem from either gate routes the (kept) draft to a human
-                # with the specific issues spelled out.
-                shape_problems = validate_copy(suggested_copy)
-                violations = verify.verify_copy(lead, suggested_copy, action_type, level=level)
-                if shape_problems or violations:
-                    needs_human = True
-                    messages = []
-                    if shape_problems:
-                        messages.append(format_shape_problems(shape_problems))
-                    if violations:
-                        messages.append(verify.format_violations(violations))
-                    further_action = "\n\n".join(messages)
-
-        action = OutreachAction.objects.create(
-            lead=lead,
-            priority=priority,
-            action_type=action_type,
-            reason=reason,
-            suggested_copy=suggested_copy,
-            needs_human=needs_human,
-            further_action=further_action,
+    # 5. write
+    planned = [
+        OutreachAction.objects.create(
+            lead=item.lead,
+            priority=item.priority,
+            action_type=item.action_type,
+            reason=item.reason,
+            suggested_copy=review.suggested_copy,
+            needs_human=review.needs_human,
+            further_action=review.further_action,
         )
-        planned.append(action)
+        for item, review in zip(work, reviews)
+    ]
 
     planned.sort(key=lambda a: a.priority)
     return planned
