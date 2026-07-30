@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
+import { BrandMark } from './BrandMark';
 import { Card } from './ui';
 import { ThemeToggle } from './ui';
+import { BRAND_NAME, documentTitle } from '../util/brand';
 
 interface Props {
   /** Drives document.title, which Django's shell template set on first paint. */
@@ -20,13 +22,16 @@ interface Props {
  */
 export function AuthShell({ title, children }: Props) {
   useEffect(() => {
-    document.title = title;
+    document.title = documentTitle(title);
   }, [title]);
 
   return (
     <div className="auth-shell">
       <div className="auth-shell__bar">
-        <span className="auth-wordmark">Outreach Planner</span>
+        <span className="auth-wordmark">
+          <BrandMark size={16} />
+          {BRAND_NAME}
+        </span>
         <ThemeToggle />
       </div>
       <main className="auth-shell__main">

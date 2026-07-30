@@ -86,7 +86,7 @@
     "lead_id": "lead_010",
     "events": [
       { "type": "login", "timestamp": "2026-06-15T08:55:00Z" },
-      { "type": "webinar_attended", "timestamp": "2026-06-04T17:00:00Z", "meta": { "title": "Advanced Premium Lock strategies", "duration_min": 45 } },
+      { "type": "webinar_attended", "timestamp": "2026-06-04T17:00:00Z", "meta": { "title": "Advanced Sure Lock strategies", "duration_min": 45 } },
       { "type": "support_ticket", "timestamp": "2026-06-09T11:20:00Z", "meta": { "ticket_id": "SUP-4821", "notes": "Devon asked how to export a quote summary to PDF for a client. Resolved same day." } },
       { "type": "feature_request", "timestamp": "2026-06-10T13:40:00Z", "meta": { "notes": "Would like bulk quote import from a CSV of his existing book." } },
       { "type": "nps_survey", "timestamp": "2026-06-12T16:00:00Z", "meta": { "score": 9, "comment": "Really useful so far, team likes it." } },

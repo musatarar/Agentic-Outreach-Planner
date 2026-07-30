@@ -1,4 +1,4 @@
-# CONTRACT.md — Agentic Outreach Planner
+# CONTRACT.md — Locked In Agentic Outreach Planner
 
 All agents build against this spec exactly. Do not deviate from names, shapes, or paths.
 

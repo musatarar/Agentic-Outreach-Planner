@@ -35,6 +35,32 @@ header {
   box-shadow: var(--shadow-sm);
 }
 
+/* The brand row (MUS-44), above the nav. The mark inherits `color` through
+   currentColor, so setting it on the lock-up themes the brackets; the square
+   inside the mark holds --color-accent on its own. */
+.brand-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text);
+}
+
+.brand-name {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
 nav { margin-bottom: var(--space-3); font-size: var(--text-sm); }
 nav a { color: var(--color-accent); text-decoration: none; }
 nav a:hover { text-decoration: underline; }
@@ -929,13 +955,5 @@ section.bucket > h2 {
 .ui-theme-toggle:hover { background: var(--color-surface-hover); color: var(--color-text); }
 .ui-theme-toggle__label { text-transform: capitalize; }
 
-/* The legacy header puts nav and the toggle on one row. */
-.shell-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-}
-
-.shell-bar nav { margin-bottom: 0; }
+/* The theme toggle moved onto the brand row in MUS-44, so the wrapper that
+   used to pair it with the nav is gone; see .brand-bar above. */

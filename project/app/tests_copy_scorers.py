@@ -16,7 +16,7 @@ GOOD_EMAIL = """Subject: Quick idea on your volume pricing
 Hi Priya,
 
 Saw you've closed 6 deals and submitted 14 quotes this month — you're clearly
-running Premium Lock hard, and you're closing in on that 20-deal mark you
+running Sure Lock hard, and you're closing in on that 20-deal mark you
 mentioned wanting to hit for volume pricing.
 
 Given that pace, I want to walk you through how our volume tiers kick in so you're

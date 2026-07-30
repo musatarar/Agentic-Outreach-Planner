@@ -29,13 +29,20 @@
   padding: var(--space-3) var(--content-gutter);
 }
 
+/* The mark sits inline with the name and inherits `color` via currentColor.
+   Full-strength text here, not --color-text-muted: on the signed-out screens
+   the lock-up is the only thing identifying the product, so it should not
+   read as secondary chrome the way it does beside a nav (MUS-44). */
 .auth-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   font-family: var(--font-sans);
   font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-bold);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
-  color: var(--color-text-muted);
+  color: var(--color-text);
 }
 
 /* Optically centred: a shade above true centre reads as deliberate rather than
