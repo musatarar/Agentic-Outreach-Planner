@@ -5,7 +5,9 @@ to obtain the configured adapter; all adapters expose the same
 :meth:`~project.app.services.llm.base.LLMClient.complete` interface.
 
 To add a provider: implement an :class:`LLMClient` subclass and register it in
-``_REGISTRY`` below.
+``_REGISTRY`` below. Adapters implement :meth:`LLMClient.generate`, which
+returns an :class:`LLMResult` (text plus usage, model and finish reason);
+``complete()`` is the text-only wrapper most callers want.
 
 Every adapter raises only the typed errors in
 :mod:`project.app.services.llm.errors`, re-exported here so callers import the
@@ -15,7 +17,7 @@ whole LLM contract — client factory and failure taxonomy — from one place.
 from functools import lru_cache
 
 from . import config
-from .base import LLMClient
+from .base import LLMClient, LLMResult
 from .chatgpt import ChatGPTClient
 from .claude import ClaudeClient
 from .deepseek import DeepSeekClient
@@ -74,6 +76,7 @@ def build_client(provider):
 
 __all__ = [
     "LLMClient",
+    "LLMResult",
     "get_llm_client",
     "build_client",
     "LLMError",
