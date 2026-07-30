@@ -9,6 +9,12 @@ config.toml).
 Failures — transport, HTTP status, and unreadable response bodies alike — are
 translated into the shared taxonomy in :mod:`project.app.services.llm.errors`
 before they leave this module.
+
+Both a sync and a native async path are provided. The async one holds a real
+``httpx.AsyncClient`` (connection reuse across a concurrent run is most of the
+point), cached per event loop — see
+:class:`~project.app.services.llm.base.LoopBoundAsyncClient` for why that
+qualifier is load-bearing.
 """
 
 import json
@@ -20,6 +26,7 @@ import httpx
 from .base import (
     LLMClient,
     LLMResult,
+    LoopBoundAsyncClient,
     coerce_text,
     coerce_token_count,
     normalize_finish_reason,
@@ -28,7 +35,10 @@ from .base import (
 )
 from .errors import LLMAuthError, LLMMalformedResponseError, map_httpx_error
 
-_TIMEOUT_SECONDS = 60.0
+# Per-HTTP-attempt timeout. A constructor argument rather than a module
+# constant so MUS-26 only has to wire config.toml into the caller; the value is
+# unchanged from the constant it replaces.
+DEFAULT_TIMEOUT_SECONDS = 60.0
 
 # Ways the documented response shape can betray us, all of which mean the same
 # thing to a caller: the provider answered with something we can't read.
@@ -37,6 +47,14 @@ _TIMEOUT_SECONDS = 60.0
 #   TypeError      -> a key held null or the wrong type (e.g. "content": null)
 #   AttributeError -> "content" was JSON but not a string, so .strip() is absent
 _SHAPE_ERRORS = (KeyError, IndexError, TypeError, AttributeError)
+
+# What a chat-completions request can legitimately fail with. Narrow on purpose:
+# transport failures, HTTP status failures, a malformed base_url and a non-JSON
+# body. Anything else is our bug and should keep its own traceback.
+# httpx.InvalidURL is listed separately because -- unlike every other httpx
+# failure -- it derives from Exception, not from httpx.HTTPError, so a bad
+# base_url would otherwise escape the LLM layer untyped.
+_REQUEST_ERRORS = (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError)
 
 
 class OpenAICompatibleClient(LLMClient):
@@ -51,18 +69,54 @@ class OpenAICompatibleClient(LLMClient):
     provider_name: str
     provider_label = "OpenAI-compatible"
 
-    def generate(self, prompt, max_tokens=None) -> LLMResult:
-        api_key = os.environ.get(self.api_key_env)
-        if not api_key:
-            # LLMAuthError subclasses RuntimeError, so this raise keeps exactly
-            # the exception contract callers had before the taxonomy existed —
-            # it just additionally says "don't bother retrying me".
-            raise LLMAuthError(
-                f"{self.provider_label} provider selected but {self.api_key_env} "
-                f"is not set. Add it to your .env file.",
-                provider=self.provider_name,
-            )
+    def __init__(self, model, default_max_tokens=500, timeout_s=DEFAULT_TIMEOUT_SECONDS):
+        super().__init__(model=model, default_max_tokens=default_max_tokens)
+        self.timeout_s = timeout_s
+        self._async_client = LoopBoundAsyncClient(
+            # Connection limits are left at httpx's defaults (100 connections),
+            # comfortably above the 8-way semaphore MUS-26 plans. Worth knowing
+            # before raising that number: requests beyond the pool size queue
+            # *inside* httpx, so the wait lands in latency_s (which is supposed
+            # to be provider time only) and a PoolTimeout would map to a
+            # retryable LLMTimeoutError -- a local queueing problem that looks
+            # like a provider blip and answers it with more load. Size limits to
+            # the semaphore when that config arrives.
+            factory=lambda: httpx.AsyncClient(timeout=self.timeout_s),
+            closer=lambda client: client.aclose(),
+        )
 
+    # -- request construction (shared by both paths) ------------------------
+
+    def _api_key(self):
+        api_key = os.environ.get(self.api_key_env)
+        if api_key:
+            return api_key
+        # LLMAuthError subclasses RuntimeError, so this raise keeps exactly the
+        # exception contract callers had before the taxonomy existed — it just
+        # additionally says "don't bother retrying me".
+        raise LLMAuthError(
+            f"{self.provider_label} provider selected but {self.api_key_env} "
+            f"is not set. Add it to your .env file.",
+            provider=self.provider_name,
+        )
+
+    def _request(self, prompt, max_tokens):
+        return f"{self.base_url}/chat/completions", {
+            "headers": {
+                "Authorization": f"Bearer {self._api_key()}",
+                "Content-Type": "application/json",
+            },
+            "json": {
+                "model": self.model,
+                "max_tokens": max_tokens or self.default_max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        }
+
+    # -- the two call paths -------------------------------------------------
+
+    def generate(self, prompt, max_tokens=None) -> LLMResult:
+        url, kwargs = self._request(prompt, max_tokens)
         # Times the provider call and nothing else. httpx.post is
         # non-streaming, so the body is fully read by the time it returns --
         # which means the clock has to stop HERE, before raise_for_status() and
@@ -70,34 +124,36 @@ class OpenAICompatibleClient(LLMClient):
         # things under the same field name. See LLMResult.latency_s.
         started = time.perf_counter()
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "max_tokens": max_tokens or self.default_max_tokens,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=_TIMEOUT_SECONDS,
-            )
+            response = httpx.post(url, timeout=self.timeout_s, **kwargs)
             latency_s = time.perf_counter() - started
             response.raise_for_status()
             data = response.json()
-        except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as exc:
-            # Narrow on purpose: transport failures, HTTP status failures, a
-            # malformed base_url and a non-JSON body are what this call can
-            # legitimately do. Anything else is our bug and keeps its traceback.
-            # InvalidURL is listed separately because — unlike every other httpx
-            # failure — it derives from Exception, not from httpx.HTTPError, so
-            # a bad base_url would otherwise escape the LLM layer untyped.
+        except _REQUEST_ERRORS as exc:
             raise map_httpx_error(exc, self.provider_name).with_latency(
                 time.perf_counter() - started
             ) from exc
 
         return self._build_result(data, latency_s)
+
+    async def agenerate(self, prompt, max_tokens=None) -> LLMResult:
+        url, kwargs = self._request(prompt, max_tokens)
+        # The timeout lives on the AsyncClient, so it is not repeated here.
+        client = self._async_client.get()
+        started = time.perf_counter()
+        try:
+            response = await client.post(url, **kwargs)
+            latency_s = time.perf_counter() - started
+            response.raise_for_status()
+            data = response.json()
+        except _REQUEST_ERRORS as exc:
+            raise map_httpx_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
+
+        return self._build_result(data, latency_s)
+
+    async def aclose(self) -> None:
+        await self._async_client.aclose()
 
     def _build_result(self, data, latency_s) -> LLMResult:
         """Turn a chat-completions body into an :class:`LLMResult`.

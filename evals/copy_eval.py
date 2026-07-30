@@ -24,11 +24,9 @@ Run standalone via Inspect (``inspect eval evals/copy_eval.py -T provider=groq``
 or, preferably, via ``evals/run_copy_eval.py`` which adds baselines + the gate.
 """
 
-import asyncio
 import json
 import re
 import sys
-import time
 from pathlib import Path
 
 # Make ``project.*`` and ``evals.*`` importable no matter where this is run from.
@@ -45,7 +43,7 @@ from inspect_ai.solver import Generate, TaskState, solver  # noqa: E402
 from evals import copy_checks  # noqa: E402
 from evals.run_rules_eval import GOLDEN_PATH, build_lead, load_golden  # noqa: E402
 from project.app.services import actions  # noqa: E402
-from project.app.services.llm import build_client  # noqa: E402
+from project.app.services.llm import build_client, retry  # noqa: E402
 from project.app.services.llm import config as llm_config  # noqa: E402
 from project.app.services.outreach import MAX_COPY_TOKENS, _build_copy_prompt  # noqa: E402
 
@@ -86,54 +84,31 @@ def _estimate_tokens(text):
     return max(1, len(text) // 4)
 
 
-def _retry_after_seconds(exc, default):
-    """Honor a provider's ``Retry-After`` when present (free tiers send a real
-    wait on 429/token-per-minute throttle), else fall back to ``default``.
+# Six attempts, matching the budget this harness has always used. An eval run
+# over the full golden set is long-lived and unattended, so it can afford to
+# wait out a free-tier throttle where the planner (a user is watching) cannot --
+# hence a local policy rather than llm/retry.py's default of four.
+_EVAL_RETRY_POLICY = retry.RetryPolicy(max_attempts=6, initial_backoff_s=2.0, max_backoff_s=65.0)
 
-    Reads ``LLMError.retry_after`` first: the LLM layer now parses the header
-    itself (MUS-43) and the typed error it raises carries no ``.response``, so
-    the legacy path below would silently always fall through to ``default``.
-    That path is kept for any caller still handing us a raw provider exception.
+
+async def _generate_with_retry(client, prompt, max_tokens):
+    """Call the provider natively async, retrying only retryable failures.
+
+    Returns the :class:`LLMResult`, whose ``latency_s`` times the successful API
+    call alone -- back-off/throttle sleeps are excluded, so the reported latency
+    reflects the model rather than the free tier's rate limiting.
+
+    Two things changed here when the shared helper landed (MUS-46). The call is
+    genuinely async instead of ``asyncio.to_thread(client.complete, ...)``, so
+    ``--max-samples`` is no longer capped by a thread pool; and a non-retryable
+    failure surfaces immediately, so a missing API key costs one attempt instead
+    of six attempts and ~40 seconds of sleeping to produce the message it
+    already had.
     """
-    typed = getattr(exc, "retry_after", None)
-    if typed is not None:
-        return typed
-    resp = getattr(exc, "response", None)
-    header = resp.headers.get("retry-after") if resp is not None else None
-    if header:
-        try:
-            return float(header)
-        except ValueError:
-            pass
-    return default
-
-
-async def _complete_with_retry(client, prompt, max_tokens, attempts=6):
-    """Call the sync client off the event loop, retrying transient failures
-    (rate limits, blips). Respects ``Retry-After`` so full runs self-pace under
-    free-tier per-minute limits instead of failing.
-
-    Returns ``(text, call_seconds)`` where ``call_seconds`` times only the
-    successful API call -- back-off/throttle sleeps are excluded so reported
-    latency reflects the model, not the free tier's rate limiting.
-    """
-    last_exc = None
-    for i in range(attempts):
-        try:
-            t0 = time.perf_counter()
-            text = await asyncio.to_thread(client.complete, prompt, max_tokens=max_tokens)
-            return text, time.perf_counter() - t0
-        except Exception as exc:  # noqa: BLE001 -- provider errors vary; retry then surface
-            last_exc = exc
-            # The taxonomy (MUS-43) tells us when retrying is pointless. A
-            # missing API key used to cost six attempts and ~40s of sleeps
-            # before failing with the same message it had at attempt one.
-            if not getattr(exc, "retryable", True):
-                raise
-            if i < attempts - 1:
-                delay = _retry_after_seconds(exc, default=2.0 * (i + 1))
-                await asyncio.sleep(min(delay, 65.0))
-    raise last_exc
+    return await retry.acall_with_retry(
+        lambda: client.agenerate(prompt, max_tokens=max_tokens),
+        policy=_EVAL_RETRY_POLICY,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,16 +160,30 @@ def build_dataset(golden_path=None):
 def generate_copy_solver(provider):
     """Generate the email via ``build_client(provider).complete(...)`` and stash
     latency + token estimates + model id in the sample store."""
+    # The client now holds a pooled async transport for the length of the run.
+    # Inspect gives a solver no teardown hook, so it is released when the
+    # process exits rather than by an explicit aclose(); the eval is a
+    # short-lived CLI process, so that is the whole of its lifetime anyway.
     client = build_client(provider)
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         prompt = state.input_text
-        text, latency = await _complete_with_retry(client, prompt, MAX_COPY_TOKENS)
+        result = await _generate_with_retry(client, prompt, MAX_COPY_TOKENS)
 
-        state.output = ModelOutput.from_content(model=provider, content=text)
-        state.store.set("latency_s", round(latency, 4))
+        state.output = ModelOutput.from_content(model=provider, content=result.text)
+        # None when the adapter did not measure -- kept as None rather than
+        # coerced to 0.0, so a missing measurement never reads as a zero-second
+        # call in the report (the same distinction LLMResult draws for tokens).
+        state.store.set(
+            "latency_s", None if result.latency_s is None else round(result.latency_s, 4)
+        )
+        # LLMResult now carries the provider's real counts. Switching the est.
+        # cost column over to them is a follow-up: the committed baselines in
+        # evals/baselines/copy.json were recorded against the estimate, and
+        # changing the metric and the baseline in one PR makes a regression
+        # indistinguishable from a units change.
         state.store.set("est_input_tokens", _estimate_tokens(prompt))
-        state.store.set("est_output_tokens", _estimate_tokens(text))
+        state.store.set("est_output_tokens", _estimate_tokens(result.text))
         state.store.set("model", getattr(client, "model", provider))
         return state
 
@@ -317,7 +306,7 @@ def judge_scorer(judge_provider):
         email = state.output.completion or ""
         prompt = _build_judge_prompt(rubric, state, email)
         try:
-            raw, _latency = await _complete_with_retry(client, prompt, JUDGE_MAX_TOKENS)
+            raw = (await _generate_with_retry(client, prompt, JUDGE_MAX_TOKENS)).text
         except Exception as exc:  # noqa: BLE001 -- record, don't crash the run
             return Score(
                 value=0.0,
