@@ -59,58 +59,78 @@
 
   /* ---- Surfaces & text ------------------------------------------------
      The boldness is the canvas-to-card gap: the canvas is a definite grey,
-     the card is paper white. No gradients, no glows. */
-  --color-bg: #e8ebf0;
-  --color-bg-subtle: #dde1e9;
+     the card is paper white. No gradients, no glows.
+
+     MUS-44: the neutral ramp is hue-free warm grey rather than the old
+     blue-grey, so the only hue on a default screen is the brand orange. */
+  --color-bg: #ececea;
+  --color-bg-subtle: #e2e2df;
 
   --color-surface: #ffffff;
   --color-surface-raised: #ffffff;
-  --color-surface-sunken: #f3f5f8;
-  --color-surface-hover: #eef1f6;
+  --color-surface-sunken: #f6f6f4;
+  --color-surface-hover: #f0f0ed;
 
-  --color-overlay-scrim: rgba(11, 14, 20, 0.55);
+  --color-overlay-scrim: rgba(20, 20, 18, 0.55);
 
-  --color-border: #c8cfda;
-  --color-border-subtle: #e0e4ec;
-  --color-border-strong: #96a0b1;
+  --color-border: #d4d4ce;
+  --color-border-subtle: #e6e6e2;
+  --color-border-strong: #a0a09a;
 
-  --color-text: #12151c;
-  --color-text-muted: #4a5464;
-  --color-text-subtle: #68717f;
+  --color-text: #1a1a18;
+  --color-text-muted: #56564f;
+  --color-text-subtle: #75756d;
   --color-text-inverse: #ffffff;
 
   /* ---- Accent (one, exactly) ------------------------------------------
-     The active queue row and the single primary button. Nothing else. */
-  --color-accent: #4338ca;
-  --color-accent-hover: #3730a3;
-  --color-accent-active: #312e81;
-  --color-accent-subtle: #eef0fe;
-  --color-accent-border: #c3c6f8;
+     The active queue row and the single primary button. Nothing else.
+
+     MUS-44: the Locked In orange. The logo square is #e8452c, but that is
+     only 3.9:1 against white — below AA for the button label it has to
+     carry. The accent is one step deeper (4.9:1) and the literal #e8452c is
+     reserved for the mark itself, where it sits next to nothing and is
+     never a text background. */
+  --color-accent: #d2381f;
+  --color-accent-hover: #b02f19;
+  --color-accent-active: #8f2614;
+  --color-accent-subtle: #fdeeea;
+  --color-accent-border: #f4bcae;
   --color-accent-contrast: #ffffff;
-  --color-focus-ring: #4338ca;
+  --color-focus-ring: #d2381f;
 
-  /* ---- Priority ramp (P1 red / P2 amber / P3 neutral) ------------------
-     No other element in the app may be red or amber. That is what makes a
-     coloured pixel legible as urgency at a glance. */
-  --color-p1-fg: #b42318;
-  --color-p1-bg: #fee4e2;
-  --color-p1-border: #fda29b;
+  /* ---- Priority ramp (P1 brand / P2 tint / P3 neutral) -----------------
+     MUS-44 folded this into the brand: P1 is the orange at full strength,
+     P2 the same hue pulled back to a tan, P3 hueless. Urgency now reads as
+     saturation on one hue rather than red-vs-amber. Nothing outside this
+     ramp and the accent may be orange.
 
-  --color-p2-fg: #b54708;
-  --color-p2-bg: #fef0c7;
-  --color-p2-border: #fec84b;
+     The ramp and the accent share a hue by design, so they are kept apart
+     by shape instead: priority is always a tinted chip (bg + fg + border),
+     the accent is always a solid fill. */
+  --color-p1-fg: #a8301a;
+  --color-p1-bg: #fce4de;
+  --color-p1-border: #f3a893;
 
-  --color-p3-fg: #475467;
-  --color-p3-bg: #eaecf0;
-  --color-p3-border: #d0d5dd;
+  --color-p2-fg: #8a5230;
+  --color-p2-bg: #fbeee0;
+  --color-p2-border: #e8c9a8;
+
+  --color-p3-fg: #56564f;
+  --color-p3-bg: #eaeae6;
+  --color-p3-border: #d4d4ce;
 
   /* ---- Verification ramp ----------------------------------------------
      Underlines on claims inside generated copy ONLY. Never a background,
-     never a text colour, never on chrome. */
+     never a text colour, never on chrome.
+
+     Verified stays green. Unverified moved off red (MUS-44) — the old
+     #d92d20 is within a few degrees of the brand orange, so a wavy
+     "unverified" underline would have read as decoration. Crimson keeps
+     the "this is wrong" reflex while staying clear of the ramp above. */
   --color-verified: #067647;
   --color-verified-soft: #dcfae6;
-  --color-unverified: #d92d20;
-  --color-unverified-soft: #fee4e2;
+  --color-unverified: #a4123f;
+  --color-unverified-soft: #fce3ea;
 
   --underline-thickness: 2px;
   --underline-offset: 3px;
@@ -118,20 +138,21 @@
   --underline-style-unverified: wavy;
 
   /* ---- Triage status --------------------------------------------------
-     Deliberately hueless: red/amber belong to priority and green belongs to
-     verification, so status reads as a lightness ramp instead. Approved is
-     the solid inverted chip -- the loudest neutral means "resolved". */
-  --color-status-pending-fg: #101828;
-  --color-status-pending-bg: #e2e6ed;
+     Deliberately hueless: orange belongs to priority and the accent, green
+     belongs to verification, so status reads as a lightness ramp instead.
+     Approved is the solid inverted chip -- the loudest neutral means
+     "resolved". */
+  --color-status-pending-fg: #1f1f1c;
+  --color-status-pending-bg: #e4e4e0;
 
   --color-status-approved-fg: #ffffff;
-  --color-status-approved-bg: #12151c;
+  --color-status-approved-bg: #1a1a18;
 
-  --color-status-snoozed-fg: #4a5464;
-  --color-status-snoozed-bg: #f3f5f8;
+  --color-status-snoozed-fg: #56564f;
+  --color-status-snoozed-bg: #f4f4f1;
 
-  --color-status-dismissed-fg: #666f80;
-  --color-status-dismissed-bg: #f3f5f8;
+  --color-status-dismissed-fg: #6d6d66;
+  --color-status-dismissed-bg: #f4f4f1;
 
   /* ---- Feedback aliases (aliases only -- no fourth ramp) --------------- */
   --color-danger: var(--color-p1-fg);
@@ -165,9 +186,9 @@
   /* ---- Elevation -------------------------------------------------------
      Restrained on purpose. Depth is the border and the canvas gap. */
   --shadow-none: none;
-  --shadow-sm: 0 1px 2px rgba(11, 14, 20, 0.06);
-  --shadow-md: 0 2px 8px rgba(11, 14, 20, 0.08);
-  --shadow-lg: 0 8px 24px rgba(11, 14, 20, 0.12);
+  --shadow-sm: 0 1px 2px rgba(20, 20, 18, 0.06);
+  --shadow-md: 0 2px 8px rgba(20, 20, 18, 0.08);
+  --shadow-lg: 0 8px 24px rgba(20, 20, 18, 0.12);
   --shadow-focus: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
 
   /* ---- Motion ----------------------------------------------------------
@@ -210,61 +231,61 @@
    ====================================================================== */
 
 [data-theme='dark'] {
-  --color-bg: #090b10;
-  --color-bg-subtle: #05070a;
+  --color-bg: #0d0d0c;
+  --color-bg-subtle: #070706;
 
-  --color-surface: #14181f;
-  --color-surface-raised: #1b212a;
-  --color-surface-sunken: #0f1319;
-  --color-surface-hover: #222936;
+  --color-surface: #1a1a18;
+  --color-surface-raised: #232320;
+  --color-surface-sunken: #131311;
+  --color-surface-hover: #2b2b27;
 
   --color-overlay-scrim: rgba(0, 0, 0, 0.7);
 
-  --color-border: #2b3341;
-  --color-border-subtle: #1e242e;
-  --color-border-strong: #495468;
+  --color-border: #35352f;
+  --color-border-subtle: #25251f;
+  --color-border-strong: #57574f;
 
-  --color-text: #eef1f6;
-  --color-text-muted: #a6b0c0;
-  --color-text-subtle: #7a8598;
-  --color-text-inverse: #090b10;
+  --color-text: #f2f2ef;
+  --color-text-muted: #b0b0a7;
+  --color-text-subtle: #84847b;
+  --color-text-inverse: #0d0d0c;
 
-  --color-accent: #818cf8;
-  --color-accent-hover: #a5b4fc;
-  --color-accent-active: #c7d2fe;
-  --color-accent-subtle: #1b1e3a;
-  --color-accent-border: #3a3f7a;
-  --color-accent-contrast: #12151c;
-  --color-focus-ring: #a5b4fc;
+  --color-accent: #ff7a5c;
+  --color-accent-hover: #ff9b83;
+  --color-accent-active: #ffb9a7;
+  --color-accent-subtle: #2e1712;
+  --color-accent-border: #6b2a1a;
+  --color-accent-contrast: #1a1a18;
+  --color-focus-ring: #ff9b83;
 
-  --color-p1-fg: #fda29b;
-  --color-p1-bg: #3a1512;
-  --color-p1-border: #7a271a;
+  --color-p1-fg: #ffa08a;
+  --color-p1-bg: #3a160f;
+  --color-p1-border: #7a2b18;
 
-  --color-p2-fg: #fec84b;
-  --color-p2-bg: #3a2408;
-  --color-p2-border: #93370d;
+  --color-p2-fg: #e8b489;
+  --color-p2-bg: #33241a;
+  --color-p2-border: #6b4a2e;
 
-  --color-p3-fg: #cbd3e0;
-  --color-p3-bg: #222936;
-  --color-p3-border: #39414f;
+  --color-p3-fg: #cbcbc2;
+  --color-p3-bg: #2b2b27;
+  --color-p3-border: #3d3d37;
 
   --color-verified: #4ade80;
   --color-verified-soft: #0d2c1c;
-  --color-unverified: #f97066;
-  --color-unverified-soft: #3a1512;
+  --color-unverified: #ff7d9e;
+  --color-unverified-soft: #3a1220;
 
-  --color-status-pending-fg: #eef1f6;
-  --color-status-pending-bg: #232a36;
+  --color-status-pending-fg: #f2f2ef;
+  --color-status-pending-bg: #2a2a25;
 
-  --color-status-approved-fg: #090b10;
-  --color-status-approved-bg: #eef1f6;
+  --color-status-approved-fg: #0d0d0c;
+  --color-status-approved-bg: #f2f2ef;
 
-  --color-status-snoozed-fg: #a6b0c0;
-  --color-status-snoozed-bg: #1a202a;
+  --color-status-snoozed-fg: #b0b0a7;
+  --color-status-snoozed-bg: #1f1f1c;
 
-  --color-status-dismissed-fg: #7d8798;
-  --color-status-dismissed-bg: #14181f;
+  --color-status-dismissed-fg: #85857c;
+  --color-status-dismissed-bg: #1a1a18;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.55);
@@ -281,61 +302,61 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --color-bg: #090b10;
-    --color-bg-subtle: #05070a;
+    --color-bg: #0d0d0c;
+    --color-bg-subtle: #070706;
 
-    --color-surface: #14181f;
-    --color-surface-raised: #1b212a;
-    --color-surface-sunken: #0f1319;
-    --color-surface-hover: #222936;
+    --color-surface: #1a1a18;
+    --color-surface-raised: #232320;
+    --color-surface-sunken: #131311;
+    --color-surface-hover: #2b2b27;
 
     --color-overlay-scrim: rgba(0, 0, 0, 0.7);
 
-    --color-border: #2b3341;
-    --color-border-subtle: #1e242e;
-    --color-border-strong: #495468;
+    --color-border: #35352f;
+    --color-border-subtle: #25251f;
+    --color-border-strong: #57574f;
 
-    --color-text: #eef1f6;
-    --color-text-muted: #a6b0c0;
-    --color-text-subtle: #7a8598;
-    --color-text-inverse: #090b10;
+    --color-text: #f2f2ef;
+    --color-text-muted: #b0b0a7;
+    --color-text-subtle: #84847b;
+    --color-text-inverse: #0d0d0c;
 
-    --color-accent: #818cf8;
-    --color-accent-hover: #a5b4fc;
-    --color-accent-active: #c7d2fe;
-    --color-accent-subtle: #1b1e3a;
-    --color-accent-border: #3a3f7a;
-    --color-accent-contrast: #12151c;
-    --color-focus-ring: #a5b4fc;
+    --color-accent: #ff7a5c;
+    --color-accent-hover: #ff9b83;
+    --color-accent-active: #ffb9a7;
+    --color-accent-subtle: #2e1712;
+    --color-accent-border: #6b2a1a;
+    --color-accent-contrast: #1a1a18;
+    --color-focus-ring: #ff9b83;
 
-    --color-p1-fg: #fda29b;
-    --color-p1-bg: #3a1512;
-    --color-p1-border: #7a271a;
+    --color-p1-fg: #ffa08a;
+    --color-p1-bg: #3a160f;
+    --color-p1-border: #7a2b18;
 
-    --color-p2-fg: #fec84b;
-    --color-p2-bg: #3a2408;
-    --color-p2-border: #93370d;
+    --color-p2-fg: #e8b489;
+    --color-p2-bg: #33241a;
+    --color-p2-border: #6b4a2e;
 
-    --color-p3-fg: #cbd3e0;
-    --color-p3-bg: #222936;
-    --color-p3-border: #39414f;
+    --color-p3-fg: #cbcbc2;
+    --color-p3-bg: #2b2b27;
+    --color-p3-border: #3d3d37;
 
     --color-verified: #4ade80;
     --color-verified-soft: #0d2c1c;
-    --color-unverified: #f97066;
-    --color-unverified-soft: #3a1512;
+    --color-unverified: #ff7d9e;
+    --color-unverified-soft: #3a1220;
 
-    --color-status-pending-fg: #eef1f6;
-    --color-status-pending-bg: #232a36;
+    --color-status-pending-fg: #f2f2ef;
+    --color-status-pending-bg: #2a2a25;
 
-    --color-status-approved-fg: #090b10;
-    --color-status-approved-bg: #eef1f6;
+    --color-status-approved-fg: #0d0d0c;
+    --color-status-approved-bg: #f2f2ef;
 
-    --color-status-snoozed-fg: #a6b0c0;
-    --color-status-snoozed-bg: #1a202a;
+    --color-status-snoozed-fg: #b0b0a7;
+    --color-status-snoozed-bg: #1f1f1c;
 
-    --color-status-dismissed-fg: #7d8798;
-    --color-status-dismissed-bg: #14181f;
+    --color-status-dismissed-fg: #85857c;
+    --color-status-dismissed-bg: #1a1a18;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
     --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.55);

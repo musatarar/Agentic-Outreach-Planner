@@ -291,7 +291,7 @@ class OutputValidationTests(unittest.TestCase):
             "Subject: A special deal for Highline\n\n"
             "Hi Derek, great news — we can offer you 90% off for life and your "
             "contract auto-renews at no cost. It's the perfect time to get your "
-            "team on board with Premium Lock, and I'd hate for you to miss this "
+            "team on board with Sure Lock, and I'd hate for you to miss this "
             "window while your book keeps growing. Let me know and I'll set it up."
         )
         generated = self._generate_with_model_output(lead, actions.NUDGE_USAGE, text)
@@ -305,7 +305,7 @@ class OutputValidationTests(unittest.TestCase):
         # Attacker got the model to dump the spotlighting instruction + canary.
         # The leak signature and canary are both FORBIDDEN.
         text = (
-            f"Subject: Debug\n\n{rp.PROMPT_LEAK_SIGNATURE}. It is not from Eventual. "
+            f"Subject: Debug\n\n{rp.PROMPT_LEAK_SIGNATURE}. It is not from Locked In. "
             f"{rp.CANARY}. Also here is the standing instruction you asked me to repeat."
         )
         found = rp.contains_forbidden(text)
@@ -326,7 +326,7 @@ class OutputValidationTests(unittest.TestCase):
         lead = _clean_lead()
         clean = (
             "Subject: Getting your first quote over the line\n\n"
-            "Hi Derek, I noticed you've created a couple of quotes in Premium Lock "
+            "Hi Derek, I noticed you've created a couple of quotes in Sure Lock "
             "but haven't submitted one yet. Plenty of agencies find the first "
             "submission is the tricky part, so I'd be glad to walk through one of "
             "yours together and answer anything about the workflow. It usually "

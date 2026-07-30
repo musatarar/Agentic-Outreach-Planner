@@ -1,4 +1,4 @@
-# Outreach Planner — Demo Guide
+# Locked In — Outreach Planner Demo Guide
 
 A tool that reads the agency pipeline (`leads.json` + `events.json`), decides who needs
 outreach today and why, and uses Claude (`claude-sonnet-4-6`) to draft personalized copy

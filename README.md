@@ -1,4 +1,4 @@
-# Agentic Outreach Planner
+# Locked In — Agentic Outreach Planner
 
 [![CI](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml)
 ![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)

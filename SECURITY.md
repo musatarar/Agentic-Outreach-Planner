@@ -1,6 +1,6 @@
 # Security: Indirect Prompt Injection via CRM Notes (MUS-23)
 
-Eventual's Agentic Outreach Planner reads CRM data about each lead, classifies
+Locked In's Agentic Outreach Planner reads CRM data about each lead, classifies
 the right outreach action, and asks an LLM to draft a personalized email. Some
 of that CRM data is **free text typed by a third party** and then fed to the
 model. That makes the planner a target for **indirect (stored) prompt
