@@ -1,6 +1,7 @@
 """Tests for the provider-agnostic LLM layer (project/app/services/llm/)."""
 
 import asyncio
+import dataclasses
 import json
 import os
 import types
@@ -493,6 +494,25 @@ class AdapterErrorTranslationTests(unittest.TestCase):
         self.assertEqual(ctx.exception.provider, "claude")
         self.assertIn("ANTHROPIC_API_KEY", str(ctx.exception))
 
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_a_failed_call_still_reports_how_long_it_took(self):
+        # A failure has a duration too, and it is the same measurement
+        # LLMResult.latency_s records. Without it, anything wanting to time
+        # every attempt would have to re-time around the adapter and would end
+        # up including our parsing -- and later the backoff sleeps.
+        response = _httpx_response(503)
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = response
+            with self.assertRaises(errors.LLMTransientError) as ctx:
+                GroqClient().complete("a prompt")
+        self.assertIsNotNone(ctx.exception.latency_s)
+        self.assertGreaterEqual(ctx.exception.latency_s, 0.0)
+
+    def test_unmeasured_error_latency_is_none(self):
+        # Errors raised before any call started (a missing key) must not claim
+        # a zero-second provider call.
+        self.assertIsNone(errors.LLMAuthError("no key").latency_s)
+
     def test_claude_sdk_error_becomes_a_taxonomy_error(self):
         with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
             client = mock_cls.return_value
@@ -573,8 +593,13 @@ class CoerceTokenCountTests(unittest.TestCase):
 class LLMResultTests(unittest.TestCase):
     def test_result_is_immutable(self):
         result = base.LLMResult(text="hi", provider="groq", model="m")
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             result.text = "tampered"
+
+    def test_unmeasured_latency_is_none_not_zero(self):
+        # Same argument as token counts: a caller-constructed result must not
+        # claim a real observation of a zero-second call.
+        self.assertIsNone(base.LLMResult(text="hi", provider="groq", model="m").latency_s)
 
     def test_complete_is_a_thin_text_wrapper_over_generate(self):
         # The compatibility seam: complete() stays sync, keeps its name, and
@@ -671,8 +696,60 @@ class ClaudeResultTests(unittest.TestCase):
         self.assertIsNone(result.finish_reason)
         self.assertIsNone(result.raw_finish_reason)
         # The distinction that matters downstream: a token histogram must see
-        # "no observation", not an observation of zero.
-        self.assertIsNot(result.input_tokens, 0)
+        # "no observation" here, not an observation of zero.
+
+
+class ClaudeSdkShapeTests(unittest.TestCase):
+    """Pin the extraction against the SDK's REAL response types.
+
+    Every other Claude test here builds a ``mock.Mock`` response, which asserts
+    that we read the attributes we think we read — but would stay green forever
+    if ``anthropic`` renamed ``Usage.input_tokens``, while production silently
+    reported ``None``. The SDK is a pinned dependency and already installed, so
+    one test against the genuine article closes that gap cheaply.
+    """
+
+    def _message(self, **overrides):
+        fields = {
+            "id": "msg_01",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-6-20260101",
+            "stop_reason": "end_turn",
+            "content": [anthropic.types.TextBlock(type="text", text="Subject: Hi\n\nBody")],
+            "usage": anthropic.types.Usage(
+                input_tokens=1200,
+                output_tokens=310,
+                cache_read_input_tokens=64,
+                cache_creation_input_tokens=8,
+            ),
+        }
+        fields.update(overrides)
+        return anthropic.types.Message(**fields)
+
+    def test_extraction_matches_the_real_sdk_response_type(self):
+        result = claude_mod.ClaudeClient(model="claude-requested")._build_result(
+            self._message(), latency_s=0.25
+        )
+        self.assertEqual(result.text, "Subject: Hi\n\nBody")
+        self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
+        self.assertEqual(result.input_tokens, 1200)
+        self.assertEqual(result.output_tokens, 310)
+        self.assertEqual(result.cache_read_tokens, 64)
+        self.assertEqual(result.cache_write_tokens, 8)
+        self.assertEqual(result.raw_finish_reason, "end_turn")
+        self.assertEqual(result.finish_reason, base.FINISH_STOP)
+        self.assertEqual(result.latency_s, 0.25)
+
+    def test_a_dumped_response_reads_identically(self):
+        # with_raw_response / model_dump() turn the SDK's models into plain
+        # dicts. read_field exists so that shape isn't silently zeroed.
+        dumped = self._message().model_dump()
+        result = claude_mod.ClaudeClient(model="m")._build_result(dumped, latency_s=0.1)
+        self.assertEqual(result.text, "Subject: Hi\n\nBody")
+        self.assertEqual(result.input_tokens, 1200)
+        self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
+        self.assertEqual(result.finish_reason, base.FINISH_STOP)
 
 
 class OpenAICompatibleResultTests(unittest.TestCase):
@@ -719,19 +796,15 @@ class OpenAICompatibleResultTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_unusable_metadata_shapes_do_not_break_a_good_completion(self):
-        # A null usage block, a partial usage block, and a non-dict choice
-        # entry: none of these is a reason to throw away a valid email.
+        # A null usage block and a "choices" that isn't a list: neither is a
+        # reason to throw away a valid email.
         for payload in (
             {
                 "usage": None,
                 "model": None,
                 "choices": [{"message": {"content": "Generated copy"}}],
             },
-            {
-                "usage": {"completion_tokens": 12},
-                "choices": [{"message": {"content": "Generated copy"}, "finish_reason": None}],
-            },
-            # "choices" is a mapping keyed by index rather than a list. Nothing
+            # "choices" as a mapping keyed by index rather than a list. Nothing
             # sends this, but the text chain still resolves, so the metadata
             # readers must not be the thing that fails.
             {"choices": {0: {"message": {"content": "Generated copy"}}}},
@@ -741,6 +814,38 @@ class OpenAICompatibleResultTests(unittest.TestCase):
                 self.assertEqual(result.text, "Generated copy")
                 self.assertIsNone(result.input_tokens)
                 self.assertIsNone(result.response_model)
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_half_a_usage_block_keeps_the_half_that_is_there(self):
+        # The interesting direction: a partial block must not cost us the count
+        # the provider DID send.
+        result = self._generate(
+            {
+                "usage": {"completion_tokens": 12},
+                "choices": [{"message": {"content": "Generated copy"}, "finish_reason": None}],
+            }
+        )
+        self.assertEqual(result.output_tokens, 12)
+        self.assertIsNone(result.input_tokens)
+        self.assertIsNone(result.raw_finish_reason)
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_cached_prompt_tokens_are_read_from_the_details_block(self):
+        result = self._generate(
+            {
+                "usage": {
+                    "prompt_tokens": 980,
+                    "completion_tokens": 12,
+                    "prompt_tokens_details": {"cached_tokens": 512},
+                },
+                "choices": [{"message": {"content": "Generated copy"}}],
+            }
+        )
+        self.assertEqual(result.cache_read_tokens, 512)
+        # OpenAI-compatible providers count cached tokens WITHIN prompt_tokens,
+        # so the two are not additive here (unlike Anthropic's).
+        self.assertEqual(result.input_tokens, 980)
+        self.assertIsNone(result.cache_write_tokens)
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_reported_zero_tokens_is_kept_as_zero(self):

@@ -21,6 +21,8 @@ from .base import (
     coerce_text,
     coerce_token_count,
     normalize_finish_reason,
+    read_field,
+    read_sequence,
 )
 from .errors import LLMAuthError, LLMMalformedResponseError, map_anthropic_error, map_httpx_error
 
@@ -67,12 +69,16 @@ class ClaudeClient(LLMClient):
                 messages=[{"role": "user", "content": prompt}],
             )
         except anthropic.AnthropicError as exc:
-            raise map_anthropic_error(exc, self.provider_name) from exc
+            raise map_anthropic_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
         except httpx.HTTPError as exc:
             # The SDK normally wraps transport failures into APIConnectionError,
             # but it builds on httpx and a raw one escaping is cheap to insure
             # against -- and expensive to debug if it ever does.
-            raise map_httpx_error(exc, self.provider_name) from exc
+            raise map_httpx_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
         latency_s = time.perf_counter() - started
 
         return self._build_result(response, latency_s)
@@ -80,16 +86,20 @@ class ClaudeClient(LLMClient):
     def _build_result(self, response, latency_s) -> LLMResult:
         """Turn a Messages response into an :class:`LLMResult`.
 
-        Every field but the text is read defensively. The SDK models the
-        response, but ``usage`` is genuinely optional on some surfaces and a
-        missing count must come back as ``None`` rather than ``0`` -- see
+        Every field is read through
+        :func:`~project.app.services.llm.base.read_field`, so a ``model_dump()``d
+        or ``with_raw_response`` payload reads identically to a pydantic model —
+        a token count going quietly missing because the container was the other
+        kind is the worst sort of loss for a billing number. ``usage`` is
+        genuinely optional on some surfaces, and a missing count must come back
+        as ``None`` rather than ``0`` -- see
         :func:`~project.app.services.llm.base.coerce_token_count`.
         """
         # Join only the text blocks (skip thinking/other block types).
         parts = []
-        for block in response.content:
-            if getattr(block, "type", "") == "text":
-                parts.append(block.text)
+        for block in read_sequence(response, "content"):
+            if read_field(block, "type") == "text":
+                parts.append(coerce_text(read_field(block, "text")) or "")
         text = "".join(parts).strip()
         if not text:
             # A 200 carrying no text block is a contract violation, not a blip.
@@ -101,15 +111,20 @@ class ClaudeClient(LLMClient):
                 provider=self.provider_name,
             )
 
-        usage = getattr(response, "usage", None)
-        raw_finish_reason = coerce_text(getattr(response, "stop_reason", None))
+        usage = read_field(response, "usage")
+        raw_finish_reason = coerce_text(read_field(response, "stop_reason"))
         return LLMResult(
             text=text,
             provider=self.provider_name,
             model=self.model,
-            response_model=coerce_text(getattr(response, "model", None)),
-            input_tokens=coerce_token_count(getattr(usage, "input_tokens", None)),
-            output_tokens=coerce_token_count(getattr(usage, "output_tokens", None)),
+            response_model=coerce_text(read_field(response, "model")),
+            # Anthropic reports cache reads/writes separately and EXCLUDES them
+            # from input_tokens, so these three are not redundant -- a consumer
+            # wanting the true prompt cost has to add them up itself.
+            input_tokens=coerce_token_count(read_field(usage, "input_tokens")),
+            output_tokens=coerce_token_count(read_field(usage, "output_tokens")),
+            cache_read_tokens=coerce_token_count(read_field(usage, "cache_read_input_tokens")),
+            cache_write_tokens=coerce_token_count(read_field(usage, "cache_creation_input_tokens")),
             finish_reason=normalize_finish_reason(raw_finish_reason),
             raw_finish_reason=raw_finish_reason,
             latency_s=latency_s,

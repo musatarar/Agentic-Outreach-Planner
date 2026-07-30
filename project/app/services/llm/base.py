@@ -5,11 +5,12 @@ Every provider adapter (Claude, ChatGPT, DeepSeek, Groq, ...) implements
 provider is configured. The active provider is chosen in ``config.toml`` and
 resolved by :func:`project.app.services.llm.get_llm_client`.
 
-Adapters used to return a bare ``str``, which threw away everything the provider
+Adapters used to return a bare ``str``, which throws away everything the provider
 says *alongside* the text — how many tokens it charged us for, which model it
-actually served, why it stopped generating, how long it took. The copy eval was
-reduced to estimating tokens as ``len(text) // 4``, and there was nothing for a
-telemetry span to record. :class:`LLMResult` is that discarded context, kept.
+actually served, why it stopped generating, how long it took. The copy eval is
+still reduced to estimating tokens as ``len(text) // 4``, and there was nothing
+for a telemetry span to record. :class:`LLMResult` is that discarded context,
+kept; switching the eval and the planner over to it is downstream work.
 
 ``complete()`` remains the text-only convenience wrapper, unchanged in name,
 signature and return type. It is the seam the whole test suite mocks, and it is
@@ -17,6 +18,7 @@ still the right call for the majority of callers that only want the string.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 # Normalized finish reasons. Providers each have their own vocabulary
@@ -44,6 +46,9 @@ _FINISH_REASONS = {
     "tool_calls": FINISH_TOOL_CALLS,
     "function_call": FINISH_TOOL_CALLS,
 }
+# Deliberately absent, and both must stay absent: Anthropic's "pause_turn" and
+# DeepSeek's "insufficient_system_resource" have no honest equivalent here. See
+# normalize_finish_reason for why an unknown reason is None rather than "error".
 
 
 def normalize_finish_reason(raw: object) -> str | None:
@@ -79,6 +84,36 @@ def coerce_token_count(value: object) -> int | None:
     return value if value >= 0 else None
 
 
+def read_field(container: object, name: str) -> object:
+    """Read ``name`` off a provider payload, whether it is an object or a dict.
+
+    The two adapters receive the same information in different containers: the
+    Anthropic SDK hands us a pydantic model, an OpenAI-compatible body is plain
+    JSON. Both shapes also cross over in practice — ``with_raw_response`` and
+    ``model_dump()`` turn an SDK response into dicts — and a token count going
+    silently missing because the container was the other kind is the worst sort
+    of loss for a billing number. One reader, both shapes, no asymmetry.
+    """
+    if isinstance(container, Mapping):
+        return container.get(name)
+    return getattr(container, name, None)
+
+
+def read_sequence(container: object, name: str) -> list[object]:
+    """Read a list-valued field off a payload, or ``[]`` if it isn't one.
+
+    Companion to :func:`read_field` for the fields that hold arrays (``content``
+    blocks, ``choices``). Accepts any sequence, not just ``list``: JSON only ever
+    produces lists, but an SDK model or a test double may hand back a tuple, and
+    quietly dropping the whole array over the container type would be a silent
+    data loss for a one-character reason.
+    """
+    value = read_field(container, name)
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return []
+
+
 def coerce_text(value: object) -> str | None:
     """Return ``value`` if it is a non-empty string, else ``None``.
 
@@ -109,6 +144,21 @@ class LLMResult:
     ``latency_s`` times the provider call **only**. Retry backoff is excluded on
     purpose: folding it in would make a throttled free tier look like a slow
     model, which is the opposite of the conclusion the number should support.
+    It defaults to ``None``, not ``0.0``, for the same reason token counts do —
+    a caller-constructed result must not claim a real observation of zero
+    seconds.
+
+    The cache fields are reported as the provider reports them, and the two
+    providers disagree: Anthropic counts cache reads and writes *alongside*
+    ``input_tokens`` (so the true prompt cost is the sum), while
+    OpenAI-compatible providers count cached tokens *within* ``prompt_tokens``
+    and have no notion of a cache write. Nothing here caches yet — the fields
+    exist because this type is what both downstream branches build on, and
+    widening it after the fact would break them.
+
+    ``slots=True`` means instances have no ``__dict__`` — use
+    :func:`dataclasses.asdict` rather than ``vars()`` when fanning the fields out
+    into span attributes.
     """
 
     text: str
@@ -117,9 +167,11 @@ class LLMResult:
     response_model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     finish_reason: str | None = None
     raw_finish_reason: str | None = None
-    latency_s: float = 0.0
+    latency_s: float | None = None
 
 
 class LLMClient(ABC):

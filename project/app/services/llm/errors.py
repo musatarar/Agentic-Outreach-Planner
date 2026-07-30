@@ -80,6 +80,26 @@ class LLMError(RuntimeError):
         # attributes. Deliberately not chained via `raise ... from` here; the
         # adapters do that at the raise site where the traceback is meaningful.
         self.cause = cause
+        # How long the failed call took, in seconds. Filled in by the adapter
+        # via with_latency() rather than by the mapper: only the adapter knows
+        # when the clock started, and the mappers must stay pure.
+        self.latency_s: float | None = None
+
+    def with_latency(self, latency_s: float | None) -> "LLMError":
+        """Record how long the failed attempt took and return ``self``.
+
+        A failure has a duration too, and it is the same measurement
+        :attr:`LLMResult.latency_s` records on the happy path. Without it, a
+        caller wanting to time *every* attempt — which is exactly what a
+        provider-call span and an operation-duration histogram want — would have
+        to re-time around the adapter, dragging our own parsing and (once the
+        retry helper wraps this) the backoff sleeps into the number.
+
+        Returns ``self`` so it composes onto a mapper call in one expression at
+        the raise site.
+        """
+        self.latency_s = latency_s
+        return self
 
 
 class LLMRateLimitError(LLMError):

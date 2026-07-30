@@ -23,6 +23,8 @@ from .base import (
     coerce_text,
     coerce_token_count,
     normalize_finish_reason,
+    read_field,
+    read_sequence,
 )
 from .errors import LLMAuthError, LLMMalformedResponseError, map_httpx_error
 
@@ -61,9 +63,11 @@ class OpenAICompatibleClient(LLMClient):
                 provider=self.provider_name,
             )
 
-        # Times the provider call and nothing else -- not our response parsing,
-        # and (once the retry helper wraps this) not any backoff between
-        # attempts. See LLMResult.latency_s.
+        # Times the provider call and nothing else. httpx.post is
+        # non-streaming, so the body is fully read by the time it returns --
+        # which means the clock has to stop HERE, before raise_for_status() and
+        # .json(), or Claude and this adapter would be reporting different
+        # things under the same field name. See LLMResult.latency_s.
         started = time.perf_counter()
         try:
             response = httpx.post(
@@ -79,6 +83,7 @@ class OpenAICompatibleClient(LLMClient):
                 },
                 timeout=_TIMEOUT_SECONDS,
             )
+            latency_s = time.perf_counter() - started
             response.raise_for_status()
             data = response.json()
         except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as exc:
@@ -88,8 +93,9 @@ class OpenAICompatibleClient(LLMClient):
             # InvalidURL is listed separately because — unlike every other httpx
             # failure — it derives from Exception, not from httpx.HTTPError, so
             # a bad base_url would otherwise escape the LLM layer untyped.
-            raise map_httpx_error(exc, self.provider_name) from exc
-        latency_s = time.perf_counter() - started
+            raise map_httpx_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
 
         return self._build_result(data, latency_s)
 
@@ -118,8 +124,9 @@ class OpenAICompatibleClient(LLMClient):
             )
 
         usage = _mapping_or_empty(data.get("usage"))
+        prompt_details = _mapping_or_empty(usage.get("prompt_tokens_details"))
         first_choice = _first_choice(data)
-        raw_finish_reason = coerce_text(first_choice.get("finish_reason"))
+        raw_finish_reason = coerce_text(read_field(first_choice, "finish_reason"))
         return LLMResult(
             text=text,
             provider=self.provider_name,
@@ -127,6 +134,10 @@ class OpenAICompatibleClient(LLMClient):
             response_model=coerce_text(data.get("model")),
             input_tokens=coerce_token_count(usage.get("prompt_tokens")),
             output_tokens=coerce_token_count(usage.get("completion_tokens")),
+            # Unlike Anthropic, OpenAI-compatible providers report cached tokens
+            # as a breakdown WITHIN prompt_tokens rather than alongside it, and
+            # have no notion of a cache write. Groq omits the block entirely.
+            cache_read_tokens=coerce_token_count(prompt_details.get("cached_tokens")),
             finish_reason=normalize_finish_reason(raw_finish_reason),
             raw_finish_reason=raw_finish_reason,
             latency_s=latency_s,
@@ -146,7 +157,7 @@ def _first_choice(data):
     exists; the guard is for the metadata *around* it being a shape we didn't
     expect.
     """
-    choices = data.get("choices")
-    if isinstance(choices, list) and choices:
+    choices = read_sequence(data, "choices")
+    if choices:
         return _mapping_or_empty(choices[0])
     return {}
