@@ -17,6 +17,7 @@ signature and return type. It is the seam the whole test suite mocks, and it is
 still the right call for the majority of callers that only want the string.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -227,3 +228,59 @@ class LLMClient(ABC):
         """Async counterpart of :meth:`complete`."""
         result = await self.agenerate(prompt, max_tokens=max_tokens)
         return result.text
+
+    async def aclose(self) -> None:
+        """Release any async resources held by this client.
+
+        A no-op unless the adapter caches an async HTTP client. Callers that own
+        the event loop should await this in a ``finally``.
+        """
+        return None
+
+
+class LoopBoundAsyncClient:
+    """Caches one async client, keyed on the event loop that created it.
+
+    `asyncio.run()` builds a *fresh* event loop and closes it on the way out.
+    An `httpx.AsyncClient` or `AsyncAnthropic` created inside one run holds
+    connections bound to that loop, so reusing it in a later run fails — and
+    fails obscurely, deep inside a transport, with a message about a closed or
+    different loop rather than about caching.
+
+    That is precisely the shape of this codebase's usage: `plan_outreach()` is
+    sync and will drive its concurrency through `asyncio.run()`, so calling it
+    twice in one process (a test, a management command, two API requests) hits
+    the stale-client case immediately. Caching *with* the loop and rebuilding
+    when it changes is a two-line fix for a bug that is otherwise very easy to
+    write and very annoying to diagnose.
+
+    A client whose loop has gone is dropped rather than closed: closing it would
+    mean awaiting on a dead loop. Its sockets are already torn down by the loop
+    shutdown that orphaned it.
+    """
+
+    def __init__(self, factory, closer):
+        self._factory = factory
+        self._closer = closer
+        self._client = None
+        self._loop = None
+
+    def get(self):
+        """Return the client for the *currently running* loop, building it if
+        this is a new loop. Must be called from inside a coroutine."""
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._loop is not loop:
+            self._client = self._factory()
+            self._loop = loop
+        return self._client
+
+    async def aclose(self) -> None:
+        client, loop = self._client, self._loop
+        self._client = self._loop = None
+        if client is None:
+            return
+        if loop is not asyncio.get_running_loop():
+            # Belongs to a loop we are not on. Awaiting its close from here
+            # would be the very cross-loop use this class exists to prevent.
+            return
+        await self._closer(client)
