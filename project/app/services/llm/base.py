@@ -7,10 +7,15 @@ resolved by :func:`project.app.services.llm.get_llm_client`.
 
 Adapters used to return a bare ``str``, which throws away everything the provider
 says *alongside* the text — how many tokens it charged us for, which model it
-actually served, why it stopped generating, how long it took. The copy eval is
-still reduced to estimating tokens as ``len(text) // 4``, and there was nothing
-for a telemetry span to record. :class:`LLMResult` is that discarded context,
-kept; switching the eval and the planner over to it is downstream work.
+actually served, why it stopped generating, how long it took. :class:`LLMResult`
+is that discarded context, kept.
+
+The copy eval reads it already. It still *estimates* tokens as ``len(text) // 4``
+rather than reading the provider's counts, deliberately: the committed baselines
+were recorded against the estimate, and changing a metric and its baseline
+together would make a regression indistinguishable from a units change. The
+planner still takes the text-only path; MUS-26 moves it over when it makes copy
+generation concurrent.
 
 ``complete()`` remains the text-only convenience wrapper, unchanged in name,
 signature and return type. It is the seam the whole test suite mocks, and it is
@@ -34,9 +39,6 @@ FINISH_STOP = "stop"
 FINISH_LENGTH = "length"
 FINISH_CONTENT_FILTER = "content_filter"
 FINISH_TOOL_CALLS = "tool_calls"
-# Reserved for callers that build an LLMResult describing a call that failed.
-# No adapter produces it from a successful response.
-FINISH_ERROR = "error"
 
 # Provider vocabulary -> ours. Anthropic ``stop_reason`` values first, then the
 # OpenAI-compatible ``finish_reason`` values.
@@ -60,9 +62,11 @@ _FINISH_REASONS = {
 def normalize_finish_reason(raw: object) -> str | None:
     """Map a provider's stop/finish reason onto our small shared vocabulary.
 
-    An unrecognized value maps to ``None``, not to :data:`FINISH_ERROR`: a
-    provider adding a new legitimate reason (Anthropic added ``pause_turn``)
-    must not start reporting healthy generations as errors on a dashboard. The
+    An unrecognized value maps to ``None``, not to some catch-all "error"
+    bucket: a provider adding a new legitimate reason (Anthropic added
+    ``pause_turn``) must not start reporting healthy generations as errors on a
+    dashboard. A call that actually failed raises an ``LLMError`` and produces
+    no ``LLMResult`` at all, so there is nothing for such a bucket to hold. The
     provider's own string is always preserved in
     :attr:`LLMResult.raw_finish_reason`, so nothing is lost by declining to
     guess.
@@ -298,13 +302,16 @@ class LoopBoundAsyncClient(Generic[ClientT]):
             return self._client
 
     async def aclose(self) -> None:
+        running = asyncio.get_running_loop()
         with self._lock:
-            client, loop = self._client, self._loop
+            if self._client is None or self._loop is not running:
+                # Either nothing to close, or the cached client belongs to some
+                # other loop. Awaiting its close from here would be the very
+                # cross-loop use this class exists to prevent -- and clearing
+                # the fields would be worse than doing nothing, because under
+                # the two-live-loops case this class explicitly designs for it
+                # would yank a client another thread is still using.
+                return
+            client = self._client
             self._client = self._loop = None
-        if client is None:
-            return
-        if loop is not asyncio.get_running_loop():
-            # Belongs to a loop we are not on. Awaiting its close from here
-            # would be the very cross-loop use this class exists to prevent.
-            return
         await self._closer(client)

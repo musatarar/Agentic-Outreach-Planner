@@ -14,7 +14,12 @@ from project.app.services.llm import errors, retry
 
 
 class _RecordingScope:
-    """A context manager standing in for a per-attempt telemetry span."""
+    """A context manager standing in for a per-attempt telemetry span.
+
+    Records the three things such a span sees: it opens, it may be handed the
+    successful result, and it closes with whatever exception (if any) ended the
+    attempt.
+    """
 
     def __init__(self, attempt, events):
         self.attempt = attempt
@@ -22,7 +27,22 @@ class _RecordingScope:
 
     def __enter__(self):
         self.events.append(("enter", self.attempt, None))
-        return self
+        return lambda result: self.events.append(("result", self.attempt, result))
+
+    def __exit__(self, exc_type, exc, tb):
+        self.events.append(("exit", self.attempt, exc_type))
+        return False
+
+
+class _BlindScope:
+    """A scope that yields nothing -- the opt-out path, as nullcontext does."""
+
+    def __init__(self, attempt, events):
+        self.attempt = attempt
+        self.events = events
+
+    def __enter__(self):
+        return None
 
     def __exit__(self, exc_type, exc, tb):
         self.events.append(("exit", self.attempt, exc_type))
@@ -228,9 +248,19 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
                 ("enter", 0, None),
                 ("exit", 0, errors.LLMTransientError),
                 ("enter", 1, None),
+                # The successful attempt hands its result to the scope BEFORE
+                # closing. Without this a per-attempt span could only ever
+                # describe failures -- the inverse of what is wanted, since the
+                # token counts and served model only exist on success.
+                ("result", 1, "ok"),
                 ("exit", 1, None),
             ],
         )
+
+    async def test_a_scope_that_yields_nothing_still_works(self):
+        events = []
+        await self._run(self._operation("ok"), attempt_scope=lambda n: _BlindScope(n, events))
+        self.assertEqual(events, [("exit", 0, None)])
 
     async def test_attempt_scope_sees_the_exception_on_a_permanent_failure(self):
         events = []
