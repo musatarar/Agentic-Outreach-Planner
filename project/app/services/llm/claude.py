@@ -10,10 +10,20 @@ never have to know which vendor SDK produced a failure in order to decide
 whether it is worth retrying.
 """
 
+import time
+
 import anthropic
 import httpx
 
-from .base import LLMClient
+from .base import (
+    LLMClient,
+    LLMResult,
+    coerce_text,
+    coerce_token_count,
+    normalize_finish_reason,
+    read_field,
+    read_sequence,
+)
 from .errors import LLMAuthError, LLMMalformedResponseError, map_anthropic_error, map_httpx_error
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -21,13 +31,14 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 class ClaudeClient(LLMClient):
     # Our config.toml name for this provider (not the vendor's). Carried on
-    # LLMError.provider so a failure can be joined back to [llm.<name>].
+    # LLMResult.provider and LLMError.provider so both a success and a failure
+    # can be joined back to [llm.<name>].
     provider_name = "claude"
 
     def __init__(self, model=DEFAULT_MODEL, default_max_tokens=500):
         super().__init__(model=model, default_max_tokens=default_max_tokens)
 
-    def complete(self, prompt, max_tokens=None):
+    def generate(self, prompt, max_tokens=None) -> LLMResult:
         client = anthropic.Anthropic()  # API key comes from the environment
         if not (client.api_key or client.auth_token):
             # anthropic==0.109.1 constructs a keyless client happily and only
@@ -47,6 +58,10 @@ class ClaudeClient(LLMClient):
                 provider=self.provider_name,
             )
 
+        # Times the provider call and nothing else -- not our response parsing,
+        # and (once the retry helper wraps this) not any backoff between
+        # attempts. See LLMResult.latency_s.
+        started = time.perf_counter()
         try:
             response = client.messages.create(
                 model=self.model,
@@ -54,18 +69,37 @@ class ClaudeClient(LLMClient):
                 messages=[{"role": "user", "content": prompt}],
             )
         except anthropic.AnthropicError as exc:
-            raise map_anthropic_error(exc, self.provider_name) from exc
+            raise map_anthropic_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
         except httpx.HTTPError as exc:
             # The SDK normally wraps transport failures into APIConnectionError,
             # but it builds on httpx and a raw one escaping is cheap to insure
             # against -- and expensive to debug if it ever does.
-            raise map_httpx_error(exc, self.provider_name) from exc
+            raise map_httpx_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
+        latency_s = time.perf_counter() - started
 
+        return self._build_result(response, latency_s)
+
+    def _build_result(self, response, latency_s) -> LLMResult:
+        """Turn a Messages response into an :class:`LLMResult`.
+
+        Every field is read through
+        :func:`~project.app.services.llm.base.read_field`, so a ``model_dump()``d
+        or ``with_raw_response`` payload reads identically to a pydantic model —
+        a token count going quietly missing because the container was the other
+        kind is the worst sort of loss for a billing number. ``usage`` is
+        genuinely optional on some surfaces, and a missing count must come back
+        as ``None`` rather than ``0`` -- see
+        :func:`~project.app.services.llm.base.coerce_token_count`.
+        """
         # Join only the text blocks (skip thinking/other block types).
         parts = []
-        for block in response.content:
-            if getattr(block, "type", "") == "text":
-                parts.append(block.text)
+        for block in read_sequence(response, "content"):
+            if read_field(block, "type") == "text":
+                parts.append(coerce_text(read_field(block, "text")) or "")
         text = "".join(parts).strip()
         if not text:
             # A 200 carrying no text block is a contract violation, not a blip.
@@ -76,4 +110,22 @@ class ClaudeClient(LLMClient):
                 "Claude returned a response with no text content.",
                 provider=self.provider_name,
             )
-        return text
+
+        usage = read_field(response, "usage")
+        raw_finish_reason = coerce_text(read_field(response, "stop_reason"))
+        return LLMResult(
+            text=text,
+            provider=self.provider_name,
+            model=self.model,
+            response_model=coerce_text(read_field(response, "model")),
+            # Anthropic reports cache reads/writes separately and EXCLUDES them
+            # from input_tokens, so these three are not redundant -- a consumer
+            # wanting the true prompt cost has to add them up itself.
+            input_tokens=coerce_token_count(read_field(usage, "input_tokens")),
+            output_tokens=coerce_token_count(read_field(usage, "output_tokens")),
+            cache_read_tokens=coerce_token_count(read_field(usage, "cache_read_input_tokens")),
+            cache_write_tokens=coerce_token_count(read_field(usage, "cache_creation_input_tokens")),
+            finish_reason=normalize_finish_reason(raw_finish_reason),
+            raw_finish_reason=raw_finish_reason,
+            latency_s=latency_s,
+        )
