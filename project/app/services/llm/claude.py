@@ -9,13 +9,22 @@ Every SDK exception is translated into the shared taxonomy in
 never have to know which vendor SDK produced a failure in order to decide
 whether it is worth retrying.
 
-Both clients are constructed with ``max_retries=0``. The SDK retries twice by
-default, which sounds free and is not: it would mean two *silent* HTTP attempts
-underneath every one of ours -- invisible to a per-attempt span, doubling the
-effective budget once our own retry helper wraps the call, and applying only to
-Claude, since the OpenAI-compatible adapters talk to ``httpx`` directly and have
-never retried anything. Provider-agnostic is the whole premise of this layer, so
-the retry budget belongs in one place (``llm/retry.py``) for every provider.
+The **async** client is constructed with ``max_retries=0``; the sync one is not.
+That asymmetry is deliberate and follows one rule: whoever owns the retry budget
+owns it alone.
+
+``llm/retry.py`` wraps the async path, so leaving the SDK's default of two
+retries there would mean two *silent* HTTP attempts underneath every one of ours
+-- invisible to a per-attempt span and doubling the effective budget.
+
+Nothing wraps the sync path (``outreach.generate_copy`` and the red-team eval
+call ``complete()`` bare, and the shared helper is async-only), so turning the
+SDK's retries off there would delete real resilience and replace it with
+nothing. It stays on until MUS-26 moves the planner onto the async path, at
+which point this asymmetry disappears on its own.
+
+Both clients get an explicit ``timeout``: the SDK default is a 600-second read
+timeout, which is not a bound anyone would choose for a 500-token completion.
 """
 
 import time
@@ -58,6 +67,7 @@ class ClaudeClient(LLMClient):
         super().__init__(model=model, default_max_tokens=default_max_tokens)
         self.timeout_s = timeout_s
         self._async_client = LoopBoundAsyncClient(
+            # max_retries=0: llm/retry.py owns the budget on this path.
             factory=lambda: anthropic.AsyncAnthropic(max_retries=0, timeout=self.timeout_s),
             closer=lambda client: client.close(),
         )
@@ -106,7 +116,9 @@ class ClaudeClient(LLMClient):
     # -- the two call paths -------------------------------------------------
 
     def generate(self, prompt, max_tokens=None) -> LLMResult:
-        client = anthropic.Anthropic(max_retries=0, timeout=self.timeout_s)
+        # max_retries deliberately left at the SDK default here -- see the
+        # module docstring. Nothing wraps this path in retries yet.
+        client = anthropic.Anthropic(timeout=self.timeout_s)
         self._check_credentials(client)
 
         # Times the provider call and nothing else -- not our response parsing,

@@ -18,9 +18,14 @@ still the right call for the majority of callers that only want the string.
 """
 
 import asyncio
+import threading
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+# The async client an adapter caches: httpx.AsyncClient or AsyncAnthropic.
+ClientT = TypeVar("ClientT")
 
 # Normalized finish reasons. Providers each have their own vocabulary
 # ("end_turn" vs "stop", "max_tokens" vs "length") — fine for a human reading
@@ -238,7 +243,7 @@ class LLMClient(ABC):
         return None
 
 
-class LoopBoundAsyncClient:
+class LoopBoundAsyncClient(Generic[ClientT]):
     """Caches one async client, keyed on the event loop that created it.
 
     `asyncio.run()` builds a *fresh* event loop and closes it on the way out.
@@ -251,32 +256,51 @@ class LoopBoundAsyncClient:
     sync and will drive its concurrency through `asyncio.run()`, so calling it
     twice in one process (a test, a management command, two API requests) hits
     the stale-client case immediately. Caching *with* the loop and rebuilding
-    when it changes is a two-line fix for a bug that is otherwise very easy to
+    when it changes is a small fix for a bug that is otherwise very easy to
     write and very annoying to diagnose.
 
+    **The lock is not decoration.** ``_build_client`` is ``lru_cache``d, so one
+    adapter — and therefore one of these — is shared process-wide by every
+    request thread. Under a threaded server, two threads each running
+    ``asyncio.run()`` are two live loops on this object at once, and an
+    unlocked check-then-store can hand thread A the client thread B just built
+    for B's loop. That is exactly the cross-loop handout this class exists to
+    prevent, reachable by a GIL switch instead of by a stale cache.
+
     A client whose loop has gone is dropped rather than closed: closing it would
-    mean awaiting on a dead loop. Its sockets are already torn down by the loop
-    shutdown that orphaned it.
+    mean awaiting on a dead loop. Its socket FDs are reclaimed when the orphan is
+    garbage-collected — `asyncio.run()` closes the loop but does not close open
+    transports, so under ``-W error`` this can surface as a ``ResourceWarning``.
+    Awaiting a dead loop to avoid that would be strictly worse.
     """
 
-    def __init__(self, factory, closer):
+    def __init__(
+        self,
+        factory: Callable[[], ClientT],
+        closer: Callable[[ClientT], Awaitable[None]],
+    ) -> None:
         self._factory = factory
         self._closer = closer
-        self._client = None
-        self._loop = None
+        self._client: ClientT | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
 
-    def get(self):
+    def get(self) -> ClientT:
         """Return the client for the *currently running* loop, building it if
         this is a new loop. Must be called from inside a coroutine."""
         loop = asyncio.get_running_loop()
-        if self._client is None or self._loop is not loop:
-            self._client = self._factory()
-            self._loop = loop
-        return self._client
+        with self._lock:
+            if self._client is None or self._loop is not loop:
+                self._client = self._factory()
+                self._loop = loop
+            # Returned from inside the lock, and as a local: re-reading the
+            # attribute after releasing would reintroduce the race.
+            return self._client
 
     async def aclose(self) -> None:
-        client, loop = self._client, self._loop
-        self._client = self._loop = None
+        with self._lock:
+            client, loop = self._client, self._loop
+            self._client = self._loop = None
         if client is None:
             return
         if loop is not asyncio.get_running_loop():

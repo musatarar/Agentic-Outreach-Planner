@@ -10,6 +10,7 @@ runs test comes first and is written as a regression lock, not as coverage.
 
 import asyncio
 import os
+import threading
 import unittest
 from unittest import mock
 
@@ -104,6 +105,36 @@ class LoopBoundAsyncClientTests(unittest.TestCase):
         self.assertEqual(len(built), 1)
         self.assertEqual(closed, [])
 
+    def test_two_threads_running_their_own_loops_never_share_a_client(self):
+        # _build_client is lru_cache'd, so one adapter -- and one of these
+        # caches -- is shared process-wide by every request thread. Two threads
+        # each in asyncio.run() are two live loops on this object at once, and
+        # an unlocked check-then-store can hand thread A the client thread B
+        # just built for B's loop: the cross-loop handout this class exists to
+        # prevent, reachable by a GIL switch rather than by a stale cache.
+        cache, built, _ = self._cache()
+        barrier = threading.Barrier(2)
+        seen: dict[str, list[object]] = {}
+
+        def worker(name):
+            async def use():
+                barrier.wait()  # maximise the overlap on get()
+                return [cache.get() for _ in range(20)]
+
+            seen[name] = asyncio.run(use())
+
+        threads = [threading.Thread(target=worker, args=(name,)) for name in ("a", "b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # Each thread must see one client for the whole of its own loop...
+        for name, clients in seen.items():
+            self.assertEqual(len(set(map(id, clients))), 1, f"{name} saw more than one client")
+        # ...and the two threads must never have been handed the same one.
+        self.assertIsNot(seen["a"][0], seen["b"][0])
+
     def test_get_outside_a_running_loop_is_a_loud_error(self):
         cache, _, _ = self._cache()
         with self.assertRaises(RuntimeError):
@@ -164,11 +195,13 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result.latency_s)
         self.assertEqual(client.messages.create.await_args.kwargs["max_tokens"], 42)
 
-    async def test_sdk_retries_are_disabled_on_both_clients(self):
-        # The SDK retries twice by default. Left on, every one of our attempts
-        # would hide two more HTTP calls: invisible to a per-attempt span,
-        # double the effective budget, and applied to Claude only -- the
-        # OpenAI-compatible adapters talk to httpx directly and never retried.
+    async def test_sdk_retries_are_off_where_we_own_the_budget_and_on_where_we_do_not(self):
+        # The SDK retries twice by default. On the async path llm/retry.py owns
+        # the budget, so leaving them on would hide two HTTP calls under every
+        # one of ours -- invisible to a per-attempt span, double the real
+        # budget. On the sync path nothing of ours retries at all (the helper is
+        # async-only), so turning them off would delete resilience and replace
+        # it with nothing. Whoever owns the budget owns it alone.
         mock_cls, _ = self._patch_sdk(return_value=_text_response())
         await claude_mod.ClaudeClient(timeout_s=12.5).agenerate("p")
         self.assertEqual(mock_cls.call_args.kwargs["max_retries"], 0)
@@ -177,7 +210,9 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(claude_mod.anthropic, "Anthropic") as sync_cls:
             sync_cls.return_value.messages.create.return_value = _text_response()
             claude_mod.ClaudeClient(timeout_s=7.0).generate("p")
-        self.assertEqual(sync_cls.call_args.kwargs["max_retries"], 0)
+        self.assertNotIn("max_retries", sync_cls.call_args.kwargs)
+        # The timeout is tightened on both: the SDK default read timeout is 600s,
+        # which is not a bound anyone would choose for a 500-token completion.
         self.assertEqual(sync_cls.call_args.kwargs["timeout"], 7.0)
 
     async def test_async_failures_are_typed_and_timed(self):
@@ -301,6 +336,33 @@ class OpenAICompatibleAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_acomplete_returns_text(self):
         self._patch_client(return_value=self._ok_response())
         self.assertEqual(await GroqClient().acomplete("a prompt"), "Generated copy")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    async def test_calls_genuinely_overlap(self):
+        # The point of the whole component. If agenerate were a thread-pool
+        # impersonation, or serialized on a lock, `in_flight` would never
+        # exceed 1 -- and the concurrent planner would quietly be serial.
+        in_flight = 0
+        peak = 0
+        release = asyncio.Event()
+
+        async def slow_post(*args, **kwargs):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await release.wait()
+            in_flight -= 1
+            return self._ok_response()
+
+        self._patch_client(side_effect=slow_post)
+        client = GroqClient()
+        tasks = [asyncio.create_task(client.agenerate("a prompt")) for _ in range(4)]
+        await asyncio.sleep(0)  # let every task reach the await
+        release.set()
+        results = await asyncio.gather(*tasks)
+
+        self.assertEqual(peak, 4)
+        self.assertTrue(all(r.text == "Generated copy" for r in results))
 
 
 class AdapterAcrossRunsTests(unittest.TestCase):

@@ -73,6 +73,14 @@ class OpenAICompatibleClient(LLMClient):
         super().__init__(model=model, default_max_tokens=default_max_tokens)
         self.timeout_s = timeout_s
         self._async_client = LoopBoundAsyncClient(
+            # Connection limits are left at httpx's defaults (100 connections),
+            # comfortably above the 8-way semaphore MUS-26 plans. Worth knowing
+            # before raising that number: requests beyond the pool size queue
+            # *inside* httpx, so the wait lands in latency_s (which is supposed
+            # to be provider time only) and a PoolTimeout would map to a
+            # retryable LLMTimeoutError -- a local queueing problem that looks
+            # like a provider blip and answers it with more load. Size limits to
+            # the semaphore when that config arrives.
             factory=lambda: httpx.AsyncClient(timeout=self.timeout_s),
             closer=lambda client: client.aclose(),
         )

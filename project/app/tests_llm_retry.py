@@ -7,9 +7,26 @@ contract — instead of about a seeded PRNG's output, which would change silentl
 under a Python upgrade and send someone hunting a retry bug that isn't there.
 """
 
+import asyncio
 import unittest
 
 from project.app.services.llm import errors, retry
+
+
+class _RecordingScope:
+    """A context manager standing in for a per-attempt telemetry span."""
+
+    def __init__(self, attempt, events):
+        self.attempt = attempt
+        self.events = events
+
+    def __enter__(self):
+        self.events.append(("enter", self.attempt, None))
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.events.append(("exit", self.attempt, exc_type))
+        return False
 
 
 def _top_of_range(low, high):
@@ -91,10 +108,22 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(spread, 30.0 + retry.RETRY_AFTER_JITTER_FRACTION * 30.0)
         self.assertGreater(spread, 30.0)
 
-    def test_retry_after_is_capped_by_the_policy(self):
+    def test_retry_after_is_capped_by_the_policy_at_both_ends_of_the_jitter(self):
+        # Asserted at BOTH ends on purpose. With the jitter stub pinned to the
+        # bottom of its range this passes even when the jitter is computed off
+        # the raw header instead of the capped base -- which is how a
+        # 300s Retry-After against a 30s cap turns into a 105s sleep while a
+        # green test insists max_backoff_s is a bound.
         policy = retry.RetryPolicy(max_backoff_s=10.0)
-        base = retry.backoff_seconds(0, policy, retry_after=45.0, rand=_bottom_of_range)
-        self.assertEqual(base, 10.0)
+        lowest = retry.backoff_seconds(0, policy, retry_after=300.0, rand=_bottom_of_range)
+        highest = retry.backoff_seconds(0, policy, retry_after=300.0, rand=_top_of_range)
+
+        self.assertEqual(lowest, 10.0)
+        self.assertEqual(highest, 10.0 + retry.RETRY_AFTER_JITTER_FRACTION * 10.0)
+        # The invariant the cap is supposed to give, stated directly.
+        self.assertLessEqual(
+            highest, policy.max_backoff_s * (1 + retry.RETRY_AFTER_JITTER_FRACTION)
+        )
 
 
 class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
@@ -184,21 +213,58 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.attempts, 1)
         self.assertEqual(self.sleep.calls, [])
 
-    async def test_on_attempt_sees_every_attempt_and_its_outcome(self):
-        # The hook MUS-25 opens a per-HTTP-attempt span from, so this module
-        # never has to import anything telemetry-shaped.
-        seen = []
+    async def test_attempt_scope_opens_and_closes_once_per_attempt(self):
+        # The seam MUS-25 opens a per-HTTP-attempt span from, so this module
+        # never has to import anything telemetry-shaped. Every attempt must end
+        # exactly once -- including the SUCCESSFUL last one, which a pair of
+        # enter/on-error callbacks would silently leave open.
+        events = []
         operation = self._operation(errors.LLMTransientError("503"), "ok")
-        await self._run(operation, on_attempt=lambda n, exc: seen.append((n, type(exc))))
+        await self._run(operation, attempt_scope=lambda n: _RecordingScope(n, events))
 
         self.assertEqual(
-            seen,
+            events,
             [
-                (0, type(None)),
-                (0, errors.LLMTransientError),
-                (1, type(None)),
+                ("enter", 0, None),
+                ("exit", 0, errors.LLMTransientError),
+                ("enter", 1, None),
+                ("exit", 1, None),
             ],
         )
+
+    async def test_attempt_scope_sees_the_exception_on_a_permanent_failure(self):
+        events = []
+        operation = self._operation(errors.LLMAuthError("no key"))
+        with self.assertRaises(errors.LLMAuthError):
+            await self._run(operation, attempt_scope=lambda n: _RecordingScope(n, events))
+        self.assertEqual(events[-1], ("exit", 0, errors.LLMAuthError))
+
+    async def test_cancellation_during_backoff_is_not_retried(self):
+        # CancelledError does not derive from Exception in 3.12, and is not an
+        # LLMError, so `except LLMError` cannot swallow it. Pinned because a
+        # retry helper that swallows cancellation makes a run un-killable.
+        async def cancelling_sleep(seconds):
+            raise asyncio.CancelledError
+
+        operation = self._operation(errors.LLMTransientError("503"), "never reached")
+        with self.assertRaises(asyncio.CancelledError):
+            await retry.acall_with_retry(operation, sleep=cancelling_sleep, rand=_top_of_range)
+        self.assertEqual(self.attempts, 1)
+
+    async def test_cancellation_closes_the_attempt_scope(self):
+        events = []
+
+        async def cancelled_operation():
+            self.attempts += 1
+            raise asyncio.CancelledError
+
+        with self.assertRaises(asyncio.CancelledError):
+            await retry.acall_with_retry(
+                cancelled_operation,
+                sleep=self.sleep,
+                attempt_scope=lambda n: _RecordingScope(n, events),
+            )
+        self.assertEqual(events[-1], ("exit", 0, asyncio.CancelledError))
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -68,7 +69,7 @@ class RetryPolicy:
     ``max_attempts`` counts *total* attempts, not retries: ``1`` means "call it
     once and surface whatever happens". Off-by-one here is the classic way to
     quietly triple a rate-limited run's wall clock, so the name says which it is
-    and :meth:`validate` refuses ``0``.
+    and ``__post_init__`` refuses ``0``.
     """
 
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
@@ -106,8 +107,14 @@ def backoff_seconds(
         # capped so a hostile or confused header can't park a worker, and add
         # proportional jitter so a herd that all got the same value doesn't wake
         # together and immediately re-throttle each other.
+        #
+        # The jitter is proportional to the CAPPED base, not to the raw header.
+        # Taking a fraction of the raw value would let a 300s header add 75s of
+        # jitter to a 30s cap, so max_backoff_s would not actually be a bound --
+        # and a bound that only holds for some inputs is worse than none,
+        # because it is the one everybody reasons with.
         base = min(retry_after, policy.max_backoff_s)
-        return base + rand(0.0, RETRY_AFTER_JITTER_FRACTION * retry_after)
+        return base + rand(0.0, RETRY_AFTER_JITTER_FRACTION * base)
 
     # Full jitter: uniform over [0, exponential_ceiling]. Not "exponential plus
     # a nudge" -- the whole point is that two workers failing simultaneously
@@ -122,7 +129,7 @@ async def acall_with_retry(
     policy: RetryPolicy = DEFAULT_POLICY,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rand: Callable[[float, float], float] = random.uniform,
-    on_attempt: Callable[[int, LLMError | None], None] | None = None,
+    attempt_scope: Callable[[int], AbstractContextManager[object]] | None = None,
 ) -> T:
     """Await ``operation()``, retrying retryable :class:`LLMError`s.
 
@@ -135,21 +142,25 @@ async def acall_with_retry(
     provider blip, and retrying it would turn a stack trace into a stack trace
     delivered four times as slowly.
 
-    ``on_attempt(attempt, error)`` fires once per attempt with a 0-based index —
-    ``error`` is ``None`` on entry to an attempt and the mapped failure when one
-    ends badly. It exists so MUS-25 can open a span per HTTP attempt without
-    this module importing anything telemetry-shaped.
+    ``attempt_scope(attempt)`` returns a context manager wrapped around each
+    attempt, 0-based. It is a *scope* rather than a pair of callbacks because
+    the thing it exists for — MUS-25 opening one span per HTTP attempt — needs
+    every attempt to end exactly once, including the successful last one and
+    including a cancellation. Two callbacks would have to enumerate those cases;
+    ``__exit__`` gets them for free, and receives the exception info a span needs
+    to set its status. This module still imports nothing telemetry-shaped.
+
+    Note the scope wraps only the provider call, never the backoff sleep, so an
+    attempt's duration stays the attempt's duration.
     """
     last_error: LLMError | None = None
     for attempt in range(policy.max_attempts):
-        if on_attempt is not None:
-            on_attempt(attempt, None)
+        scope = attempt_scope(attempt) if attempt_scope is not None else nullcontext()
         try:
-            return await operation()
+            with scope:
+                return await operation()
         except LLMError as exc:
             last_error = exc
-            if on_attempt is not None:
-                on_attempt(attempt, exc)
             if not exc.retryable:
                 # Auth failures, bad requests, malformed responses: the same
                 # call will fail the same way. Surface it now, at attempt one,

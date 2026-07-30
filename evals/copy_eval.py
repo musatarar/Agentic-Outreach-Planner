@@ -160,6 +160,10 @@ def build_dataset(golden_path=None):
 def generate_copy_solver(provider):
     """Generate the email via ``build_client(provider).complete(...)`` and stash
     latency + token estimates + model id in the sample store."""
+    # The client now holds a pooled async transport for the length of the run.
+    # Inspect gives a solver no teardown hook, so it is released when the
+    # process exits rather than by an explicit aclose(); the eval is a
+    # short-lived CLI process, so that is the whole of its lifetime anyway.
     client = build_client(provider)
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
@@ -167,7 +171,12 @@ def generate_copy_solver(provider):
         result = await _generate_with_retry(client, prompt, MAX_COPY_TOKENS)
 
         state.output = ModelOutput.from_content(model=provider, content=result.text)
-        state.store.set("latency_s", round(result.latency_s or 0.0, 4))
+        # None when the adapter did not measure -- kept as None rather than
+        # coerced to 0.0, so a missing measurement never reads as a zero-second
+        # call in the report (the same distinction LLMResult draws for tokens).
+        state.store.set(
+            "latency_s", None if result.latency_s is None else round(result.latency_s, 4)
+        )
         # LLMResult now carries the provider's real counts. Switching the est.
         # cost column over to them is a follow-up: the committed baselines in
         # evals/baselines/copy.json were recorded against the estimate, and
