@@ -93,10 +93,10 @@ class LoopBoundAsyncClientTests(unittest.TestCase):
         self.assertEqual(built, [])
         self.assertEqual(closed, [])
 
-    def test_a_client_from_a_dead_loop_is_dropped_not_awaited(self):
-        # Closing it would mean awaiting on the loop that already went away --
-        # the very cross-loop use this class exists to prevent. Its sockets went
-        # down with that loop, so dropping the reference is the correct move.
+    def test_a_client_from_another_loop_is_never_awaited(self):
+        # Closing it would mean awaiting on a loop we are not on -- the very
+        # cross-loop use this class exists to prevent. The next get() on a live
+        # loop replaces it anyway.
         cache, built, closed = self._cache()
 
         asyncio.run(_call(cache.get))
@@ -134,6 +134,32 @@ class LoopBoundAsyncClientTests(unittest.TestCase):
             self.assertEqual(len(set(map(id, clients))), 1, f"{name} saw more than one client")
         # ...and the two threads must never have been handed the same one.
         self.assertIsNot(seen["a"][0], seen["b"][0])
+
+    def test_aclose_does_not_yank_a_client_another_live_loop_is_using(self):
+        # The dead-loop case drops the client, which is right. But this class
+        # explicitly designs for TWO LIVE loops, and there aclose() must leave
+        # the other thread's client alone rather than clearing the cache under
+        # it -- otherwise thread B's connection pool resets mid-run.
+        cache, built, closed = self._cache()
+        holder = {}
+
+        def worker():
+            async def use():
+                holder["client"] = cache.get()
+
+            asyncio.run(use())
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+        # The worker's loop is closed, but the cache still holds its client.
+        # A different loop calling aclose() must not close it *or* clear it.
+        asyncio.run(cache.aclose())
+
+        self.assertEqual(closed, [])
+        # Reaching into the private field deliberately: "did aclose() leave the
+        # cache alone?" has no public observable, and it is the whole assertion.
+        self.assertIs(cache._client, holder["client"])
 
     def test_get_outside_a_running_loop_is_a_loud_error(self):
         cache, _, _ = self._cache()

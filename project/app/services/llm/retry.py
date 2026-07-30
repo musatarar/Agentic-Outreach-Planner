@@ -1,10 +1,15 @@
 """Shared retry policy for provider calls (MUS-46).
 
-One place decides how a failed LLM call is retried, for every provider and
-every caller. Before this module the only retry logic in the repo was a private
+One place decides how a failed LLM call is retried, whichever provider is
+configured. Before this module the only retry logic in the repo was a private
 helper inside ``evals/copy_eval.py`` that retried *any* exception six times —
 so a missing ``GROQ_API_KEY`` cost about forty seconds of sleeping to fail with
 exactly the message it already had on the first attempt.
+
+The eval is the only caller today. The planner reaches the provider through the
+*sync* ``complete()`` and so is still unprotected: a free-tier 429 during a run
+routes that lead to a human on the first refusal. MUS-26 moves it onto the async
+path, which is what puts it behind this policy.
 
 Two decisions carry most of the value here.
 
@@ -129,7 +134,8 @@ async def acall_with_retry(
     policy: RetryPolicy = DEFAULT_POLICY,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rand: Callable[[float, float], float] = random.uniform,
-    attempt_scope: Callable[[int], AbstractContextManager[object]] | None = None,
+    attempt_scope: Callable[[int], AbstractContextManager[Callable[[T], None] | None]]
+    | None = None,
 ) -> T:
     """Await ``operation()``, retrying retryable :class:`LLMError`s.
 
@@ -148,7 +154,14 @@ async def acall_with_retry(
     every attempt to end exactly once, including the successful last one and
     including a cancellation. Two callbacks would have to enumerate those cases;
     ``__exit__`` gets them for free, and receives the exception info a span needs
-    to set its status. This module still imports nothing telemetry-shaped.
+    to set its status.
+
+    Failure is only half a span, though. ``__enter__`` may yield a callable, and
+    a successful attempt's result is handed to it before the scope closes — so
+    the same span that reports ``error.type`` on a failed attempt can report
+    token counts, the served model and the finish reason on the one that
+    worked. Yield ``None`` (as ``nullcontext`` does) to opt out. This module
+    still imports nothing telemetry-shaped.
 
     Note the scope wraps only the provider call, never the backoff sleep, so an
     attempt's duration stays the attempt's duration.
@@ -157,8 +170,14 @@ async def acall_with_retry(
     for attempt in range(policy.max_attempts):
         scope = attempt_scope(attempt) if attempt_scope is not None else nullcontext()
         try:
-            with scope:
-                return await operation()
+            with scope as record_result:
+                result = await operation()
+                if record_result is not None:
+                    # Inside the scope on purpose: the span is still open, so a
+                    # consumer can set its attributes rather than having to
+                    # stash them and reconcile later.
+                    record_result(result)
+                return result
         except LLMError as exc:
             last_error = exc
             if not exc.retryable:

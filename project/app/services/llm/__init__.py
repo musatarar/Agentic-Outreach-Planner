@@ -19,7 +19,6 @@ from functools import lru_cache
 from . import config
 from .base import (
     FINISH_CONTENT_FILTER,
-    FINISH_ERROR,
     FINISH_LENGTH,
     FINISH_STOP,
     FINISH_TOOL_CALLS,
@@ -91,7 +90,6 @@ __all__ = [
     "FINISH_LENGTH",
     "FINISH_CONTENT_FILTER",
     "FINISH_TOOL_CALLS",
-    "FINISH_ERROR",
     "get_llm_client",
     "build_client",
     "LLMError",
