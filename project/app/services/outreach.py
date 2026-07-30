@@ -447,9 +447,16 @@ def generate_copy(lead, action_type, reason, *, prompt=None):
     ``prompt`` lets a caller supply a prompt it has already built. The planner
     does, because building one touches ``lead.events`` — see :class:`WorkItem`.
     Omitted, this builds the prompt itself, which is the single-lead path every
-    other caller uses and the one the tests exercise.
+    other caller uses and the one the tests exercise. Callers that pass a
+    ``prompt`` pass no ``lead``, and the guard below makes that explicit: every
+    lead attribute has a ``getattr`` default, so a ``None`` lead would otherwise
+    silently produce a prompt full of blanks rather than fail.
     """
     if prompt is None:
+        if lead is None:
+            raise ValueError(
+                "generate_copy needs either a lead to build a prompt from, or a prompt."
+            )
         prompt = _build_copy_prompt(lead, action_type, reason)
     return get_llm_client().complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
@@ -527,20 +534,29 @@ def format_shape_problems(problems):
 # **Phase 2 builds the prompt, and that is the point of the split.** Prompt
 # construction reaches the ORM -- `_build_copy_prompt` -> `_build_untrusted_block`
 # -> `_format_events_for_prompt` -> `_events_list` all touch `lead.events`. Doing
-# it here means phase 3 holds nothing but network I/O, so making phase 3
-# concurrent cannot accidentally drag a lazy query into an event loop. That is a
-# structural guarantee rather than one resting on a `prefetch_related` string
-# staying in step with whatever the prompt builder happens to read next year.
-# It also means a provider-call span would time the provider, not our f-strings.
+# it here leaves phase 3 holding nothing but network I/O, so making phase 3
+# concurrent cannot accidentally drag a lazy query into an event loop. It also
+# means a provider-call span will time the provider, not our f-strings.
+#
+# That guarantee is enforced, not merely intended: phase 3 is handed the prompt
+# and is NOT handed the lead (see `_generate_for`). Code added there later that
+# reaches for a lead attribute fails immediately and locally, rather than
+# emitting a lazy query that only misbehaves once phase 3 is concurrent.
+#
+# Phases 4 and 5 do still use the ORM -- `_review` reads the contact/agency name
+# and `verify.verify_copy` walks `lead.events` -- and that is fine, because they
+# stay synchronous. Phase 3 is the only one with an "absolutely no ORM" rule.
 
 
 @dataclass(frozen=True, slots=True)
 class WorkItem:
-    """Everything phase 3 needs about one lead, with the ORM already behind us.
+    """One lead's classification plus the prompt phase 3 will send.
 
-    ``prompt`` is ``None`` exactly when no copy is to be generated (an
-    ``UNKNOWN`` classification goes straight to a human), which is also the
-    signal phase 3 uses to skip the provider entirely.
+    ``prompt`` is ``None`` when there is no copy to generate: either the
+    classification was ``UNKNOWN`` (straight to a human) or building the prompt
+    itself failed, in which case ``prompt_error`` says which. Keeping those two
+    apart matters -- one is BD work, the other is a bug -- and they land on
+    different ``further_action`` messages.
     """
 
     lead: Any
@@ -548,6 +564,7 @@ class WorkItem:
     action_type: str
     reason: str
     prompt: str | None
+    prompt_error: Exception | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,8 +577,10 @@ class CopyOutcome:
     """
 
     text: str = ""
-    error: BaseException | None = None
-    skipped: bool = False
+    # Narrower than BaseException on purpose: _generate_for catches Exception,
+    # so a KeyboardInterrupt or SystemExit can never land here -- it aborts the
+    # run, which is what those mean.
+    error: Exception | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -579,14 +598,23 @@ def _build_work_item(lead):
     priority = determine_priority(lead)
     action_type, reason = determine_action(lead)
     prompt = None
+    prompt_error = None
     if action_type != actions.UNKNOWN:
-        prompt = _build_copy_prompt(lead, action_type, reason)
+        try:
+            prompt = _build_copy_prompt(lead, action_type, reason)
+        except Exception as exc:
+            # Prompt building used to sit inside generate_copy's try, so a
+            # malformed lead cost one row and the run continued. Hoisting it
+            # into phase 2 would have made it fatal for all 200 leads; this
+            # keeps the old blast radius.
+            prompt_error = exc
     return WorkItem(
         lead=lead,
         priority=priority,
         action_type=action_type,
         reason=reason,
         prompt=prompt,
+        prompt_error=prompt_error,
     )
 
 
@@ -596,11 +624,19 @@ def _generate_for(item):
     Goes through the module-level ``generate_copy`` rather than reaching for the
     client directly, so the single-lead path and the planner's path stay the
     same function.
+
+    ``lead`` is deliberately passed as ``None``. Phase 3 must hold no handle on
+    the ORM, and the cheapest way to guarantee that is to not give it one:
+    anything added here that reaches for a lead attribute fails loudly and
+    locally instead of emitting a lazy query that only misbehaves later, inside
+    an event loop, in someone else's branch.
     """
+    if item.prompt_error is not None:
+        return CopyOutcome(error=item.prompt_error)
     if item.prompt is None:
-        return CopyOutcome(skipped=True)
+        return CopyOutcome()
     try:
-        text = generate_copy(item.lead, item.action_type, item.reason, prompt=item.prompt)
+        text = generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
     except Exception as exc:  # don't let one API failure sink the run
         return CopyOutcome(error=exc)
     return CopyOutcome(text=text)
@@ -608,7 +644,7 @@ def _generate_for(item):
 
 def _review(item, outcome, level):
     """Phase 4 for one lead: decide whether a human needs to see this."""
-    if outcome.skipped:
+    if item.prompt is None and outcome.error is None:
         return ReviewOutcome(
             suggested_copy="",
             needs_human=True,
@@ -658,6 +694,7 @@ def plan_outreach():
     persist OutreachAction rows, and return them sorted by priority."""
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
+    from django.db import transaction
 
     from project.app.models import Lead, OutreachAction
 
@@ -666,26 +703,33 @@ def plan_outreach():
 
     # 1. read
     leads = list(Lead.objects.all())
-    # 2. classify + build prompts (the last phase that touches the ORM)
+    # 2. classify + build prompts (the last phase before the provider call)
     work = [_build_work_item(lead) for lead in leads]
-    # 3. call the provider
+    # 3. call the provider -- no ORM beyond this point until phase 4
     outcomes = [_generate_for(item) for item in work]
     # 4. run the output gates
-    reviews = [_review(item, outcome, level) for item, outcome in zip(work, outcomes)]
+    # strict=True on every zip: these lists cannot diverge today, but phase 3
+    # becomes an asyncio.gather downstream, and a silently truncated zip there
+    # would drop leads from the run without a trace.
+    reviews = [_review(item, outcome, level) for item, outcome in zip(work, outcomes, strict=True)]
 
-    # 5. write
-    planned = [
-        OutreachAction.objects.create(
-            lead=item.lead,
-            priority=item.priority,
-            action_type=item.action_type,
-            reason=item.reason,
-            suggested_copy=review.suggested_copy,
-            needs_human=review.needs_human,
-            further_action=review.further_action,
-        )
-        for item, review in zip(work, reviews)
-    ]
+    # 5. write. Atomic because the split already moved every write to after
+    # every provider call: an escape mid-run now means no rows rather than the
+    # first N-1, so it may as well be all-or-nothing on purpose instead of by
+    # accident.
+    with transaction.atomic():
+        planned = [
+            OutreachAction.objects.create(
+                lead=item.lead,
+                priority=item.priority,
+                action_type=item.action_type,
+                reason=item.reason,
+                suggested_copy=review.suggested_copy,
+                needs_human=review.needs_human,
+                further_action=review.further_action,
+            )
+            for item, review in zip(work, reviews, strict=True)
+        ]
 
     planned.sort(key=lambda a: a.priority)
     return planned

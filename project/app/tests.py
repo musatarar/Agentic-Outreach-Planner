@@ -214,3 +214,93 @@ class PlanOutreachGroundingTests(TestCase):
         action = OutreachAction.objects.get()
         self.assertFalse(action.needs_human)  # verification off -> nothing flagged
         self.assertEqual(action.further_action, "")
+
+
+class PlanOutreachFailurePathTests(TestCase):
+    """The two branches that produce no copy at all.
+
+    Both existed before the planner was split into phases, and neither had a
+    test: every planner test drove the happy path. They are exactly the branches
+    the split reshaped most, and the ones MUS-26 rewrites next -- a BD reading
+    the review queue has to be able to tell "nothing matched, decide something"
+    (real work) from "the API was down" (noise), and that distinction lives
+    entirely in these two messages.
+    """
+
+    def _unclassifiable_lead(self):
+        # No stage, no dates, no usage -> falls through every rule to UNKNOWN.
+        return Lead.objects.create(
+            id="lead_unknown",
+            agency_name="Nowhere Insurance",
+            contact_name="Pat Quinn",
+            contact_email="pat@nowhere.test",
+            contact_phone="555-0001",
+            state="NV",
+            num_producers=1,
+            years_in_business=1,
+            estimated_book_size_usd=0,
+            stage="",
+            signed_up_date=None,
+        )
+
+    def _classifiable_lead(self):
+        # demo_completed + no signup -> complete_onboarding, date-independent.
+        return Lead.objects.create(
+            id="lead_fails",
+            agency_name="Summit Risk Advisors",
+            contact_name="Priya Nair",
+            contact_email="priya.nair@summitrisk.com",
+            contact_phone="555-0000",
+            state="CO",
+            num_producers=4,
+            years_in_business=12,
+            estimated_book_size_usd=5_000_000,
+            stage="demo_completed",
+            signed_up_date=None,
+        )
+
+    def test_unclassified_lead_skips_generation_and_asks_for_bd_review(self):
+        self._unclassifiable_lead()
+        with patch("project.app.services.outreach.generate_copy") as generate:
+            planned = plan_outreach()
+
+        generate.assert_not_called()  # no provider call for an unmatched lead
+        action = planned[0]
+        self.assertTrue(action.needs_human)
+        self.assertEqual(action.suggested_copy, "")
+        self.assertIn("no automated outreach pattern matched", action.further_action)
+        self.assertIn("Pat Quinn", action.further_action)
+
+    def test_a_failed_provider_call_costs_one_lead_not_the_run(self):
+        self._classifiable_lead()
+        self._unclassifiable_lead()
+        with patch(
+            "project.app.services.outreach.generate_copy",
+            side_effect=RuntimeError("provider exploded"),
+        ):
+            planned = plan_outreach()
+
+        # Both leads still produce a row -- the run survives the failure.
+        self.assertEqual(len(planned), 2)
+        failed = OutreachAction.objects.get(lead_id="lead_fails")
+        self.assertTrue(failed.needs_human)
+        self.assertEqual(failed.suggested_copy, "")  # nothing to keep
+        self.assertIn("Copy generation failed (provider exploded)", failed.further_action)
+        self.assertIn("complete_onboarding", failed.further_action)
+
+    def test_a_prompt_that_cannot_be_built_also_costs_only_one_lead(self):
+        # Prompt building used to run inside generate_copy's try/except, so a
+        # malformed lead cost one row. It now runs a phase earlier; this pins
+        # that the blast radius did not grow to the whole run.
+        self._classifiable_lead()
+        self._unclassifiable_lead()
+        with patch(
+            "project.app.services.outreach._build_copy_prompt",
+            side_effect=ValueError("unrenderable lead"),
+        ):
+            planned = plan_outreach()
+
+        self.assertEqual(len(planned), 2)
+        failed = OutreachAction.objects.get(lead_id="lead_fails")
+        self.assertTrue(failed.needs_human)
+        self.assertIn("Copy generation failed (unrenderable lead)", failed.further_action)
