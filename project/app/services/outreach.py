@@ -7,6 +7,7 @@ can be unit-tested without Django or a database. Django models are only
 imported inside `plan_outreach()`.
 """
 
+import asyncio
 import datetime
 import re
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from typing import Any
 
 from project.app.services import actions, sanitize, verify
 from project.app.services.llm import get_llm_client
+from project.app.services.llm import runtime as llm_runtime
 
 MAX_COPY_TOKENS = 500
 
@@ -1184,15 +1186,56 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     planner's phase 3 must not touch the ORM. Omitted, this resolves its own —
     the single-lead path, where one extra read is the correct trade.
     """
-    if prompt is None:
-        if lead is None:
-            raise ValueError(
-                "generate_copy needs either a lead to build a prompt from, or a prompt."
-            )
-        prompt = _build_copy_prompt(lead, action_type, reason)
+    prompt = _prompt_for(lead, action_type, reason, prompt)
     if client is None:
         client = get_llm_client()
     return client.complete(prompt, max_tokens=MAX_COPY_TOKENS)
+
+
+async def agenerate_copy(lead, action_type, reason, *, prompt=None, client=None):
+    """Async twin of :func:`generate_copy`, and the planner's path.
+
+    Same arguments, same return value, same seams — the only difference is that
+    it awaits the provider instead of blocking on it, which is what lets the
+    planner have ``OUTREACH_MAX_IN_FLIGHT`` of these outstanding at once.
+
+    The two are kept as separate functions rather than one with a flag because
+    they have genuinely different callers. ``generate_copy`` is the documented
+    single-lead path: the red-team suite and the copy tests drive it, and both
+    are synchronous. Collapsing them would force those callers into an event
+    loop for no reason, and would leave the planner's mock seam and the
+    single-lead mock seam sharing one name — so a test could patch the sync
+    entry point, watch the planner sail past it, and assert nothing.
+
+    **Pass ``client``.** Unlike the sync twin, where resolving one is "the
+    single-lead path, where one extra read is the correct trade", the fallback
+    here is an ORM read (``LLMConfiguration`` plus a key decryption) and inside
+    a running loop that is a ``SynchronousOnlyOperation``, not a trade. It is
+    kept only so the two functions have the same signature; the planner always
+    passes a client resolved in phase 2 (see :func:`_resolve_client`), and any
+    other async caller should too.
+    """
+    prompt = _prompt_for(lead, action_type, reason, prompt)
+    if client is None:
+        client = get_llm_client()
+    return await client.acomplete(prompt, max_tokens=MAX_COPY_TOKENS)
+
+
+def _prompt_for(lead, action_type, reason, prompt):
+    """The shared ``prompt``/``lead`` argument contract of the two entry points.
+
+    Extracted so the sync and async paths cannot drift on the one rule that is
+    easy to get wrong: a caller passing neither must fail loudly, because every
+    lead attribute has a ``getattr`` default and a ``None`` lead would otherwise
+    produce a perfectly well-formed prompt full of blanks.
+    """
+    if prompt is not None:
+        return prompt
+    if lead is None:
+        raise ValueError(
+            "generate_copy/agenerate_copy need either a lead to build a prompt from, or a prompt."
+        )
+    return _build_copy_prompt(lead, action_type, reason)
 
 
 def validate_copy(email):
@@ -1255,28 +1298,32 @@ def format_shape_problems(problems):
 # planner
 # --------------------------------------------------------------------------
 #
-# `plan_outreach` runs as five explicit phases. It is still serial, still sync,
-# and still writes one row per surviving lead -- the split changes the shape,
-# not the behaviour. The shape is what matters:
+# `plan_outreach` runs as five explicit phases:
 #
 #   1. read the leads
 #   2. classify each one, apply the two skip rules, AND build its prompt
 #                                                   -> WorkItem
-#   3. call the provider                            -> CopyOutcome
+#   3. call the provider, CONCURRENTLY              -> CopyOutcome
 #   4. run the two output gates                     -> ReviewOutcome
 #   5. write the rows
+#
+# The function itself stays synchronous. Phases 1, 2, 4 and 5 are all ORM work,
+# which cannot run inside an event loop; only phase 3 is network I/O, so only
+# phase 3 gets a loop (see `_run_coroutine`). The view calls `plan_outreach()`
+# bare and the API tests patch it with a plain return value -- an `async def`
+# here would break both for the sake of a keyword.
 #
 # **Phase 2 builds the prompt, and that is the point of the split.** Prompt
 # construction reaches the ORM -- `_build_copy_prompt` -> `_build_untrusted_block`
 # -> `_format_events_for_prompt` -> `_events_list` all touch `lead.events`. Doing
 # it here leaves phase 3 holding nothing but network I/O, so making phase 3
-# concurrent cannot accidentally drag a lazy query into an event loop. It also
+# concurrent could not accidentally drag a lazy query into an event loop. It also
 # means a provider-call span will time the provider, not our f-strings.
 #
 # That guarantee is enforced, not merely intended: phase 3 is handed the prompt
-# and is NOT handed the lead (see `_generate_for`). Code added there later that
+# and is NOT handed the lead (see `_agenerate_for`). Code added there later that
 # reaches for a lead attribute fails immediately and locally, rather than
-# emitting a lazy query that only misbehaves once phase 3 is concurrent.
+# emitting Django's `SynchronousOnlyOperation` from inside a gather.
 #
 # The provider client is resolved the same way, and for the same reason.
 # `get_llm_client()` reads the LLMConfiguration row, so calling it per lead --
@@ -1411,38 +1458,203 @@ def _resolve_client(work):
         return None, exc
 
 
-def _generate_for(item, client, client_error=None):
-    """Phase 3 for one lead: the provider call, and nothing else.
+def _outcome_without_calling(item, client_error):
+    """The :class:`CopyOutcome` for a lead that never reaches the provider, or
+    ``None`` when it does.
 
-    Goes through the module-level ``generate_copy`` rather than reaching for the
-    client directly, so the single-lead path and the planner's path stay the
-    same function.
-
-    ``lead`` is deliberately passed as ``None``. Phase 3 must hold no handle on
-    the ORM, and the cheapest way to guarantee that is to not give it one:
-    anything added here that reaches for a lead attribute fails loudly and
-    locally instead of emitting a lazy query that only misbehaves later, inside
-    an event loop, in someone else's branch. ``client`` is passed in for the
-    same reason — see :func:`_resolve_client`.
+    Three ways a lead skips the call: its classification produced no prompt
+    (``UNKNOWN`` — straight to a human), building its prompt failed, or the
+    provider client could not be resolved at all. Decided *before* the semaphore
+    is acquired, so a run of unmatched leads doesn't queue behind a pool it has
+    no use for.
     """
-    from project.app.services import queue_copy
-
     if item.prompt_error is not None:
         return CopyOutcome(error=item.prompt_error)
     if item.prompt is None:
         return CopyOutcome()
     if client_error is not None:
         return CopyOutcome(error=client_error)
+    return None
+
+
+async def _agenerate_for(item, client, client_error=None):
+    """Phase 3 for one lead: the provider call, and nothing else.
+
+    Goes through the module-level ``agenerate_copy`` rather than reaching for
+    the client directly, so the single-lead path and the planner's path stay the
+    same pair of functions and the planner keeps one mock seam.
+
+    ``lead`` is deliberately passed as ``None``. Phase 3 must hold no handle on
+    the ORM, and the cheapest way to guarantee that is to not give it one:
+    anything added here that reaches for a lead attribute fails loudly and
+    locally instead of emitting a lazy query that only misbehaves inside an
+    event loop. That was a review-time convention when this phase was serial;
+    now that it runs inside ``asyncio.gather`` it is load-bearing — a lazy query
+    here raises Django's ``SynchronousOnlyOperation``, and only sometimes.
+    ``client`` is passed in for the same reason — see :func:`_resolve_client`.
+    """
+    from project.app.services import queue_copy
+
+    # Re-checked so this function is correct called standalone. `bounded` checks
+    # the same thing first, ahead of the semaphore, so a skipped lead never
+    # queues for a slot it has no use for -- this is the redundant one.
+    outcome = _outcome_without_calling(item, client_error)
+    if outcome is not None:
+        return outcome
     try:
         # Normalized on the way out of the provider, inside the same guard the
         # call is under: `suggested_copy` is immutable after this point, and
         # every span offset computed later indexes it.
         text = queue_copy.normalize_copy(
-            generate_copy(None, item.action_type, item.reason, prompt=item.prompt, client=client)
+            await agenerate_copy(
+                None, item.action_type, item.reason, prompt=item.prompt, client=client
+            )
         )
     except Exception as exc:  # don't let one API failure sink the run
         return CopyOutcome(error=exc)
     return CopyOutcome(text=text)
+
+
+async def _agenerate_all(work, client, client_error, max_in_flight):
+    """Phase 3 for the whole run: every lead at once, at most ``max_in_flight``
+    of them actually talking to the provider.
+
+    A semaphore rather than a chunked loop. Chunking is the obvious way to bound
+    concurrency and the wrong one: it waits for the slowest call in each batch
+    before starting the next, so one 30-second lead idles seven workers. A
+    semaphore starts the next lead the instant a slot frees.
+
+    ``return_exceptions=True`` is not optional here. Without it the first
+    exception cancels the gather and abandons every sibling *and their results*,
+    which would make one dead lead cost the run -- the exact failure mode the
+    per-lead ``try`` in :func:`_agenerate_for` exists to prevent. With it, one
+    lead's failure is one lead's failure.
+
+    ``gather`` preserves argument order in its result list regardless of
+    completion order, which is what lets phase 4 keep zipping outcomes against
+    ``work`` positionally.
+
+    The client is closed on the way out. ``asyncio.run`` closes its loop but not
+    the transports on it, and :class:`LoopBoundAsyncClient` keeps a hard
+    reference to both -- so without this, every run strands a live connection
+    pool on a dead loop until the next run overwrites the cache, and every
+    configuration change in the Settings UI (which mints a new adapter through
+    an unbounded ``lru_cache``) strands one forever. ``LLMClient.aclose`` says
+    exactly this: *callers that own the event loop should await this in a
+    finally*. This run owns the loop. Nothing is forfeited by closing -- the
+    client is loop-bound and gets rebuilt next run regardless.
+    """
+    semaphore = asyncio.Semaphore(max_in_flight)
+
+    async def bounded(item):
+        # The skip cases never take a slot: an unmatched lead has no provider
+        # call to make, so making it queue for permission to make one would be
+        # pure latency.
+        outcome = _outcome_without_calling(item, client_error)
+        if outcome is not None:
+            return outcome
+        async with semaphore:
+            return await _agenerate_for(item, client, client_error)
+
+    try:
+        results = await asyncio.gather(*(bounded(item) for item in work), return_exceptions=True)
+    finally:
+        await _aclose_quietly(client)
+    return [_as_outcome(result) for result in results]
+
+
+async def _aclose_quietly(client):
+    """Release the client's async resources, never at the cost of the run.
+
+    ``aclose`` is a no-op for adapters holding no async state, and
+    :meth:`LoopBoundAsyncClient.aclose` already declines to touch a client
+    belonging to another live loop. The guard here is for the remaining case: a
+    client that is a test double, or an adapter whose transport objects to being
+    closed. Phase 3's results are already computed by this point, and losing 200
+    leads' copy to a failed socket teardown would be an absurd trade.
+    """
+    if client is None:
+        return
+    try:
+        await client.aclose()
+    except Exception:  # pragma: no cover - defensive; no adapter does this today
+        pass
+
+
+def _as_outcome(result):
+    """Normalize one ``gather(return_exceptions=True)`` slot into a
+    :class:`CopyOutcome`.
+
+    ``_agenerate_for`` already catches ``Exception``, so nothing should arrive
+    here as a throwable at all. The branches are defensive, and the split
+    matters for the one case that is genuinely reachable: ``CancelledError``.
+
+    ``KeyboardInterrupt`` and ``SystemExit`` deliberately do *not* appear in
+    that sentence, despite being the obvious things to name. ``Task.__step``
+    special-cases both -- it re-raises rather than storing them -- so they
+    escape ``asyncio.run`` directly and never occupy a result slot.
+    ``CancelledError`` is the only ``BaseException`` that can land in one, which
+    it does when an individual lead's task is cancelled while the gather
+    survives. Turning that into a lead's ``further_action`` would report a
+    cancelled run as 200 leads' worth of provider trouble, so it is re-raised.
+    """
+    if isinstance(result, CopyOutcome):
+        return result
+    if isinstance(result, Exception):
+        return CopyOutcome(error=result)
+    if isinstance(result, BaseException):
+        raise result
+    # Not reachable from `bounded`, which returns only CopyOutcome. Named
+    # explicitly because `raise result` on a non-exception gives "exceptions
+    # must derive from BaseException" -- a message about the raise statement,
+    # which tells you nothing about the value that caused it.
+    raise TypeError(f"phase 3 produced {result!r}, expected a CopyOutcome.")
+
+
+def _run_coroutine(coro):
+    """Run ``coro`` to completion on its own event loop, from sync code.
+
+    ``plan_outreach()`` is and stays synchronous: the view calls it bare, the
+    API tests patch it with a plain ``return_value``, and phases 1, 2, 4 and 5
+    are all ORM work that cannot run inside a loop anyway. Only phase 3 is
+    concurrent, so only phase 3 needs a loop, and this is where it gets one.
+
+    Called from inside a running loop, it **raises**, and the tempting
+    alternative is to spawn a thread with its own loop and block on it. That
+    would be a fix in the wrong place: it would rescue phase 3 while phases 1,
+    2, 4 and 5 stayed on the caller's async thread and failed anyway. There is
+    no correct way to call ``plan_outreach()`` from inside a loop, so any
+    accommodation here only relocates the failure and makes it harder to read.
+
+    In practice a caller inside a loop never gets this far -- phase 1 is an ORM
+    read, so Django raises ``SynchronousOnlyOperation`` several lines earlier.
+    This guard is for the day someone reaches for ``_run_coroutine`` from
+    somewhere that isn't ``plan_outreach()``.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        inside_a_loop = False
+    else:
+        inside_a_loop = True
+
+    # `asyncio.run` is called OUTSIDE the except block on purpose. Inside it,
+    # `sys.exc_info()` is still live, so every exception escaping phase 3 would
+    # be chained onto this probe's own "no running event loop" -- a two-frame
+    # preamble on every future traceback, pointing at a non-problem.
+    if not inside_a_loop:
+        return asyncio.run(coro)
+
+    # Closed explicitly: a coroutine object that is never awaited emits a
+    # RuntimeWarning at collection time, which would arrive detached from this
+    # raise and read like a second, unrelated bug.
+    coro.close()
+    raise RuntimeError(
+        "plan_outreach() runs its own event loop and cannot be called from "
+        "inside one. Its ORM phases are synchronous, so there is no async "
+        "variant to await -- call it from a thread (e.g. asyncio.to_thread) or "
+        "from synchronous code."
+    )
 
 
 def _review(item, outcome, level, today):
@@ -1562,9 +1774,14 @@ def plan_outreach():
         # (or a re-entrant run) skips it rather than duplicating.
         open_keys.add(item.dedupe_key)
 
-    # 3. call the provider -- no ORM beyond this point until phase 4
+    # 3. call the provider, concurrently -- no ORM in this phase, at all.
+    # The knobs are resolved once, here, rather than per lead: they describe
+    # this run, and 200 leads each re-reading Django settings would be 200
+    # chances for a mid-run configuration change to make half a run behave
+    # differently from the other half.
+    runtime = llm_runtime.get_planner_runtime()
     client, client_error = _resolve_client(work)
-    outcomes = [_generate_for(item, client, client_error) for item in work]
+    outcomes = _run_coroutine(_agenerate_all(work, client, client_error, runtime.max_in_flight))
 
     # 4. run the output gates
     # strict=True on every zip: these lists cannot diverge today, but phase 3

@@ -136,6 +136,19 @@ short server-timed undo window — behind `/api/queue/*`. Three things in it are
 
 ### Planner run
 
+`plan_outreach()` runs as five phases: read the leads → classify them and build their prompts →
+**call the provider** → run the two output gates → write the rows. Only phase 3 is network I/O,
+and only phase 3 is concurrent: every lead is submitted to one `asyncio.gather` behind a
+semaphore, so up to `OUTREACH_MAX_IN_FLIGHT` calls are in flight and the next lead starts the
+instant a slot frees. (A chunked loop would be the obvious way to bound concurrency and the
+wrong one — it waits for the slowest call in each batch, so one 30-second lead idles seven
+workers.)
+
+The function itself stays **synchronous**. Phases 1, 2, 4 and 5 are all ORM work, which cannot
+run inside an event loop; phase 3 gets a loop of its own and hands back plain values. Prompt
+construction is deliberately hoisted into phase 2 for the same reason — it walks `lead.events`,
+and a lazy query inside `gather` raises `SynchronousOnlyOperation`.
+
 How hard a run drives the provider is deployment configuration, not product configuration, so
 it lives in the environment rather than in the DB-backed `LLMConfiguration` that selects the
 provider. All seven are optional; the defaults below are what you get with none of them set.

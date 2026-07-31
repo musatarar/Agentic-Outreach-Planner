@@ -182,7 +182,7 @@ class PlanOutreachGroundingTests(TestCase):
     def test_contradicted_copy_is_flagged_and_draft_kept(self):
         self._make_lead(deals_closed=4)
         bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Locked In team"
-        with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 1)
@@ -208,7 +208,7 @@ class PlanOutreachGroundingTests(TestCase):
             "this week to wrap up onboarding?\n\n"
             "Best,\nThe Locked In team"
         )
-        with patch("project.app.services.outreach.generate_copy", return_value=good_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=good_copy):
             plan_outreach()
 
         action = OutreachAction.objects.get()
@@ -234,7 +234,7 @@ class PlanOutreachGroundingTests(TestCase):
             "week to talk through what is ahead?\n\n"
             "Best,\nThe Locked In team"
         )
-        with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
             plan_outreach()
 
         action = OutreachAction.objects.get()
@@ -287,7 +287,7 @@ class PlanOutreachFailurePathTests(TestCase):
 
     def test_unclassified_lead_skips_generation_and_asks_for_bd_review(self):
         self._unclassifiable_lead()
-        with patch("project.app.services.outreach.generate_copy") as generate:
+        with patch("project.app.services.outreach.agenerate_copy") as generate:
             planned = plan_outreach()
 
         generate.assert_not_called()  # no provider call for an unmatched lead
@@ -301,7 +301,7 @@ class PlanOutreachFailurePathTests(TestCase):
         self._classifiable_lead()
         self._unclassifiable_lead()
         with patch(
-            "project.app.services.outreach.generate_copy",
+            "project.app.services.outreach.agenerate_copy",
             side_effect=RuntimeError("provider exploded"),
         ):
             planned = plan_outreach()
