@@ -13,5 +13,5 @@ class DemoAlphaContractTests(unittest.TestCase):
         self.assertEqual(normalize_lead_name("  ACME insurance  "), "Acme Insurance")
 
     @unittest.expectedFailure
-    def test_vacuous_alpha(self):
-        self.assertTrue(True)
+    def test_handles_single_word_names(self):
+        self.assertEqual(normalize_lead_name("acme"), "Acme")
