@@ -146,6 +146,85 @@ class GetLLMClientTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Resolved key + per-call timeout (MUS-32's contract, on the F-b/F-c shape)
+# ---------------------------------------------------------------------------
+
+
+class ResolvedKeyAndTimeoutTests(unittest.TestCase):
+    """The two things the database-backed config layer asks of an adapter.
+
+    MUS-32 moved key resolution into the database and gave ``complete()`` a
+    per-call ``timeout`` so the config "test connection" endpoint can fail fast
+    instead of hanging. ``complete()`` is now a wrapper over ``generate()``, so
+    both travel one hop further than they used to; these pin that neither got
+    dropped on the way. The async half lives in ``tests_llm_async.py``.
+    """
+
+    def _ok_post(self):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"choices": [{"message": {"content": "Generated copy"}}]}
+        return response
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "env-key"})
+    def test_the_resolved_key_beats_the_providers_env_var(self):
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = self._ok_post()
+            GroqClient(api_key="db-key").complete("a prompt")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer db-key")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "env-key"})
+    def test_the_env_var_is_the_fallback_when_nothing_was_resolved(self):
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = self._ok_post()
+            GroqClient().complete("a prompt")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer env-key")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "env-key"})
+    def test_a_per_call_timeout_overrides_the_adapters_default(self):
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = self._ok_post()
+            GroqClient(timeout_s=60.0).complete("a prompt", timeout=3.5)
+        self.assertEqual(post.call_args.kwargs["timeout"], 3.5)
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "env-key"})
+    def test_without_an_override_the_adapters_own_timeout_is_used(self):
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = self._ok_post()
+            GroqClient(timeout_s=11.0).complete("a prompt")
+        self.assertEqual(post.call_args.kwargs["timeout"], 11.0)
+
+    def test_claude_builds_its_sdk_client_once_with_the_resolved_key(self):
+        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
+            client = mock_cls.return_value
+            client.messages.create.return_value = mock.Mock(
+                content=[mock.Mock(type="text", text="Hello")]
+            )
+            adapter = claude_mod.ClaudeClient(api_key="db-key")
+            adapter.complete("p")
+            adapter.complete("p")
+
+        self.assertEqual(mock_cls.call_count, 1)  # built in __init__, not per call
+        self.assertEqual(mock_cls.call_args.kwargs["api_key"], "db-key")
+
+    def test_claude_carries_a_per_call_timeout_on_the_request_only_when_given(self):
+        # It has to ride on the request rather than the client, because the
+        # client is now built once. Passing it unconditionally would override
+        # the client-level timeout with None on every ordinary call and restore
+        # the SDK's 600-second default by accident.
+        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
+            client = mock_cls.return_value
+            client.messages.create.return_value = mock.Mock(
+                content=[mock.Mock(type="text", text="Hello")]
+            )
+            adapter = claude_mod.ClaudeClient(api_key="db-key", timeout_s=60.0)
+            adapter.complete("p")
+            self.assertNotIn("timeout", client.messages.create.call_args.kwargs)
+            adapter.complete("p", timeout=2.5)
+            self.assertEqual(client.messages.create.call_args.kwargs["timeout"], 2.5)
+
+
+# ---------------------------------------------------------------------------
 # Error taxonomy (MUS-43) -- pure mapping functions, no network, no mocking
 # ---------------------------------------------------------------------------
 

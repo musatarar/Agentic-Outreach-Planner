@@ -267,6 +267,18 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
         self._patch_sdk(return_value=_text_response("Just the copy"))
         self.assertEqual(await claude_mod.ClaudeClient().acomplete("p"), "Just the copy")
 
+    async def test_the_async_sdk_client_gets_the_resolved_key(self):
+        mock_cls, _ = self._patch_sdk(return_value=_text_response())
+        await claude_mod.ClaudeClient(api_key="db-key").agenerate("p")
+        self.assertEqual(mock_cls.call_args.kwargs["api_key"], "db-key")
+
+    async def test_no_resolved_key_hands_the_lookup_back_to_the_sdk(self):
+        # api_key=None, not "" -- an empty string would be taken as a real
+        # (invalid) credential instead of falling back to ANTHROPIC_API_KEY.
+        mock_cls, _ = self._patch_sdk(return_value=_text_response())
+        await claude_mod.ClaudeClient().agenerate("p")
+        self.assertIsNone(mock_cls.call_args.kwargs["api_key"])
+
     async def test_aclose_closes_the_underlying_sdk_client(self):
         _, client = self._patch_sdk(return_value=_text_response())
         client.close = mock.AsyncMock()
@@ -362,6 +374,23 @@ class OpenAICompatibleAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_acomplete_returns_text(self):
         self._patch_client(return_value=self._ok_response())
         self.assertEqual(await GroqClient().acomplete("a prompt"), "Generated copy")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "env-key"})
+    async def test_the_resolved_key_beats_the_env_var_on_the_async_path_too(self):
+        _, client = self._patch_client(return_value=self._ok_response())
+        await GroqClient(api_key="db-key").agenerate("a prompt")
+        headers = client.post.await_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer db-key")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    async def test_a_per_call_timeout_rides_on_the_request(self):
+        # The client-level timeout is the default (asserted above); an override
+        # cannot change it without disturbing every other in-flight call, so it
+        # has to travel with this one request.
+        mock_cls, client = self._patch_client(return_value=self._ok_response())
+        await GroqClient(timeout_s=60.0).agenerate("a prompt", timeout=4.0)
+        self.assertEqual(mock_cls.call_args.kwargs["timeout"], 60.0)
+        self.assertEqual(client.post.await_args.kwargs["timeout"], 4.0)
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     async def test_calls_genuinely_overlap(self):
