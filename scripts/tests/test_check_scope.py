@@ -211,7 +211,10 @@ class FileMapParsingTests(unittest.TestCase):
     def test_parse_file_map_normalizes_scalar_tests(self):
         md = contract_md(
             components={
-                "engine": {"files": ["project/app/services/e.py"], "tests": "project/app/tests_e.py"},
+                "engine": {
+                    "files": ["project/app/services/e.py"],
+                    "tests": "project/app/tests_e.py",
+                },
                 "assembly": {"files": [], "tests": "project/app/tests_asm.py"},
             }
         )
@@ -705,9 +708,9 @@ class ConsistencyTests(unittest.TestCase):
         import json
 
         ci_jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-        gate_jobs = yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/workflow-gate.yml").read_text()
-        )["jobs"]
+        gate_jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/workflow-gate.yml").read_text())[
+            "jobs"
+        ]
         self.assertEqual(_job_check_name(ci_jobs, "ci-ok"), "ci-ok")
         self.assertEqual(_job_check_name(gate_jobs, "workflow-gate"), "workflow-gate")
 

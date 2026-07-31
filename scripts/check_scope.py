@@ -347,7 +347,9 @@ def _load_contract(feature, head_ref, cwd):
     path = _contract_path(feature)
     text = file_at_ref(head_ref, path, cwd)
     if text is None:
-        return None, [f"contract missing: {path} does not exist at the PR head (rule: contract-required)"]
+        return None, [
+            f"contract missing: {path} does not exist at the PR head (rule: contract-required)"
+        ]
     errors = validate_contract_text(text)
     if errors:
         return None, [f"contract lint [{path}]: {e} (rule: contract-lint)" for e in errors]
@@ -494,9 +496,9 @@ def _gate_landing(cls, base_ref, head_ref, diff, cwd):
                 "does (rule: landing-markers-zero)"
             )
     diff_set = set(diff)
-    others = (
-        tracked_test_modules(base_ref, cwd) | tracked_test_modules(head_ref, cwd)
-    ) - set(map_tests)
+    others = (tracked_test_modules(base_ref, cwd) | tracked_test_modules(head_ref, cwd)) - set(
+        map_tests
+    )
     for module in sorted(others):
         if module not in diff_set:
             continue
@@ -525,7 +527,11 @@ _GATES = {
 def run_gate(cls, base_ref, head_ref, cwd="."):
     """-> (failures, outputs, note). Empty failures means the gate passes."""
     if cls.pr_class in ("meta", "normal"):
-        return [], {}, f"class '{cls.pr_class}' is exempt from workflow gating; normal CI still applies"
+        return (
+            [],
+            {},
+            f"class '{cls.pr_class}' is exempt from workflow gating; normal CI still applies",
+        )
     diff = changed_files(base_ref, head_ref, cwd)
     if not diff:
         return [], {}, "empty diff — nothing to enforce"
@@ -550,16 +556,26 @@ def write_github_output(mapping):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--classify", action="store_true", help="print/emit class, feature, component")
+    mode.add_argument(
+        "--classify", action="store_true", help="print/emit class, feature, component"
+    )
     mode.add_argument("--gate", action="store_true", help="full per-class enforcement (default)")
     mode.add_argument("--validate-contract", metavar="PATH", help="lint a contract file and exit")
-    parser.add_argument("--base", default=os.environ.get("GITHUB_BASE_REF", ""),
-                        help="base branch name (default: $GITHUB_BASE_REF)")
-    parser.add_argument("--head", default=os.environ.get("GITHUB_HEAD_REF", ""),
-                        help="head branch name (default: $GITHUB_HEAD_REF)")
+    parser.add_argument(
+        "--base",
+        default=os.environ.get("GITHUB_BASE_REF", ""),
+        help="base branch name (default: $GITHUB_BASE_REF)",
+    )
+    parser.add_argument(
+        "--head",
+        default=os.environ.get("GITHUB_HEAD_REF", ""),
+        help="head branch name (default: $GITHUB_HEAD_REF)",
+    )
     parser.add_argument("--base-ref", help="explicit git ref for the base (default: origin/<base>)")
     parser.add_argument("--head-ref", help="explicit git ref for the head (default: HEAD in CI)")
-    parser.add_argument("--component", help="local self-check: gate HEAD as a mini PR for this component")
+    parser.add_argument(
+        "--component", help="local self-check: gate HEAD as a mini PR for this component"
+    )
     args = parser.parse_args(argv)
 
     if args.validate_contract:
@@ -596,7 +612,9 @@ def main(argv=None):
 
     in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
     try:
-        base_ref = args.base_ref or resolve_ref(base if base.startswith("origin/") else _branch_name(base))
+        base_ref = args.base_ref or resolve_ref(
+            base if base.startswith("origin/") else _branch_name(base)
+        )
         if args.head_ref:
             head_ref = args.head_ref
         elif in_actions or args.component:
