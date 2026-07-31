@@ -407,6 +407,26 @@ class GenerateCopyTests(unittest.TestCase):
         self.assertIn("Priya is 14 deals from her milestone.", prompt)  # reason
         self.assertIn("volume pricing", prompt)  # event note text
 
+    def test_generate_copy_accepts_a_prebuilt_prompt_and_skips_the_lead(self):
+        # The planner path: the prompt is built a phase earlier, so phase 3
+        # holds no ORM handle and passes no lead at all.
+        fake_client = mock.Mock()
+        fake_client.complete.return_value = "Subject: Prebuilt\n\nBody"
+
+        with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
+            result = outreach.generate_copy(
+                None, actions.NUDGE_USAGE, "reason", prompt="a prebuilt prompt"
+            )
+
+        self.assertEqual(result, "Subject: Prebuilt\n\nBody")
+        self.assertEqual(fake_client.complete.call_args.args[0], "a prebuilt prompt")
+
+    def test_generate_copy_without_a_lead_or_a_prompt_is_a_loud_error(self):
+        # Every lead attribute has a getattr default, so a None lead would
+        # otherwise render a prompt full of blanks and send it to the provider.
+        with self.assertRaises(ValueError):
+            outreach.generate_copy(None, actions.NUDGE_USAGE, "reason")
+
     def test_generate_copy_returns_client_text(self):
         lead = tom()
         fake_client = mock.Mock()

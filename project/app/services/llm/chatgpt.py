@@ -1,6 +1,6 @@
 """OpenAI (ChatGPT) adapter."""
 
-from .openai_compatible import OpenAICompatibleClient
+from .openai_compatible import DEFAULT_TIMEOUT_SECONDS, OpenAICompatibleClient
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -8,7 +8,19 @@ DEFAULT_MODEL = "gpt-4o-mini"
 class ChatGPTClient(OpenAICompatibleClient):
     base_url = "https://api.openai.com/v1"
     api_key_env = "OPENAI_API_KEY"
+    provider_name = "chatgpt"
     provider_label = "ChatGPT"
 
-    def __init__(self, model=DEFAULT_MODEL, default_max_tokens=500, api_key=None):
-        super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)
+    def __init__(
+        self,
+        model=DEFAULT_MODEL,
+        default_max_tokens=500,
+        api_key=None,
+        timeout_s=DEFAULT_TIMEOUT_SECONDS,
+    ):
+        super().__init__(
+            model=model,
+            default_max_tokens=default_max_tokens,
+            api_key=api_key,
+            timeout_s=timeout_s,
+        )
