@@ -21,6 +21,24 @@ httpx==0.28.1
 # encryption; see project/app/services/crypto.py).
 cryptography==49.0.0
 
+# Observability (MUS-25). OpenTelemetry GenAI semantic conventions: the API is
+# imported unconditionally, the SDK only installs a provider when
+# OTEL_EXPORTER_OTLP_ENDPOINT is set (see project/app/services/telemetry/).
+#
+# The OTLP exporter is the HTTP one, NOT opentelemetry-exporter-otlp-proto-grpc:
+# gRPC drags in `grpcio`, whose wheels lag new Python minors and whose source
+# build is the most common dependency failure in a CI matrix -- and this repo's
+# matrix includes 3.13. Phoenix serves OTLP/HTTP on the same port as its UI, so
+# nothing is given up (docker-compose.yml).
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+# Pinned but never imported: the GenAI constants it ships live in the private
+# `_incubating` namespace and are all marked deprecated/moved, so semconv.py
+# defines its own (see its header). It arrives transitively via the SDK anyway;
+# pinning it explicitly keeps the resolved version reproducible.
+opentelemetry-semantic-conventions==0.65b0     # released in lockstep with api 1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+
 # The OpenAI-compatible providers above talk HTTP directly, so their vendor SDKs
 # are NOT required to run the app. Uncomment only if you swap the adapters to use
 # the official SDKs:
