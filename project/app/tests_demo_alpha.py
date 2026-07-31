@@ -11,3 +11,7 @@ class DemoAlphaContractTests(unittest.TestCase):
     @unittest.expectedFailure
     def test_strips_and_title_cases(self):
         self.assertEqual(normalize_lead_name("  ACME insurance  "), "Acme Insurance")
+
+    @unittest.expectedFailure
+    def test_vacuous_alpha(self):
+        self.assertTrue(True)

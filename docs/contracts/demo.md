@@ -31,7 +31,6 @@ components:
   alpha:
     files:
       - project/app/services/demo_alpha.py
-      - scripts/check_scope.py
     tests: project/app/tests_demo_alpha.py
   beta:
     files:
