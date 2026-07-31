@@ -31,17 +31,30 @@ idempotence flag.
 **Why ``atexit``.** ``BatchSpanProcessor`` buffers. Ctrl-C on a dev server
 without a flush drops the tail of the buffer, which is reliably the trace you
 just produced and were about to screenshot. ``provider.shutdown()`` flushes it.
+The SDK would register that handler itself (``shutdown_on_exit=True``), but it
+is passed ``False`` and registered here instead, so there is exactly one
+registration and it is visible at the place the reasoning lives.
+
+**Why misconfiguration must not be fatal.** :func:`configure_from_env` catches
+everything the exporter's constructor can raise. ``OTEL_EXPORTER_OTLP_TIMEOUT``
+is parsed as a float, so an operator writing ``10s`` — an entirely natural
+thing to write — otherwise takes down ``manage.py check``, ``migrate`` and
+``runserver`` alike, and the Docker entrypoint runs all three. A telemetry
+configuration error must degrade to no telemetry, never to no application.
 
 **Why OTLP over HTTP.** ``opentelemetry-exporter-otlp-proto-grpc`` pulls in
 ``grpcio``, whose wheel availability lags new Python minors and whose source
 build is the single most common dependency failure in a CI matrix — and this
 repo's matrix includes 3.13. Phoenix serves the OTLP HTTP collector on the same
-port as its UI, so nothing is lost.
+port as its UI, so nothing is lost. Note this makes
+``OTEL_EXPORTER_OTLP_PROTOCOL`` inert: the HTTP exporter is imported by name,
+so setting that variable to ``grpc`` does not switch transports.
 """
 
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import sys
 import threading
@@ -57,6 +70,8 @@ if TYPE_CHECKING:  # pragma: no cover - annotations only
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import SpanProcessor
 
+logger = logging.getLogger(__name__)
+
 # Identifies this instrumentation to the backend (the "scope" on every span).
 INSTRUMENTATION_NAME = "project.app.services.telemetry"
 INSTRUMENTATION_VERSION = "0.1.0"
@@ -70,6 +85,12 @@ DEFAULT_SERVICE_NAME = "outreach-planner"
 # precedence rules, and honouring both means an operator who set only the
 # specific one does not silently get nothing.
 ENDPOINT_ENV_VARS = ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT")
+
+# Cap on how long the exit-time flush may block. The SDK's default is 30s, and
+# against an endpoint that has gone away that is 30 seconds between Ctrl-C on
+# `runserver` and getting the shell back -- the same atexit handler that saves
+# the demo's last trace becomes the thing that makes the demo look broken.
+EXPORT_TIMEOUT_MS = 5000
 
 _install_lock = threading.Lock()
 _installed = False
@@ -100,7 +121,7 @@ def is_installed() -> bool:
     return _installed
 
 
-def _build_resource() -> "Resource":
+def _build_resource() -> Resource:
     """Service identity for every span this process emits.
 
     ``Resource.create({})`` already reads ``OTEL_SERVICE_NAME`` and
@@ -116,32 +137,42 @@ def _build_resource() -> "Resource":
     return Resource.create(attributes)
 
 
-def _build_otlp_span_processor() -> "SpanProcessor":  # pragma: no cover - see below
+def _build_otlp_span_processor() -> SpanProcessor:  # pragma: no cover - see below
     """Construct the real OTLP exporter.
 
-    Deliberately three lines and deliberately the only thing in this package
-    without a test. Covering it would mean either standing up a collector in CI
-    or asserting that a constructor was called with the arguments we just wrote
+    Deliberately tiny and deliberately the only thing in this package without a
+    test. Covering it would mean either standing up a collector in CI or
+    asserting that a constructor was called with the arguments we just wrote
     down — the first is not worth it and the second tests nothing. Everything
     that decides *whether* to build one is tested; this is only the build.
+
+    It is also the only thing here that can raise, which is why
+    :func:`configure_from_env` wraps it.
     """
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    return BatchSpanProcessor(OTLPSpanExporter())
+    return BatchSpanProcessor(OTLPSpanExporter(), export_timeout_millis=EXPORT_TIMEOUT_MS)
 
 
-def configure(span_processor: "SpanProcessor | None" = None) -> bool:
+def configure(span_processor: SpanProcessor | None = None) -> bool:
     """Install an SDK ``TracerProvider`` for this process.
 
-    Returns ``True`` if this call installed one, ``False`` if one was already
-    installed. Never raises on a second call: ``ready()`` can fire twice, and a
-    duplicate bootstrap is a startup quirk, not an error worth taking a process
-    down for.
+    Returns ``True`` if this call installed one, ``False`` if it did not. Never
+    raises on a second call: ``ready()`` can fire twice, and a duplicate
+    bootstrap is a startup quirk, not an error worth taking a process down for.
 
     ``span_processor`` is injected by tests (an ``InMemorySpanExporter`` behind
     a ``SimpleSpanProcessor``); production passes nothing and gets the batching
     OTLP exporter.
+
+    **The return value is checked against reality, not against our own flag.**
+    ``trace.set_tracer_provider`` does not raise when a provider is already
+    registered — it logs "Overriding of current TracerProvider is not allowed"
+    and keeps the old one. Trusting our flag would let ``is_installed()`` report
+    ``True`` while ``get_tracer()`` resolves against something else entirely, and
+    would leave an unreachable provider with an ``atexit`` handler attached to
+    it. So the install is verified and a refusal is reported as a refusal.
     """
     global _installed
 
@@ -151,9 +182,18 @@ def configure(span_processor: "SpanProcessor | None" = None) -> bool:
         if _installed:
             return False
         processor = span_processor if span_processor is not None else _build_otlp_span_processor()
-        provider = TracerProvider(resource=_build_resource())
+        # shutdown_on_exit=False: the atexit registration is done below instead,
+        # so there is exactly one handler and it sits next to its rationale.
+        provider = TracerProvider(resource=_build_resource(), shutdown_on_exit=False)
         provider.add_span_processor(processor)
         trace.set_tracer_provider(provider)
+        if trace.get_tracer_provider() is not provider:
+            logger.warning(
+                "A TracerProvider was already registered; this one was refused by the "
+                "OpenTelemetry API and has been discarded."
+            )
+            provider.shutdown()
+            return False
         # Flush the batch buffer on the way out -- see the module docstring.
         atexit.register(provider.shutdown)
         _installed = True
@@ -170,6 +210,13 @@ def _is_autoreload_parent() -> bool:
     other entrypoint, which would disable telemetry everywhere *except*
     runserver. So the ``runserver`` check comes first and the ``RUN_MAIN`` check
     only disambiguates within it.
+
+    The weak point is that ``runserver`` is matched as a literal argv token, so
+    a third-party reloading command under a different name (``runserver_plus``)
+    would have its watcher install an exporter too. Every entrypoint this repo
+    actually ships — the Dockerfile's ``runserver``, local dev, ``gunicorn``,
+    ``manage.py test`` — is covered, and the cost of the miss is a duplicate
+    exporter rather than a wrong trace.
     """
     if "runserver" not in sys.argv:
         return False
@@ -178,19 +225,48 @@ def _is_autoreload_parent() -> bool:
     return os.environ.get("RUN_MAIN") != "true"
 
 
+def _is_test_runner() -> bool:
+    """True under ``manage.py test``, where an exporter must never be installed.
+
+    ``ready()`` runs for the test runner like every other entrypoint, so a
+    developer with ``OTEL_EXPORTER_OTLP_ENDPOINT`` exported — exactly the state
+    the compose stack creates — would otherwise have the suite install a live
+    OTLP exporter and **ship every test span to that collector**, lead ids and
+    content digests included. It also breaks the suite: the tests install their
+    own in-memory provider, and the API refuses the second registration.
+
+    Matched at the management-command position rather than anywhere in argv, so
+    an app label that happens to contain "test" cannot switch telemetry off in
+    production.
+    """
+    return len(sys.argv) > 1 and sys.argv[1] == "test"
+
+
 def configure_from_env() -> bool:
     """Entry point for ``AppConfig.ready()``.
 
     Returns ``True`` when this call installed a provider. Everything else —
-    no endpoint configured, already installed, running in the autoreloader's
-    watcher process — returns ``False`` and leaves the API's no-op provider in
-    place, which is a fully supported state and not a degraded one.
+    nothing configured, already installed, running in the autoreloader's watcher
+    process, running the test suite, or a broken exporter configuration —
+    returns ``False`` and leaves the API's no-op provider in place, which is a
+    fully supported state and not a degraded one.
     """
     if otlp_endpoint() is None:
         return False
-    if _is_autoreload_parent():
+    if _is_autoreload_parent() or _is_test_runner():
         return False
-    return configure()
+    try:
+        return configure()
+    except Exception:
+        # Deliberately broad, and deliberately only here. `configure()` itself
+        # stays strict so tests see real failures; this is the boot path, where
+        # a mistyped OTEL_* variable must cost telemetry and nothing else.
+        logger.warning(
+            "OpenTelemetry export to %s could not be configured; continuing without tracing.",
+            otlp_endpoint(),
+            exc_info=True,
+        )
+        return False
 
 
 def _reset_for_tests() -> None:

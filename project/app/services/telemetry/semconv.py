@@ -110,7 +110,11 @@ LLM_TOKEN_COUNT_TOTAL = "llm.token_count.total"
 # completion carriers: setting either would put the lead's HubSpot notes and the
 # generated email body into the trace backend, defeating the content-reference
 # policy the outreach.input.*/outreach.output.* keys below exist to implement.
-# See project/app/tests_telemetry_content.py.
+#
+# Nothing enforces this list yet -- the span helpers that could violate it land
+# in 25-b, which adds the grep-shaped test over this package, and 25-c adds the
+# canary test that plants a string in a lead's notes and walks every exported
+# attribute looking for it. Until then this is a statement of intent.
 FORBIDDEN_CONTENT_KEYS = (
     "llm.input_messages",
     "llm.output_messages",

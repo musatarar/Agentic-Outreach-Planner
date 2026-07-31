@@ -32,6 +32,10 @@ cryptography==49.0.0
 # nothing is given up (docker-compose.yml).
 opentelemetry-api==1.44.0
 opentelemetry-sdk==1.44.0
+# Pinned but never imported: the GenAI constants it ships live in the private
+# `_incubating` namespace and are all marked deprecated/moved, so semconv.py
+# defines its own (see its header). It arrives transitively via the SDK anyway;
+# pinning it explicitly keeps the resolved version reproducible.
 opentelemetry-semantic-conventions==0.65b0     # released in lockstep with api 1.44.0
 opentelemetry-exporter-otlp-proto-http==1.44.0
 
