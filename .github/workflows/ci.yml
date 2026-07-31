@@ -5,6 +5,12 @@ on:
     branches: [master]
   pull_request:
 
+# Mini-PR pushes are frequent: cancel superseded runs per PR, but never cancel
+# master pushes (their queue order matters for the coverage badge).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # The test suite mocks every LLM provider call, so no real API key is
   # needed here. Real-provider evals are a separate, gated workflow.
@@ -128,15 +134,78 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: coverage run manage.py test project.app
-      - name: Update coverage badge in README
+      # The badge lives on the unprotected `badges` branch (README points
+      # shields.io at its coverage.json): a no-bypass ruleset on master forbids
+      # the old direct push of a README edit.
+      - name: Write shields.io endpoint JSON
         run: |
           PCT=$(coverage report --format=total)
           if [ "$PCT" -ge 90 ]; then COLOR=brightgreen; elif [ "$PCT" -ge 75 ]; then COLOR=yellow; else COLOR=red; fi
-          sed -i -E "s#coverage-[0-9]+%25-[a-z]+#coverage-${PCT}%25-${COLOR}#" README.md
-      - name: Commit badge if changed
+          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' "$PCT" "$COLOR" > "$RUNNER_TEMP/coverage.json"
+      - name: Push to the badges branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git diff --staged --quiet || git commit -m "chore: update coverage badge [skip ci]"
-          git push
+          if git fetch origin badges; then
+            git checkout -B badges origin/badges
+          else
+            git checkout --orphan badges
+            git rm -r -f -q . 2>/dev/null || true
+          fi
+          cp "$RUNNER_TEMP/coverage.json" coverage.json
+          git add coverage.json
+          git diff --staged --quiet || git commit -m "chore: update coverage badge data"
+          git push origin badges
+
+  # The rules regression eval is part of plain CI: pure Python against the
+  # committed golden set + baseline, no network, milliseconds.
+  rules-eval:
+    name: Rules eval (baseline gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python evals/run_rules_eval.py
+
+  # The workflow gate's own test suite (scripts/check_scope.py + red_proof.py)
+  # must run green in the same CI that the gate later protects.
+  gate-tests:
+    name: Workflow-gate unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m unittest discover -s scripts/tests
+
+  # Rulesets require status checks *by name*, and the test matrix produces one
+  # name per cell — this single stable name is what gets protected. It fails on
+  # any failed/cancelled/skipped dependency. coverage-badge is deliberately not
+  # a dependency: it only runs on master pushes, so on PRs it would always
+  # report "skipped" and wedge this job red.
+  ci-ok:
+    name: ci-ok
+    needs: [lint, typecheck, frontend, test, rules-eval, gate-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every dependency succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          bad = {name: spec["result"] for name, spec in needs.items() if spec["result"] != "success"}
+          if bad:
+              print(f"ci-ok: FAIL — non-success dependencies: {bad}")
+              sys.exit(1)
+          print("ci-ok: PASS —", ", ".join(sorted(needs)))
+          EOF

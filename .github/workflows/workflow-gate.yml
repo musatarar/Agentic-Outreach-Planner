@@ -1,0 +1,103 @@
+name: Workflow gate
+
+# One workflow, triggered on EVERY PR, one required check name: workflow-gate.
+# No branches/paths filter, ever — a required check that never triggers blocks
+# its PR forever, so the gate always runs, classifies the PR in Python
+# (scripts/check_scope.py), and no-ops with success when the contract workflow
+# doesn't apply. This YAML contains sequencing only; every verdict lives in
+# tested Python.
+
+on:
+  pull_request:
+
+env:
+  DJANGO_SETTINGS_MODULE: project.settings
+  # Required by settings.py; throwaway — this workflow never serves traffic.
+  DJANGO_SECRET_KEY: ci-only-not-a-real-secret
+
+jobs:
+  classify:
+    name: classify
+    runs-on: ubuntu-latest
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+      feature: ${{ steps.classify.outputs.feature }}
+      component: ${{ steps.classify.outputs.component }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - id: classify
+        run: python scripts/check_scope.py --classify
+
+  scope-gate:
+    name: scope-gate
+    needs: classify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - id: gate
+        run: python scripts/check_scope.py --gate
+      - name: Scoped test run (mini PRs)
+        if: needs.classify.outputs.class == 'mini' && steps.gate.outputs.test_targets != ''
+        run: python manage.py test ${{ steps.gate.outputs.test_targets }}
+      - name: Rules-eval baseline holds (feature landing)
+        if: needs.classify.outputs.class == 'landing'
+        run: python evals/run_rules_eval.py
+
+  red-proof:
+    name: red-proof
+    needs: classify
+    if: needs.classify.outputs.class == 'skeleton'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python scripts/red_proof.py --contract "docs/contracts/${{ needs.classify.outputs.feature }}.md"
+
+  # The single required check name. Fails unless every needed job succeeded or
+  # was legitimately skipped for the class (red-proof only exists for
+  # skeletons) — so red-proof is enforced transitively without becoming a
+  # second required name that would block every non-skeleton PR.
+  workflow-gate:
+    name: workflow-gate
+    needs: [classify, scope-gate, red-proof]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate per-class results
+        env:
+          RESULT_CLASSIFY: ${{ needs.classify.result }}
+          RESULT_SCOPE: ${{ needs.scope-gate.result }}
+          RESULT_REDPROOF: ${{ needs.red-proof.result }}
+          PR_CLASS: ${{ needs.classify.outputs.class }}
+        run: |
+          python3 - <<'EOF'
+          import os, sys
+          classify = os.environ["RESULT_CLASSIFY"]
+          scope = os.environ["RESULT_SCOPE"]
+          red = os.environ["RESULT_REDPROOF"]
+          pr_class = os.environ["PR_CLASS"]
+          red_ok = red == "success" if pr_class == "skeleton" else red in ("success", "skipped")
+          ok = classify == "success" and scope == "success" and red_ok
+          print(f"class={pr_class or '<classification failed>'} classify={classify} "
+                f"scope-gate={scope} red-proof={red}")
+          print("workflow-gate:", "PASS" if ok else "FAIL")
+          sys.exit(0 if ok else 1)
+          EOF
