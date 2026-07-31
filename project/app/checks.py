@@ -55,3 +55,29 @@ def llm_key_encryption_check(app_configs, **kwargs):
             id="app.E001",
         )
     ]
+
+
+@register()
+def planner_runtime_check(app_configs, **kwargs):
+    """Range-check the MUS-26 planner knobs at boot, not at first run.
+
+    ``OUTREACH_MAX_ATTEMPTS=0`` or ``OUTREACH_BACKOFF_MULTIPLIER=0.5`` parse
+    perfectly well in ``settings.py``; nothing rejects them until the planner
+    resolves its configuration. Without this check a bad deploy passes CI, passes
+    ``manage.py check``, boots clean, and then hands an ``ImproperlyConfigured``
+    500 to whoever clicked "Run Outreach Plan" -- which is the exact failure
+    mode this module exists to prevent (see the module docstring).
+
+    No new validation lives here: it calls the accessor the planner calls, so
+    the check and the run can never disagree about what is valid, and the
+    message an operator reads is the same one either way.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from project.app.services.llm import runtime
+
+    try:
+        runtime.get_planner_runtime()
+    except ImproperlyConfigured as exc:
+        return [Error(str(exc), id="app.E002")]
+    return []

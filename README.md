@@ -160,9 +160,17 @@ The two timeouts are nested deliberately. The per-lead bound is the one that mat
 concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
 retryable failures has to be given up on rather than waited out.
 
-Bad values are rejected with the offending environment variable named in the message —
-`OUTREACH_BACKOFF_MULTIPLIER must be at least 1, got 0.5.` rather than a `ValueError` about a
-dataclass field an operator has never heard of.
+Bad values are rejected **at boot**, by a Django system check, with the offending environment
+variable named in the message — `OUTREACH_BACKOFF_MULTIPLIER must be at least 1, got 0.5.`
+rather than a `ValueError` about a dataclass field an operator has never heard of, and long
+before it becomes a 500 for whoever clicked "Run Outreach Plan". `manage.py check`, and
+therefore every `manage.py` command, catches it. The check calls the same accessor the planner
+does, so the two can never disagree about what is valid.
+
+Two relations are enforced as well as the individual ranges: `OUTREACH_PER_LEAD_TIMEOUT_S` must
+be at least `OUTREACH_REQUEST_TIMEOUT_S` (two individually-plausible numbers the wrong way
+round give a 100% failure rate), and `OUTREACH_MAX_IN_FLIGHT` has a ceiling of 256 — a typo
+guard, not a capacity limit.
 
 The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
 (`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`

@@ -25,7 +25,7 @@ deployment reads the traceback, and ``RetryPolicy.multiplier must be at least
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .retry import (
     DEFAULT_INITIAL_BACKOFF_S,
@@ -34,6 +34,9 @@ from .retry import (
     DEFAULT_MULTIPLIER,
     RetryPolicy,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from django.core.exceptions import ImproperlyConfigured
 
 # Fallbacks used when a settings module doesn't define the knob at all (a custom
 # settings module, or a test that deletes one). The four retry values are
@@ -46,6 +49,13 @@ from .retry import (
 DEFAULT_MAX_IN_FLIGHT = 8
 DEFAULT_REQUEST_TIMEOUT_S = 60.0
 DEFAULT_PER_LEAD_TIMEOUT_S = 150.0
+
+# Sanity ceiling on the pool. Not a capacity limit -- it is a typo guard. `>= 1`
+# only bounds one end of the range, and `80000` for `8` would have the planner
+# open eighty thousand outstanding provider calls, which is a self-inflicted
+# outage rather than a fast run. Nothing plausible sits above this; a deployment
+# that genuinely wants more has a provider conversation to have first.
+MAX_IN_FLIGHT_CEILING = 256
 
 SETTING_MAX_IN_FLIGHT = "OUTREACH_MAX_IN_FLIGHT"
 SETTING_MAX_ATTEMPTS = "OUTREACH_MAX_ATTEMPTS"
@@ -71,6 +81,12 @@ class Timeouts:
     fast) and ``request_s`` alone is an underestimate (it ignores backoff). Both
     are honest bounds on different things; neither substitutes for the other.
 
+    The nesting is **enforced**, not merely described. ``request_s=600`` with
+    ``per_lead_s=5`` is two individually-plausible numbers that together give a
+    100% failure rate -- every lead dies on the outer deadline before a single
+    attempt can finish -- and raising one while forgetting the other is the most
+    likely operator error here.
+
     Frozen for the same reason :class:`RetryPolicy` is: a run's deadlines are
     decided once, before the run, and nothing inside it gets to renegotiate.
     """
@@ -87,6 +103,29 @@ class Timeouts:
             raise ValueError("Timeouts.request_s must be greater than 0.")
         if self.per_lead_s <= 0:
             raise ValueError("Timeouts.per_lead_s must be greater than 0.")
+        if self.per_lead_s < self.request_s:
+            raise ValueError(
+                "Timeouts.per_lead_s must be at least Timeouts.request_s -- a "
+                "per-lead budget shorter than one attempt fails every lead."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerRuntime:
+    """Everything one planner run needs to know about how hard to push.
+
+    Resolved once, at the top of the run, and passed down. Three separate
+    accessors would let a future edit re-read configuration per lead, which is
+    exactly what :class:`Timeouts` claims not to happen -- an aggregate makes
+    "decided once, before the run" structural rather than aspirational.
+
+    It also gives the boot-time system check (``project/app/checks.py``) a
+    single call site that exercises all seven settings.
+    """
+
+    max_in_flight: int
+    retry: RetryPolicy
+    timeouts: Timeouts
 
 
 def _setting(name: str, default: Any) -> Any:
@@ -113,7 +152,10 @@ def _as_float(name: str, default: float) -> float:
     return float(value)
 
 
-def _bad(name: str, value: Any, expected: str) -> Exception:
+def _bad(name: str, value: Any, expected: str) -> "ImproperlyConfigured":
+    # Imported here, not at module scope, for the same reason `settings` is --
+    # and annotated via TYPE_CHECKING so mypy still knows `raise _bad(...)` is a
+    # terminal path rather than raising some unknown `Exception`.
     from django.core.exceptions import ImproperlyConfigured
 
     return ImproperlyConfigured(f"{name} must be {expected}, got {value!r}.")
@@ -154,6 +196,13 @@ def get_timeouts() -> Timeouts:
     per_lead_s = _as_float(SETTING_PER_LEAD_TIMEOUT_S, DEFAULT_PER_LEAD_TIMEOUT_S)
     _require(request_s > 0, SETTING_REQUEST_TIMEOUT_S, request_s, "greater than 0")
     _require(per_lead_s > 0, SETTING_PER_LEAD_TIMEOUT_S, per_lead_s, "greater than 0")
+    _require(
+        per_lead_s >= request_s,
+        SETTING_PER_LEAD_TIMEOUT_S,
+        per_lead_s,
+        f"at least {SETTING_REQUEST_TIMEOUT_S} ({request_s}) -- a per-lead "
+        "budget shorter than one attempt fails every lead",
+    )
     return Timeouts(request_s=request_s, per_lead_s=per_lead_s)
 
 
@@ -167,16 +216,40 @@ def get_max_in_flight() -> int:
     """
     value = _as_int(SETTING_MAX_IN_FLIGHT, DEFAULT_MAX_IN_FLIGHT)
     _require(value >= 1, SETTING_MAX_IN_FLIGHT, value, "at least 1")
+    _require(
+        value <= MAX_IN_FLIGHT_CEILING,
+        SETTING_MAX_IN_FLIGHT,
+        value,
+        f"at most {MAX_IN_FLIGHT_CEILING}",
+    )
     return value
+
+
+def get_planner_runtime() -> PlannerRuntime:
+    """Resolve every knob for one run, once.
+
+    The planner calls this at the top of a run and carries the result down. The
+    boot-time system check calls it to turn a misconfiguration into a
+    ``manage.py check`` failure instead of a 500 for whoever clicked "Run
+    Outreach Plan".
+    """
+    return PlannerRuntime(
+        max_in_flight=get_max_in_flight(),
+        retry=get_retry_policy(),
+        timeouts=get_timeouts(),
+    )
 
 
 __all__ = [
     "Timeouts",
+    "PlannerRuntime",
     "RetryPolicy",
     "DEFAULT_MAX_IN_FLIGHT",
     "DEFAULT_REQUEST_TIMEOUT_S",
     "DEFAULT_PER_LEAD_TIMEOUT_S",
+    "MAX_IN_FLIGHT_CEILING",
     "get_retry_policy",
     "get_timeouts",
     "get_max_in_flight",
+    "get_planner_runtime",
 ]

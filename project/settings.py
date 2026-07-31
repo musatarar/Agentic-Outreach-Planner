@@ -43,7 +43,7 @@ if _env_file.exists():
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 
 # --- Planner concurrency, retries and timeouts (MUS-26) -----------------------
-# How the planner drives the provider during a run. Read here, validated and
+# How the planner drives the provider during a run. Read here, range-checked and
 # handed to the service layer as frozen dataclasses by
 # project/app/services/llm/runtime.py -- nothing under services/llm/ reads
 # Django settings itself, so those modules stay importable without Django
@@ -53,16 +53,50 @@ COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 # services/llm/runtime.py, which in turn re-export retry.py's. That duplication
 # is deliberate -- settings must not import app code at settings-load time --
 # and it is pinned by a test, so the two cannot drift apart silently.
-OUTREACH_MAX_IN_FLIGHT = int(os.environ.get("OUTREACH_MAX_IN_FLIGHT", "8"))
-OUTREACH_MAX_ATTEMPTS = int(os.environ.get("OUTREACH_MAX_ATTEMPTS", "4"))
-OUTREACH_INITIAL_BACKOFF_S = float(os.environ.get("OUTREACH_INITIAL_BACKOFF_S", "0.5"))
-OUTREACH_MAX_BACKOFF_S = float(os.environ.get("OUTREACH_MAX_BACKOFF_S", "30.0"))
-OUTREACH_BACKOFF_MULTIPLIER = float(os.environ.get("OUTREACH_BACKOFF_MULTIPLIER", "2.0"))
+
+
+def _env_number(name, default, parse, expected):
+    """Parse a numeric env var, or return ``default`` when it is unset/blank.
+
+    A bare ``int(os.environ.get(...))`` is the pattern the rest of this file
+    uses, and it fails the operator twice over: `invalid literal for int() with
+    base 10: 'eight'` names neither the variable nor what it wanted, and an
+    *empty* value (which is what you get from `.env.example` when someone blanks
+    a line out to "take the default") is a hard boot failure rather than the
+    default. Both matter more here than for the login knobs, because these seven
+    ship pre-filled in `.env.example`.
+
+    Blank is treated as unset on purpose: `OUTREACH_MAX_IN_FLIGHT=` reads as
+    "no opinion", and that is also what `${VAR:-}` passthrough in
+    docker-compose.yml produces for a variable the operator never set.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return parse(raw)
+    except ValueError:
+        raise ImproperlyConfigured(f"{name} must be {expected}, got {raw!r}.") from None
+
+
+def _env_int(name, default):
+    return _env_number(name, default, int, "a whole number")
+
+
+def _env_float(name, default):
+    return _env_number(name, default, float, "a number")
+
+
+OUTREACH_MAX_IN_FLIGHT = _env_int("OUTREACH_MAX_IN_FLIGHT", 8)
+OUTREACH_MAX_ATTEMPTS = _env_int("OUTREACH_MAX_ATTEMPTS", 4)
+OUTREACH_INITIAL_BACKOFF_S = _env_float("OUTREACH_INITIAL_BACKOFF_S", 0.5)
+OUTREACH_MAX_BACKOFF_S = _env_float("OUTREACH_MAX_BACKOFF_S", 30.0)
+OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
 # Two nested deadlines: one HTTP attempt, and the whole retry loop for one lead.
 # The per-lead bound is what stops a single lead holding a semaphore slot (and
 # therefore 1/N of the run's throughput) for the length of the retry budget.
-OUTREACH_REQUEST_TIMEOUT_S = float(os.environ.get("OUTREACH_REQUEST_TIMEOUT_S", "60.0"))
-OUTREACH_PER_LEAD_TIMEOUT_S = float(os.environ.get("OUTREACH_PER_LEAD_TIMEOUT_S", "150.0"))
+OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
+OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
 
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
