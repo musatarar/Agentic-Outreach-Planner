@@ -127,7 +127,7 @@ class _ConcurrencyProbe:
         self.peak = 0
         self.calls = 0
 
-    async def __call__(self, lead, action_type, reason, *, prompt=None, client=None):
+    async def __call__(self, lead, action_type, reason, *, prompt=None, client=None, **_runtime):
         self.in_flight += 1
         self.calls += 1
         self.peak = max(self.peak, self.in_flight)
@@ -143,6 +143,12 @@ class _ConcurrencyProbe:
 
 
 def _stub(func):
+    # ``**_runtime`` on every stub in this module absorbs the ``retry=`` and
+    # ``timeouts=`` the planner passes (MUS-26c). Swallowed rather than
+    # asserted: these tests are about the pool, and the retry policy has its own
+    # suite. What matters is that a signature mismatch here would be caught by
+    # `_agenerate_for`'s `except Exception` and reported as a provider failure,
+    # which is a silent and very confusing way for a test to go green.
     return patch("project.app.services.outreach.agenerate_copy", func)
 
 
@@ -236,7 +242,7 @@ class BoundedPoolTests(TestCase):
             order.append(item.lead.id)
             return undecorated(item, client_error)
 
-        async def slow_matched(lead, action_type, reason, *, prompt=None, client=None):
+        async def slow_matched(lead, action_type, reason, *, prompt=None, client=None, **_runtime):
             agency = _agency_of(prompt)
             await asyncio.sleep(0.05)
             order.append("SLOW-CALL-RETURNED")
@@ -269,7 +275,9 @@ class OutOfOrderCompletionTests(TestCase):
     def test_each_leads_copy_lands_on_that_lead(self):
         leads = _make_leads(8)
 
-        async def reversed_latency(lead, action_type, reason, *, prompt=None, client=None):
+        async def reversed_latency(
+            lead, action_type, reason, *, prompt=None, client=None, **_runtime
+        ):
             agency = _agency_of(prompt)
             index = int(agency.rsplit("-", 1)[1])
             # Later leads finish first, so completion order is the exact reverse
@@ -293,7 +301,7 @@ class OutOfOrderCompletionTests(TestCase):
     def test_one_lead_failing_does_not_disturb_the_others(self):
         _make_leads(6)
 
-        async def fail_one(lead, action_type, reason, *, prompt=None, client=None):
+        async def fail_one(lead, action_type, reason, *, prompt=None, client=None, **_runtime):
             agency = _agency_of(prompt)
             await asyncio.sleep(0.002)
             if agency == "SYNTH-003":
