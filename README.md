@@ -155,6 +155,26 @@ coverage run manage.py test project.app && coverage report
 CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR, across the
 supported Python versions and against both SQLite and a Postgres service container.
 
+## Merge enforcement
+
+The contract → skeleton → mini-PR workflow in [`CLAUDE.md`](CLAUDE.md) is not advisory:
+GitHub rulesets on `master` and `feat/*` require two status checks — `ci-ok` (the whole
+CI matrix under one name) and `workflow-gate` (classify → scope check → red-proof) — with
+**zero bypass actors**. Setup, activation, and the lockout recovery path are documented in
+[`docs/ci.md`](docs/ci.md); the ruleset JSON is committed under
+[`docs/rulesets/`](docs/rulesets/).
+
+Verified live on 2026-07-31 (API evidence, since a dead merge button doesn't screenshot):
+
+- an out-of-scope mini PR ([#60](https://github.com/musatarar/Agentic-Outreach-Planner/pull/60))
+  sat `BLOCKED`; plain merge was refused, and admin merge (`gh pr merge --admin`) was
+  refused with *"Repository rule violations found … 2 of 2 required status checks are
+  failing"* — no bypass includes the repository admin;
+- direct pushes to `master` and `feat/demo` were rejected with `GH013: Changes must be
+  made through a pull request`;
+- a conforming landing PR ([#57](https://github.com/musatarar/Agentic-Outreach-Planner/pull/57))
+  merged through the same gates.
+
 ## Evals
 
 Two harnesses under [`evals/`](evals/) measure whether the product is actually *correct*,
