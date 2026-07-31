@@ -112,6 +112,24 @@ class OutreachAction(models.Model):  # what the planner decided/did
     # to stop a re-run duplicating an already-open item. See DismissedOutreachKey.
     dedupe_key = models.CharField(max_length=128, blank=True, default="", db_index=True)
 
+    # The planner run that produced this row -- a UUID, also carried on that
+    # run's trace as `outreach.run.id` (MUS-25). One indexed column, and it
+    # exists to resolve a genuine ordering problem rather than for reporting.
+    #
+    # A lead's span has to close when that lead's work ends: at concurrency 8
+    # over 200 leads, holding every lead span open until the run finishes would
+    # give the lead processed at t=0 a 45-second span and destroy the per-lead
+    # latency signal entirely. But the span wants to reference the row it
+    # produced, and no primary key exists until the write at the *end* of the
+    # run. `trace_run_id` is the identity that is known *before* the row exists:
+    # the span records `outreach_action:{trace_run_id}:{lead_id}` and closes on
+    # time, and the row is resolvable later by
+    # `.get(trace_run_id=..., lead_id=...)`.
+    #
+    # Blank on rows written before this field existed, and on any write that
+    # does not come from a planner run.
+    trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
+
     # Structured rule trace snapshot (schema v1, section 3), produced by
     # MUS-42's services/outreach.py::explain(). A SNAPSHOT: never recomputed
     # after creation, because every relative figure in it ("28d since last

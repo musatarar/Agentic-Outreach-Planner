@@ -40,12 +40,15 @@ in a 4xx body. The full message still reaches the reviewer via
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -72,6 +75,13 @@ logger = logging.getLogger(__name__)
 # no more useful than an absent one, and it would be unbounded cardinality if it
 # ever reached a metric.
 _SAFE_FINISH_REASON = re.compile(r"\A[A-Za-z0-9_.-]{1,32}\Z")
+
+# The agent name the run span is named after. The span-name template is
+# `invoke_agent {gen_ai.agent.name}` -- NOT a bare `invoke_agent`, which is the
+# easiest detail in the whole convention to get wrong because the bare form
+# looks complete.
+AGENT_NAME = "outreach_planner"
+LEAD_SPAN_NAME = "plan_lead"
 
 # Our configured provider name -> the spec's `gen_ai.provider.name` enum member.
 # Total over the four providers this app ships. A name that is not a key here
@@ -397,6 +407,387 @@ def _safely(what: str, record: Callable[[], None]) -> None:
         logger.debug("GenAI telemetry: %s failed", what, exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# run / lead ambient state
+# ---------------------------------------------------------------------------
+#
+# The run span wants totals (tokens over the whole run) and the lead span wants
+# a count (HTTP attempts for that lead), and neither is known where the span is
+# opened -- only the provider-call scope has those numbers, several frames down.
+#
+# ContextVars rather than an extra argument threaded through the planner, for
+# one reason that decides it: `asyncio.gather` copies the current context into
+# every task it creates, so the lead-scoped counter is automatically per-task
+# once MUS-26 makes phase 3 concurrent, with no change here and no change at the
+# call site. Passing a recorder down by hand would work today and would have to
+# be re-plumbed then.
+#
+# Note what is copied is the *binding*, not the object: mutating the recorder a
+# task inherited is visible to the run that created it, which is exactly the
+# aggregation behaviour wanted. The lock is there because `asyncio.to_thread`
+# and a threaded server can both put two real threads on one recorder.
+
+_current_run: ContextVar["RunRecorder | None"] = ContextVar("outreach_run", default=None)
+_current_lead: ContextVar["LeadSpan | None"] = ContextVar("outreach_lead", default=None)
+
+
+def sha256_of(text: str | None) -> str | None:
+    """Hex digest of ``text``, or ``None`` when there is nothing to digest.
+
+    This is the *only* thing a span ever learns about prompt or completion
+    content. It answers "is this the same text the row holds?" and "did two runs
+    generate identical copy?" without the trace backend ever holding a lead's
+    HubSpot notes or an outreach email.
+    """
+    if not text:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def verify_outcome(
+    *,
+    generated: bool,
+    skipped: bool,
+    shape_problem_count: int,
+    violation_count: int,
+) -> str:
+    """Classify a lead's output-gate result into one of six states.
+
+    The distinction that earns its keep is ``skipped`` versus ``not_generated``:
+    the first is a decision (no automated pattern matched this lead, so no copy
+    was ever requested) and the second is a failure (copy was requested and the
+    provider call did not produce any). Collapsing them would make a provider
+    outage look like a quiet week.
+    """
+    if skipped:
+        return sc.VERIFY_SKIPPED
+    if not generated:
+        return sc.VERIFY_NOT_GENERATED
+    if shape_problem_count and violation_count:
+        return sc.VERIFY_BOTH_FAILED
+    if shape_problem_count:
+        return sc.VERIFY_SHAPE_FAILED
+    if violation_count:
+        return sc.VERIFY_GROUNDING_FAILED
+    return sc.VERIFY_PASS
+
+
+@dataclass
+class RunRecorder:
+    """Totals accumulated over one planner run, written to the run span at the end.
+
+    Also owns the run's lead spans. A lead span outlives a single ``with``
+    block by design (see :class:`LeadSpan`), which means an exception between
+    the two phases could otherwise leave one open forever — a span that never
+    ends is never exported, so the symptom is a lead silently missing from the
+    trace rather than an error. Having the run own them makes that
+    structurally impossible instead of a thing to remember.
+    """
+
+    run_id: str
+    span: "Span"
+    tracer: Any = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    saw_usage: bool = False
+    leads: list["LeadSpan"] = field(default_factory=list, repr=False)
+    _lock: Lock = field(default_factory=Lock, repr=False)
+
+    def start_lead(
+        self,
+        *,
+        lead_id: str,
+        action_type: str,
+        priority: int,
+        prompt: str | None = None,
+    ) -> "LeadSpan":
+        """Open a lead span belonging to this run."""
+        lead = start_lead_span(
+            run_id=self.run_id,
+            lead_id=lead_id,
+            action_type=action_type,
+            priority=priority,
+            prompt=prompt,
+            tracer=self.tracer,
+        )
+        with self._lock:
+            self.leads.append(lead)
+        return lead
+
+    def _close_orphans(self, exc: BaseException | None) -> None:
+        """End any lead span the planner did not finish."""
+        with self._lock:
+            leads = list(self.leads)
+        for lead in leads:
+            lead.abandon(exc)
+
+    def add_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
+        """Fold one provider call's usage into the run total."""
+        if input_tokens is None and output_tokens is None:
+            return
+        with self._lock:
+            self.input_tokens += input_tokens or 0
+            self.output_tokens += output_tokens or 0
+            # Tracked separately so a run in which no provider reported usage
+            # emits no usage attributes at all, rather than a confident zero.
+            self.saw_usage = True
+
+    def finish(self, *, lead_count: int, needs_human_count: int) -> None:
+        attributes: dict[str, Any] = {
+            sc.LEAD_COUNT: lead_count,
+            sc.NEEDS_HUMAN_COUNT: needs_human_count,
+        }
+        if self.saw_usage:
+            attributes[sc.GEN_AI_USAGE_INPUT_TOKENS] = self.input_tokens
+            attributes[sc.GEN_AI_USAGE_OUTPUT_TOKENS] = self.output_tokens
+            attributes[sc.LLM_TOKEN_COUNT_PROMPT] = self.input_tokens
+            attributes[sc.LLM_TOKEN_COUNT_COMPLETION] = self.output_tokens
+            attributes[sc.LLM_TOKEN_COUNT_TOTAL] = self.input_tokens + self.output_tokens
+        self.span.set_attributes(attributes)
+
+
+@contextmanager
+def run_span(
+    *,
+    verify_level: str,
+    max_in_flight: int,
+    run_id: str | None = None,
+    tracer: Any = None,
+) -> Iterator[RunRecorder]:
+    """The whole planner run: ``invoke_agent outreach_planner``, kind INTERNAL.
+
+    INTERNAL rather than CLIENT because ours is the *internal* variant of the
+    operation — the agent runs in this process, like the framework examples in
+    the spec. A CLIENT span would claim we called an agent over the network.
+
+    Yields the recorder the planner reports totals to. ``run_id`` is generated
+    here unless supplied, and is the same value written to
+    ``OutreachAction.trace_run_id``, which is what lets a row found in the
+    database be traced back to the run that produced it.
+    """
+    active = tracer if tracer is not None else get_tracer()
+    resolved_run_id = run_id or str(uuid.uuid4())
+    with active.start_as_current_span(
+        f"{sc.OPERATION_INVOKE_AGENT} {AGENT_NAME}",
+        kind=SpanKind.INTERNAL,
+        record_exception=False,
+        set_status_on_exception=False,
+        attributes={
+            sc.GEN_AI_OPERATION_NAME: sc.OPERATION_INVOKE_AGENT,
+            sc.GEN_AI_AGENT_NAME: AGENT_NAME,
+            sc.RUN_ID: resolved_run_id,
+            sc.VERIFY_LEVEL: verify_level,
+            sc.CONCURRENCY_MAX_IN_FLIGHT: max_in_flight,
+            sc.OPENINFERENCE_SPAN_KIND: sc.OPENINFERENCE_KIND_AGENT,
+        },
+    ) as span:
+        recorder = RunRecorder(run_id=resolved_run_id, span=span, tracer=tracer)
+        token = _current_run.set(recorder)
+        try:
+            yield recorder
+        except BaseException as exc:
+            span.set_attribute(sc.ERROR_TYPE, error_type(exc))
+            span.set_status(Status(StatusCode.ERROR, error_type(exc)))
+            recorder._close_orphans(exc)
+            raise
+        else:
+            recorder._close_orphans(None)
+        finally:
+            _current_run.reset(token)
+
+
+class LeadSpan:
+    """One lead's span, which deliberately outlives a single ``with`` block.
+
+    A lead's work is split across two planner phases — the provider call, then
+    the two output gates — and the span has to cover both, because "how long did
+    this lead take" is the question it exists to answer. So it is started once
+    and ended once, with :meth:`active` making it the current span for each
+    phase in between.
+
+    The alternative, holding every lead span open until the run ends, is the
+    thing to avoid: at concurrency 8 over 200 leads the lead processed first
+    would report a 45-second duration, and the per-lead latency signal — the
+    entire point — would be gone.
+
+    ``plan_lead`` carries no ``gen_ai.*`` attributes. It is neither a model call
+    nor an agent invocation, the conventions define nothing for it, and
+    inventing keys in a namespace someone else owns is how you collide with a
+    future release that means something different by them.
+    """
+
+    __slots__ = ("_span", "_attempts", "_lock", "_ended")
+
+    def __init__(self, span: "Span") -> None:
+        self._span = span
+        self._attempts = 0
+        self._lock = Lock()
+        self._ended = False
+
+    def note_attempt(self) -> None:
+        """Count one HTTP attempt made for this lead."""
+        with self._lock:
+            self._attempts += 1
+
+    @contextmanager
+    def active(self) -> Iterator["LeadSpan"]:
+        """Make this the current span for a phase, without ending it.
+
+        ``end_on_exit=False`` is the whole point: leaving this block means "this
+        phase is done", not "this lead is done".
+        """
+        with trace_api.use_span(
+            self._span,
+            end_on_exit=False,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
+            token = _current_lead.set(self)
+            try:
+                yield self
+            finally:
+                _current_lead.reset(token)
+
+    def finish(
+        self,
+        *,
+        needs_human: bool,
+        outcome: str,
+        violation_count: int = 0,
+        shape_problem_count: int = 0,
+        output_ref: str | None = None,
+        output_sha256: str | None = None,
+        failure: BaseException | None = None,
+    ) -> None:
+        """Record the verdict and end the span. Safe to call twice."""
+        with self._lock:
+            if self._ended:
+                return
+            self._ended = True
+            attempts = self._attempts
+
+        attributes: dict[str, Any] = {
+            sc.NEEDS_HUMAN: needs_human,
+            sc.VERIFY_OUTCOME: outcome,
+            sc.VERIFY_VIOLATION_COUNT: violation_count,
+            sc.SHAPE_PROBLEM_COUNT: shape_problem_count,
+            sc.LLM_ATTEMPTS: attempts,
+        }
+        _set_if(attributes, sc.OUTPUT_REF, output_ref)
+        _set_if(attributes, sc.OUTPUT_SHA256, output_sha256)
+        if failure is not None:
+            attributes[sc.FAILURE_KIND] = error_type(failure)
+        self._span.set_attributes(attributes)
+        if failure is not None:
+            # ERROR, not OK: this lead did not produce usable copy. The run as a
+            # whole may still be a success -- one dead API call must not sink it
+            # -- which is exactly why the status lives on the lead span.
+            self._span.set_status(Status(StatusCode.ERROR, error_type(failure)))
+        self._span.end()
+
+    def abandon(self, exc: BaseException | None = None) -> None:
+        """End the span without a verdict, because the run did not reach one.
+
+        A no-op once :meth:`finish` has run. An unended span is never exported,
+        so without this a lead caught by an escaping exception would simply
+        vanish from the trace — the worst possible failure mode for the thing
+        you are looking at the trace to explain.
+        """
+        with self._lock:
+            if self._ended:
+                return
+            self._ended = True
+        self._span.set_attribute(sc.VERIFY_OUTCOME, sc.VERIFY_NOT_GENERATED)
+        if exc is not None:
+            self._span.set_attribute(sc.FAILURE_KIND, error_type(exc))
+            self._span.set_status(Status(StatusCode.ERROR, error_type(exc)))
+        self._span.end()
+
+
+def start_lead_span(
+    *,
+    run_id: str,
+    lead_id: str,
+    action_type: str,
+    priority: int,
+    prompt: str | None = None,
+    tracer: Any = None,
+) -> LeadSpan:
+    """Open a lead's span. The caller owns ending it via :meth:`LeadSpan.finish`.
+
+    ``prompt`` is hashed, never recorded. The prompt embeds the lead's HubSpot
+    notes; ``outreach.input.ref`` plus ``outreach.input.sha256`` say *which*
+    record was read and *that* this is the text, which is everything a trace
+    needs and nothing a trace backend should hold.
+    """
+    active = tracer if tracer is not None else get_tracer()
+    attributes: dict[str, Any] = {
+        sc.LEAD_ID: lead_id,
+        sc.ACTION_TYPE: action_type,
+        sc.ACTION_PRIORITY: priority,
+        sc.RUN_ID: run_id,
+        sc.INPUT_REF: f"lead:{lead_id}",
+        sc.OPENINFERENCE_SPAN_KIND: sc.OPENINFERENCE_KIND_CHAIN,
+    }
+    _set_if(attributes, sc.INPUT_SHA256, sha256_of(prompt))
+    span = active.start_span(LEAD_SPAN_NAME, kind=SpanKind.INTERNAL, attributes=attributes)
+    return LeadSpan(span)
+
+
+def finish_lead(
+    lead: LeadSpan,
+    *,
+    run_id: str,
+    lead_id: str,
+    skipped: bool,
+    generated: bool,
+    needs_human: bool,
+    shape_problem_count: int = 0,
+    violation_count: int = 0,
+    output_text: str = "",
+    failure: BaseException | None = None,
+) -> None:
+    """Close a lead span from the facts the planner already has.
+
+    Everything derived — the six-state outcome, the output reference, the
+    digest — is derived *here*, so the planner's call site is a list of facts
+    about the lead and contains no telemetry decisions of its own. That is what
+    keeps the wiring in ``outreach.py`` to statements a rebase can move without
+    thinking about.
+    """
+    lead.finish(
+        needs_human=needs_human,
+        outcome=verify_outcome(
+            generated=generated,
+            skipped=skipped,
+            shape_problem_count=shape_problem_count,
+            violation_count=violation_count,
+        ),
+        violation_count=violation_count,
+        shape_problem_count=shape_problem_count,
+        output_ref=output_ref(run_id, lead_id) if generated else None,
+        output_sha256=sha256_of(output_text),
+        failure=failure,
+    )
+
+
+def output_ref(run_id: str, lead_id: str) -> str:
+    """Reference to the row this lead's work will produce.
+
+    Resolvable via ``OutreachAction.objects.get(trace_run_id=..., lead_id=...)``
+    and — the point — knowable *before* the row exists, so the lead span can
+    close on time instead of waiting for the run's single write.
+    """
+    return f"outreach_action:{run_id}:{lead_id}"
+
+
+def _add_run_usage(result: "LLMResult") -> None:
+    """Fold one call's usage into the enclosing run, if there is one."""
+    run = _current_run.get()
+    if run is not None:
+        run.add_usage(result.input_tokens, result.output_tokens)
+
+
 AttemptScope = Callable[[int], AbstractContextManager[Callable[["LLMResult"], None]]]
 
 
@@ -442,6 +833,9 @@ def provider_call_scope(
             set_status_on_exception=False,
         ) as span:
             _set_request_attributes(span, call, attempt)
+            lead = _current_lead.get()
+            if lead is not None:
+                lead.note_attempt()
             try:
                 yield recorded.append
             except BaseException as exc:
@@ -488,6 +882,11 @@ def provider_call_scope(
                     "success metrics",
                     lambda: _record_metrics(call, duration_s=duration, result=result),
                 )
+                if result is not None:
+                    # Folded into the run's totals through the ambient recorder
+                    # -- guarded like the rest, so a telemetry fault here cannot
+                    # fail a call the provider answered.
+                    _safely("run usage", lambda: _add_run_usage(result))
 
     return scope
 
@@ -501,11 +900,21 @@ def _reset_instruments_for_tests() -> None:
 
 
 __all__ = [
+    "AGENT_NAME",
     "INSTRUMENTATION_NAME",
     "INSTRUMENTATION_VERSION",
+    "LEAD_SPAN_NAME",
     "PROVIDER_NAMES",
+    "LeadSpan",
     "ProviderCall",
+    "RunRecorder",
     "error_type",
+    "finish_lead",
     "instruments",
+    "output_ref",
     "provider_call_scope",
+    "run_span",
+    "sha256_of",
+    "start_lead_span",
+    "verify_outcome",
 ]

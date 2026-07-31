@@ -17,6 +17,12 @@ from project.app.services.llm import get_llm_client
 
 MAX_COPY_TOKENS = 500
 
+# How many provider calls a run has in flight at once. One, because phase 3 is
+# still a serial loop; MUS-26 makes it an asyncio.gather and raises this. Named
+# rather than inlined because the run span records it (`outreach.concurrency.
+# max_in_flight`), and a per-lead latency reading is uninterpretable without it.
+MAX_IN_FLIGHT = 1
+
 # Schema version of the trace envelope produced by `explain()`
 # (CONTRACT-MUS-35.md §3.4). Bump only with a coordinated FE change.
 TRACE_SCHEMA_VERSION = 1
@@ -1336,11 +1342,20 @@ class CopyOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReviewOutcome:
-    """The three fields phase 4 decides and phase 5 writes."""
+    """The three fields phase 4 decides and phase 5 writes, plus its workings.
+
+    The two counts are not written to the database -- they are the reason phase 4
+    reached its verdict, which the lead span records (MUS-25). They are carried
+    rather than recomputed because recomputing them would mean running both
+    output gates a second time, and a second run of a fail-closed check is a
+    second chance to disagree with the decision already made.
+    """
 
     suggested_copy: str
     needs_human: bool
     further_action: str
+    shape_problem_count: int = 0
+    violation_count: int = 0
 
 
 def _build_work_item(lead, suppressed, open_keys, today):
@@ -1491,18 +1506,33 @@ def _review(item, outcome, level, today):
         suggested_copy=outcome.text,
         needs_human=True,
         further_action="\n\n".join(messages),
+        shape_problem_count=len(shape_problems),
+        violation_count=len(violations),
     )
 
 
 def plan_outreach():
     """Plan outreach for every lead: decide priority + action, generate copy,
-    persist OutreachAction rows, and return them sorted by priority."""
+    persist OutreachAction rows, and return them sorted by priority.
+
+    Traced end to end (MUS-25): one ``invoke_agent outreach_planner`` span for
+    the run, one ``plan_lead`` span per lead, and one ``chat {model}`` span per
+    HTTP attempt underneath. Every span statement below is a ``with`` block
+    delegating to :mod:`project.app.services.telemetry.genai` — no telemetry
+    decision is taken in this function, so the instrumentation neither
+    complicates the planner's own logic nor moves when the planner does.
+
+    With no OTLP endpoint configured the same statements run against the OTel
+    API's no-op provider and cost nothing, so there is no branch here to keep in
+    step.
+    """
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
     from django.db import transaction
 
     from project.app.models import DismissedOutreachKey, Lead, OutreachAction
     from project.app.services import queue_copy
+    from project.app.services.telemetry import genai
 
     # Copy grounding strictness (off | standard | strict); see verify.py.
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
@@ -1547,73 +1577,118 @@ def plan_outreach():
     # contradiction the snapshot exists to prevent.
     today = datetime.date.today()
 
-    # 1. read
-    leads = list(Lead.objects.all())
+    with genai.run_span(verify_level=level, max_in_flight=MAX_IN_FLIGHT) as run:
+        # 1. read
+        leads = list(Lead.objects.all())
 
-    # 2. classify, apply the skip rules, and build prompts (the last phase
-    #    before the provider call)
-    work = []
-    for lead in leads:
-        item = _build_work_item(lead, suppressed, open_keys, today)
-        if item is None:
-            continue
-        work.append(item)
-        # This lead now has an item in this run, so a later lead sharing the key
-        # (or a re-entrant run) skips it rather than duplicating.
-        open_keys.add(item.dedupe_key)
+        # 2. classify, apply the skip rules, and build prompts (the last phase
+        #    before the provider call)
+        work = []
+        for lead in leads:
+            item = _build_work_item(lead, suppressed, open_keys, today)
+            if item is None:
+                continue
+            work.append(item)
+            # This lead now has an item in this run, so a later lead sharing the
+            # key (or a re-entrant run) skips it rather than duplicating.
+            open_keys.add(item.dedupe_key)
 
-    # 3. call the provider -- no ORM beyond this point until phase 4
-    client, client_error = _resolve_client(work)
-    outcomes = [_generate_for(item, client, client_error) for item in work]
-
-    # 4. run the output gates
-    # strict=True on every zip: these lists cannot diverge today, but phase 3
-    # becomes an asyncio.gather downstream, and a silently truncated zip there
-    # would drop leads from the run without a trace.
-    reviews = [
-        _review(item, outcome, level, today) for item, outcome in zip(work, outcomes, strict=True)
-    ]
-
-    # 5. write. The two snapshots are computed FIRST, outside the transaction:
-    # `explain()` re-runs the whole rule engine and `build_verification()` walks
-    # `lead.events`, so leaving them inline would hold a write transaction open
-    # across several queries per lead for no atomicity benefit -- only the
-    # inserts need to be atomic.
-    #
-    # Atomic at all because the split already moved every write to after every
-    # provider call: an escape mid-run now means no rows rather than the first
-    # N-1, so it may as well be all-or-nothing on purpose instead of by accident.
-    snapshots = [
-        (
-            # Taken once at planning time and never recomputed: every relative
-            # figure in the trace ("28d since last contact") is only true as of
-            # `trace.today`, so recomputing at read time would silently
-            # contradict the `reason` prose persisted beside it (section 9.9).
-            explain(item.lead, today),
-            queue_copy.build_verification(
-                item.lead, review.suggested_copy, item.action_type, level=level, today=today
-            ),
-        )
-        for item, review in zip(work, reviews, strict=True)
-    ]
-    with transaction.atomic():
-        planned = [
-            OutreachAction.objects.create(
-                lead=item.lead,
-                priority=item.priority,
+        # A span per lead, opened here and closed in phase 4. It deliberately
+        # spans both phases: "how long did this lead take" is the question it
+        # exists to answer, and that answer starts at the provider call and ends
+        # at the verdict. The run owns them, so an escape between the two phases
+        # cannot leave one open (an unended span is never exported at all, so
+        # the symptom would be a lead silently missing from the trace).
+        lead_spans = [
+            run.start_lead(
+                lead_id=item.lead.id,
                 action_type=item.action_type,
-                reason=item.reason,
-                suggested_copy=review.suggested_copy,
-                needs_human=review.needs_human,
-                further_action=review.further_action,
-                dedupe_key=item.dedupe_key,
-                rule_trace=rule_trace,
-                verification=verification,
+                priority=item.priority,
+                prompt=item.prompt,
             )
-            for item, review, (rule_trace, verification) in zip(
-                work, reviews, snapshots, strict=True
-            )
+            for item in work
         ]
+
+        # 3. call the provider -- no ORM beyond this point until phase 4
+        client, client_error = _resolve_client(work)
+        outcomes = []
+        for item, lead_span in zip(work, lead_spans, strict=True):
+            with lead_span.active():
+                outcomes.append(_generate_for(item, client, client_error))
+
+        # 4. run the output gates
+        # strict=True on every zip: these lists cannot diverge today, but phase 3
+        # becomes an asyncio.gather downstream, and a silently truncated zip
+        # there would drop leads from the run without a trace.
+        reviews = []
+        for item, outcome, lead_span in zip(work, outcomes, lead_spans, strict=True):
+            with lead_span.active():
+                review = _review(item, outcome, level, today)
+            genai.finish_lead(
+                lead_span,
+                run_id=run.run_id,
+                lead_id=item.lead.id,
+                skipped=item.action_type == actions.UNKNOWN,
+                generated=outcome.error is None and bool(outcome.text),
+                needs_human=review.needs_human,
+                shape_problem_count=review.shape_problem_count,
+                violation_count=review.violation_count,
+                output_text=review.suggested_copy,
+                failure=outcome.error,
+            )
+            reviews.append(review)
+
+        run.finish(
+            lead_count=len(work),
+            needs_human_count=sum(1 for review in reviews if review.needs_human),
+        )
+
+        # 5. write. The two snapshots are computed FIRST, outside the
+        # transaction: `explain()` re-runs the whole rule engine and
+        # `build_verification()` walks `lead.events`, so leaving them inline
+        # would hold a write transaction open across several queries per lead
+        # for no atomicity benefit -- only the inserts need to be atomic.
+        #
+        # Atomic at all because the split already moved every write to after
+        # every provider call: an escape mid-run now means no rows rather than
+        # the first N-1, so it may as well be all-or-nothing on purpose instead
+        # of by accident.
+        snapshots = [
+            (
+                # Taken once at planning time and never recomputed: every
+                # relative figure in the trace ("28d since last contact") is only
+                # true as of `trace.today`, so recomputing at read time would
+                # silently contradict the `reason` prose persisted beside it
+                # (section 9.9).
+                explain(item.lead, today),
+                queue_copy.build_verification(
+                    item.lead, review.suggested_copy, item.action_type, level=level, today=today
+                ),
+            )
+            for item, review in zip(work, reviews, strict=True)
+        ]
+        with transaction.atomic():
+            planned = [
+                OutreachAction.objects.create(
+                    lead=item.lead,
+                    priority=item.priority,
+                    action_type=item.action_type,
+                    reason=item.reason,
+                    suggested_copy=review.suggested_copy,
+                    needs_human=review.needs_human,
+                    further_action=review.further_action,
+                    dedupe_key=item.dedupe_key,
+                    # Stamped so each row can be traced back to the run that
+                    # produced it -- and, in the other direction, so a lead span
+                    # can name the row it will produce before that row exists.
+                    trace_run_id=run.run_id,
+                    rule_trace=rule_trace,
+                    verification=verification,
+                )
+                for item, review, (rule_trace, verification) in zip(
+                    work, reviews, snapshots, strict=True
+                )
+            ]
 
     planned.sort(key=lambda a: a.priority)
     return planned
