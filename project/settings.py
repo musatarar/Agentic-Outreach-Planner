@@ -42,6 +42,28 @@ if _env_file.exists():
 #   off | standard (default) | strict. See project/app/services/verify.py.
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 
+# --- Planner concurrency, retries and timeouts (MUS-26) -----------------------
+# How the planner drives the provider during a run. Read here, validated and
+# handed to the service layer as frozen dataclasses by
+# project/app/services/llm/runtime.py -- nothing under services/llm/ reads
+# Django settings itself, so those modules stay importable without Django
+# configured (the rules eval and the retry unit tests rely on that).
+#
+# The four retry values duplicate the DEFAULT_* constants in
+# services/llm/runtime.py, which in turn re-export retry.py's. That duplication
+# is deliberate -- settings must not import app code at settings-load time --
+# and it is pinned by a test, so the two cannot drift apart silently.
+OUTREACH_MAX_IN_FLIGHT = int(os.environ.get("OUTREACH_MAX_IN_FLIGHT", "8"))
+OUTREACH_MAX_ATTEMPTS = int(os.environ.get("OUTREACH_MAX_ATTEMPTS", "4"))
+OUTREACH_INITIAL_BACKOFF_S = float(os.environ.get("OUTREACH_INITIAL_BACKOFF_S", "0.5"))
+OUTREACH_MAX_BACKOFF_S = float(os.environ.get("OUTREACH_MAX_BACKOFF_S", "30.0"))
+OUTREACH_BACKOFF_MULTIPLIER = float(os.environ.get("OUTREACH_BACKOFF_MULTIPLIER", "2.0"))
+# Two nested deadlines: one HTTP attempt, and the whole retry loop for one lead.
+# The per-lead bound is what stops a single lead holding a semaphore slot (and
+# therefore 1/N of the run's throughput) for the length of the retry budget.
+OUTREACH_REQUEST_TIMEOUT_S = float(os.environ.get("OUTREACH_REQUEST_TIMEOUT_S", "60.0"))
+OUTREACH_PER_LEAD_TIMEOUT_S = float(os.environ.get("OUTREACH_PER_LEAD_TIMEOUT_S", "150.0"))
+
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
 # above for local/demo convenience; production should set these directly.

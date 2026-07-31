@@ -134,6 +134,36 @@ short server-timed undo window — behind `/api/queue/*`. Three things in it are
   copy — so a re-run neither resurrects the recommendation nor pays for an LLM call to
   rediscover it. Undo inside the window revokes the suppression in the same transaction.
 
+### Planner run
+
+How hard a run drives the provider is deployment configuration, not product configuration, so
+it lives in the environment rather than in the DB-backed `LLMConfiguration` that selects the
+provider. All seven are optional; the defaults below are what you get with none of them set.
+
+| Variable | Default | What it bounds |
+|---|--:|---|
+| `OUTREACH_MAX_IN_FLIGHT` | `8` | Provider calls outstanding at once |
+| `OUTREACH_MAX_ATTEMPTS` | `4` | Total attempts per lead (`1` = no retry) |
+| `OUTREACH_INITIAL_BACKOFF_S` | `0.5` | First backoff ceiling |
+| `OUTREACH_MAX_BACKOFF_S` | `30.0` | Backoff ceiling, and the cap on an honoured `Retry-After` |
+| `OUTREACH_BACKOFF_MULTIPLIER` | `2.0` | Growth per attempt (must be ≥ 1) |
+| `OUTREACH_REQUEST_TIMEOUT_S` | `60.0` | One HTTP attempt |
+| `OUTREACH_PER_LEAD_TIMEOUT_S` | `150.0` | The whole retry loop for one lead |
+
+Backoff is AWS **full jitter** — `uniform(0, min(cap, initial × multiplier^n))` — not an
+exponential sequence with a small random nudge. Under concurrency the distinction is the whole
+point: with a fixed schedule, N workers that fail at the same moment retry at the same moment,
+forever, in lockstep. The same argument applies to a provider-supplied `Retry-After`, which is
+why it wins on magnitude but still gets proportional jitter added on top.
+
+The two timeouts are nested deliberately. The per-lead bound is the one that matters under
+concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
+retryable failures has to be given up on rather than waited out.
+
+Bad values are rejected with the offending environment variable named in the message —
+`OUTREACH_BACKOFF_MULTIPLIER must be at least 1, got 0.5.` rather than a `ValueError` about a
+dataclass field an operator has never heard of.
+
 The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
 (`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`
 alone runs the whole app — **no Node required** to demo or review.
