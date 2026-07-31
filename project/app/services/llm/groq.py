@@ -16,6 +16,15 @@ class GroqClient(OpenAICompatibleClient):
     provider_label = "Groq"
 
     def __init__(
-        self, model=DEFAULT_MODEL, default_max_tokens=500, timeout_s=DEFAULT_TIMEOUT_SECONDS
+        self,
+        model=DEFAULT_MODEL,
+        default_max_tokens=500,
+        api_key=None,
+        timeout_s=DEFAULT_TIMEOUT_SECONDS,
     ):
-        super().__init__(model=model, default_max_tokens=default_max_tokens, timeout_s=timeout_s)
+        super().__init__(
+            model=model,
+            default_max_tokens=default_max_tokens,
+            api_key=api_key,
+            timeout_s=timeout_s,
+        )

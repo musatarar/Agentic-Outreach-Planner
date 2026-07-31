@@ -1,4 +1,4 @@
-# Outreach Planner — Demo Guide
+# Locked In — Outreach Planner Demo Guide
 
 A tool that reads the agency pipeline (`leads.json` + `events.json`), decides who needs
 outreach today and why, and uses Claude (`claude-sonnet-4-6`) to draft personalized copy
@@ -12,7 +12,7 @@ per lead. AEs open one page each morning instead of digging through HubSpot and 
 
 # 2. Migrate and load the pipeline data (with the venv active)
 python manage.py migrate
-python scripts/populate_demo_data.py   # ingests 5 leads, 28 events
+python scripts/populate_demo_data.py   # ingests leads/events + seeds the LLM catalog
 ```
 
 ## Run the demo
@@ -55,6 +55,19 @@ budget, named clients like Pacific Rim Imports) — not generic templates.
   management lands next.
 
 ## API (the page is just a viewer over these)
+
+Since MUS-37 the API needs a session, so sign in first and reuse the cookie jar
+(`README.md` → "Signing in" for where the link comes from):
+
+```bash
+curl -c jar -X POST -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com"}' http://127.0.0.1:8000/api/auth/request-link/
+# copy the token out of the server log, then:
+curl -c jar -b jar -X POST -H 'Content-Type: application/json' \
+  -d '{"token":"<token>"}' http://127.0.0.1:8000/api/auth/consume/
+```
+
+Then add `-b jar` to each call below (and an `X-CSRFToken` header to the POST):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/outreach/run/   # run planner + generate copy

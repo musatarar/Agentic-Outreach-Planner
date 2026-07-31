@@ -3,8 +3,10 @@
 OpenAI (ChatGPT), DeepSeek, and Groq all expose the same
 ``POST {base_url}/chat/completions`` wire format, so one ``httpx``-based client
 covers all three. Subclasses set ``base_url``, ``api_key_env``, ``provider_name``
-and a default ``model``. The API key is read from the environment (never from
-config.toml).
+and a default ``model``. The API key comes from the explicit ``api_key`` passed
+in by the factory (:mod:`project.app.services.llm`), which resolves it from the
+database; ``api_key_env`` is read directly only as a fallback when ``api_key``
+is unset.
 
 Failures — transport, HTTP status, and unreadable response bodies alike — are
 translated into the shared taxonomy in :mod:`project.app.services.llm.errors`
@@ -36,8 +38,8 @@ from .base import (
 from .errors import LLMAuthError, LLMMalformedResponseError, map_httpx_error
 
 # Per-HTTP-attempt timeout. A constructor argument rather than a module
-# constant so MUS-26 only has to wire config.toml into the caller; the value is
-# unchanged from the constant it replaces.
+# constant so MUS-26 only has to wire Django settings into the caller; the value
+# is unchanged from the constant it replaces.
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 # Ways the documented response shape can betray us, all of which mean the same
@@ -61,16 +63,22 @@ class OpenAICompatibleClient(LLMClient):
     # Subclasses must override these.
     base_url: str
     api_key_env: str
-    # Our config.toml name for this provider ("groq", "chatgpt", ...), carried
-    # on LLMError.provider so a failure joins back to [llm.<name>]. Annotated
-    # rather than defaulted, like base_url above: a subclass that forgets it
-    # should fail loudly instead of tagging its errors with a provider name
-    # that matches no config section.
+    # Our configured name for this provider ("groq", "chatgpt", ...), carried
+    # on LLMError.provider so a failure joins back to the configured provider.
+    # Annotated rather than defaulted, like base_url above: a subclass that
+    # forgets it should fail loudly instead of tagging its errors with a
+    # provider name that matches no configuration.
     provider_name: str
     provider_label = "OpenAI-compatible"
 
-    def __init__(self, model, default_max_tokens=500, timeout_s=DEFAULT_TIMEOUT_SECONDS):
-        super().__init__(model=model, default_max_tokens=default_max_tokens)
+    def __init__(
+        self,
+        model,
+        default_max_tokens=500,
+        api_key=None,
+        timeout_s=DEFAULT_TIMEOUT_SECONDS,
+    ):
+        super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)
         self.timeout_s = timeout_s
         self._async_client = LoopBoundAsyncClient(
             # Connection limits are left at httpx's defaults (100 connections),
@@ -88,7 +96,9 @@ class OpenAICompatibleClient(LLMClient):
     # -- request construction (shared by both paths) ------------------------
 
     def _api_key(self):
-        api_key = os.environ.get(self.api_key_env)
+        # The explicit key resolved from the database wins; the provider's own
+        # env var is the fallback for a deployment that never saved one.
+        api_key = self.api_key or os.environ.get(self.api_key_env)
         if api_key:
             return api_key
         # LLMAuthError subclasses RuntimeError, so this raise keeps exactly the
@@ -115,7 +125,7 @@ class OpenAICompatibleClient(LLMClient):
 
     # -- the two call paths -------------------------------------------------
 
-    def generate(self, prompt, max_tokens=None) -> LLMResult:
+    def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         url, kwargs = self._request(prompt, max_tokens)
         # Times the provider call and nothing else. httpx.post is
         # non-streaming, so the body is fully read by the time it returns --
@@ -124,7 +134,11 @@ class OpenAICompatibleClient(LLMClient):
         # things under the same field name. See LLMResult.latency_s.
         started = time.perf_counter()
         try:
-            response = httpx.post(url, timeout=self.timeout_s, **kwargs)
+            response = httpx.post(
+                url,
+                timeout=timeout if timeout is not None else self.timeout_s,
+                **kwargs,
+            )
             latency_s = time.perf_counter() - started
             response.raise_for_status()
             data = response.json()
@@ -135,9 +149,12 @@ class OpenAICompatibleClient(LLMClient):
 
         return self._build_result(data, latency_s)
 
-    async def agenerate(self, prompt, max_tokens=None) -> LLMResult:
+    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         url, kwargs = self._request(prompt, max_tokens)
-        # The timeout lives on the AsyncClient, so it is not repeated here.
+        # The default timeout lives on the AsyncClient, so it is only repeated
+        # here when this one call is overriding it.
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         client = self._async_client.get()
         started = time.perf_counter()
         try:

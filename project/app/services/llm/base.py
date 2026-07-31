@@ -2,8 +2,9 @@
 
 Every provider adapter (Claude, ChatGPT, DeepSeek, Groq, ...) implements
 ``generate`` so the rest of the app can produce text without knowing which
-provider is configured. The active provider is chosen in ``config.toml`` and
-resolved by :func:`project.app.services.llm.get_llm_client`.
+provider is configured. The active provider/model/key are resolved from the
+database by :func:`project.app.services.llm.get_llm_client` (see
+:mod:`project.app.services.llm.config`).
 
 Adapters used to return a bare ``str``, which throws away everything the provider
 says *alongside* the text — how many tokens it charged us for, which model it
@@ -17,9 +18,9 @@ together would make a regression indistinguishable from a units change. The
 planner still takes the text-only path; MUS-26 moves it over when it makes copy
 generation concurrent.
 
-``complete()`` remains the text-only convenience wrapper, unchanged in name,
-signature and return type. It is the seam the whole test suite mocks, and it is
-still the right call for the majority of callers that only want the string.
+``complete()`` remains the text-only convenience wrapper, unchanged in name and
+return type. It is the seam the whole test suite mocks, and it is still the right
+call for the majority of callers that only want the string.
 """
 
 import asyncio
@@ -187,30 +188,36 @@ class LLMResult:
 class LLMClient(ABC):
     """Base class for a single LLM provider.
 
-    ``model`` and ``default_max_tokens`` come from the provider's section of
-    ``config.toml`` (see :mod:`project.app.services.llm.config`).
+    ``model`` and ``default_max_tokens`` come from the resolved configuration
+    (see :mod:`project.app.services.llm.config`). ``api_key`` is passed
+    explicitly by the factory that builds this client; a subclass falls back
+    to reading its own env var only when ``api_key`` is ``None``.
     """
 
-    # Our config.toml name for the provider ("groq", "claude", ...). Subclasses
-    # must set it; it rides on both LLMResult.provider and LLMError.provider, so
-    # a success and a failure are joinable back to the same [llm.<name>] block.
+    # Our configured provider name ("groq", "claude", ...). Subclasses must set
+    # it; it rides on both LLMResult.provider and LLMError.provider, so a success
+    # and a failure are joinable back to the same configured provider.
     provider_name: str
 
-    def __init__(self, model, default_max_tokens=500):
+    def __init__(self, model, default_max_tokens=500, api_key=None):
         self.model = model
         self.default_max_tokens = default_max_tokens
+        self.api_key = api_key
 
     @abstractmethod
-    def generate(self, prompt, max_tokens=None) -> LLMResult:
+    def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         """Call the provider once and return the full :class:`LLMResult`.
 
         ``max_tokens`` falls back to ``default_max_tokens`` when not supplied.
+        ``timeout`` (seconds) overrides the adapter's default per-attempt request
+        timeout for this single call when supplied -- used by the config "test
+        connection" endpoint to fail fast instead of hanging.
         Failures are raised as one of the typed errors in
         :mod:`project.app.services.llm.errors`.
         """
         raise NotImplementedError
 
-    async def agenerate(self, prompt, max_tokens=None) -> LLMResult:
+    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         """Async counterpart of :meth:`generate`.
 
         Declared on the interface from the start so the concurrent planner has a
@@ -224,18 +231,18 @@ class LLMClient(ABC):
             f"{type(self).__name__} has no native async implementation; call generate() instead."
         )
 
-    def complete(self, prompt, max_tokens=None) -> str:
+    def complete(self, prompt, max_tokens=None, timeout=None) -> str:
         """Return just the model's text completion for a single user ``prompt``.
 
-        The original interface, preserved exactly — sync, same name, plain
-        ``str``. Most callers want the string and nothing else, and this is the
-        seam the test suite mocks.
+        The original interface, preserved — sync, same name, plain ``str``. Most
+        callers want the string and nothing else, and this is the seam the test
+        suite mocks. ``timeout`` is forwarded to :meth:`generate`.
         """
-        return self.generate(prompt, max_tokens=max_tokens).text
+        return self.generate(prompt, max_tokens=max_tokens, timeout=timeout).text
 
-    async def acomplete(self, prompt, max_tokens=None) -> str:
+    async def acomplete(self, prompt, max_tokens=None, timeout=None) -> str:
         """Async counterpart of :meth:`complete`."""
-        result = await self.agenerate(prompt, max_tokens=max_tokens)
+        result = await self.agenerate(prompt, max_tokens=max_tokens, timeout=timeout)
         return result.text
 
     async def aclose(self) -> None:

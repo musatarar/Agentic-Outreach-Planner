@@ -7,7 +7,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils.timezone import is_aware
 
-from project.app.models import Event, Lead, OutreachAction
+from project.app.models import Event, Lead, LLMModel, LLMProvider, OutreachAction
 from project.app.services.outreach import plan_outreach
 
 
@@ -65,6 +65,32 @@ class IngestDataCommandTests(TestCase):
         self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
         self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
         self.assertEqual(Lead.objects.get(id="lead_001").events.count(), 8)
+
+
+class SeedLLMCatalogCommandTests(TestCase):
+    """Catalog seed command (MUS-32) loads all 4 providers and is idempotent."""
+
+    def test_seeds_all_providers_and_models(self):
+        call_command("seed_llm_catalog")
+
+        self.assertEqual(
+            set(LLMProvider.objects.values_list("key", flat=True)),
+            {"claude", "chatgpt", "deepseek", "groq"},
+        )
+        self.assertGreater(LLMModel.objects.filter(provider_id="claude").count(), 0)
+        self.assertGreater(LLMModel.objects.filter(provider_id="groq").count(), 0)
+
+        claude = LLMProvider.objects.get(key="claude")
+        self.assertEqual(claude.api_key_url, "https://console.anthropic.com/settings/keys")
+
+    def test_idempotent_updates_in_place_without_duplicates(self):
+        call_command("seed_llm_catalog")
+        first_count = LLMModel.objects.count()
+
+        call_command("seed_llm_catalog")
+
+        self.assertEqual(LLMProvider.objects.count(), 4)
+        self.assertEqual(LLMModel.objects.count(), first_count)
 
 
 class ModelBasicsTests(TestCase):
@@ -155,7 +181,7 @@ class PlanOutreachGroundingTests(TestCase):
 
     def test_contradicted_copy_is_flagged_and_draft_kept(self):
         self._make_lead(deals_closed=4)
-        bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Eventual team"
+        bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Locked In team"
         with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
             planned = plan_outreach()
 
@@ -180,7 +206,7 @@ class PlanOutreachGroundingTests(TestCase):
             "happy to walk your team through the final steps personally and answer "
             "anything that came up afterward. Would you have time for a quick call "
             "this week to wrap up onboarding?\n\n"
-            "Best,\nThe Eventual team"
+            "Best,\nThe Locked In team"
         )
         with patch("project.app.services.outreach.generate_copy", return_value=good_copy):
             plan_outreach()
@@ -202,11 +228,11 @@ class PlanOutreachGroundingTests(TestCase):
             "Your 47 closed deals this quarter are genuinely incredible, and everyone "
             "on our side has noticed how quickly Summit Risk Advisors is moving. I "
             "wanted to write personally to say how great it has been watching your team "
-            "put Premium Lock to work for your clients across the state. There is real "
+            "put Sure Lock to work for your clients across the state. There is real "
             "momentum here, and I would be glad to help you keep it building with "
             "whatever comes next for the agency. Would you be open to a quick call this "
             "week to talk through what is ahead?\n\n"
-            "Best,\nThe Eventual team"
+            "Best,\nThe Locked In team"
         )
         with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
             plan_outreach()

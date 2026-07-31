@@ -15,9 +15,9 @@ Design constraints (see evals/README.md):
   The Inspect task model is ``mockllm/model`` so the harness needs no key for
   Inspect itself.
 * **LLM-agnostic.** No provider is hardcoded anywhere. Generation uses the
-  provider selected in config.toml (or an explicit ``--provider``); the judge
-  uses the same layer (config ``[llm.judge]`` or a fallback to the generation
-  provider).
+  active database-configured provider (or an explicit ``--provider``); the
+  judge uses the same layer (an explicit ``--judge-provider``, or a fallback
+  to the generation provider).
 * **Only the configured provider runs.** One provider per invocation.
 
 Run standalone via Inspect (``inspect eval evals/copy_eval.py -T provider=groq``)
@@ -67,13 +67,14 @@ _DIM_SCORE_RE = {
 
 
 def active_provider():
-    """The generation provider selected in config.toml."""
+    """The currently active, database-configured generation provider."""
     return llm_config.get_provider()
 
 
 def resolve_judge_provider(gen_provider):
-    """Judge provider: config ``[llm.judge].provider`` if set, else the
-    generation provider (so a run never calls an unconfigured provider)."""
+    """Judge provider when the caller (see ``run_copy_eval.py``'s
+    ``--judge-provider`` flag) didn't pick one explicitly: falls back to the
+    generation provider, so a run never calls an unconfigured provider."""
     judge_cfg = llm_config.get_provider_config("judge")
     return judge_cfg.get("provider") or gen_provider
 

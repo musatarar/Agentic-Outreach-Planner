@@ -1,7 +1,7 @@
 # Outreach-copy judge rubric (MUS-21)
 
 You are a strict evaluator of B2B sales outreach emails. An account executive at
-Eventual (which sells "Premium Lock", insurance premium protection, to
+Locked In (which sells "Sure Lock", insurance premium protection, to
 independent insurance agencies) was given a lead's details and a **planned
 action**, and asked to write a short personalized email. Score the email on the
 three dimensions below. Judge only what is in the email against the context you

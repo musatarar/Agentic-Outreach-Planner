@@ -1,0 +1,20 @@
+<!-- The Locked In mark (MUS-44). Geometry mirrors
+     frontend/src/components/BrandMark.tsx; the colours are hardcoded because a
+     favicon renders outside the document and cannot read design tokens.
+     The brackets flip with the OS theme so the mark stays visible against a
+     dark browser chrome. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <style>
+    @media (prefers-color-scheme: dark) { .bracket { stroke: #f2f2ef; } }
+  </style>
+  <!-- stroke is a presentation attribute, not a rule, so the brackets still
+       render in a favicon renderer that ignores <style> entirely. CSS wins over
+       presentation attributes, so the dark-mode rule above still overrides it. -->
+  <g class="bracket" fill="none" stroke="#1a1a18" stroke-width="2.75" stroke-linecap="square">
+    <path d="M5.375 12.5V5.375H12.5" />
+    <path d="M19.5 5.375h7.125V12.5" />
+    <path d="M26.625 19.5v7.125H19.5" />
+    <path d="M12.5 26.625H5.375V19.5" />
+  </g>
+  <rect x="14.75" y="14.75" width="2.5" height="2.5" fill="#e8452c" />
+</svg>

@@ -1,0 +1,577 @@
+/* /done — MUS-41. Imported once, from pages/DonePage.tsx; Vite folds it into
+   the single assets/index.css alongside styles.css.
+
+   Rules this file lives by (CONTRACT §7):
+     - Tokens only. No hex literal, no raw colour, anywhere below.
+     - Type discipline: mono = machine output (timestamps, counts, money,
+       countdowns); sans = chrome. There is no generated prose on this page, so
+       --font-serif does not appear here at all.
+     - Red and amber belong to the priority ramp; green/red belong to the
+       verification underlines. Neither ramp is a status ramp, so status here is
+       a lightness ramp built from --color-status-*.
+     - The accent is the active row and the one primary button. /done has
+       neither, so it spends no accent. */
+
+.done-page {
+  padding-top: var(--space-5);
+  padding-bottom: var(--space-8);
+}
+
+/* ---- The strip under the page title -------------------------------------
+   The date comes from DoneResponse.date, computed by the server in
+   TRIAGE_TIMEZONE (CONTRACT §9.5). The zone is printed next to it so a
+   reviewer in another zone can see which clock the page is keeping. */
+
+.done-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.done-summary__date {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.done-summary__zone {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+  letter-spacing: var(--tracking-normal);
+}
+
+.done-summary__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.done-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--border-width-hair) solid var(--color-border-subtle);
+  background: var(--color-surface-sunken);
+}
+
+.done-count__n {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.done-count__label {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--color-text-subtle);
+}
+
+/* ---- Day grouping -------------------------------------------------------
+   The endpoint returns today only, so the heading is suppressed for a single
+   group rather than repeating the date that is already in the page header.
+   The moment the range widens, the headings appear on their own. */
+
+.done-day + .done-day {
+  margin-top: var(--space-6);
+}
+
+.done-day__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: var(--border-width-hair) solid var(--color-border);
+}
+
+.done-day__label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.done-day__key {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+}
+
+.done-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ---- One actioned row ---------------------------------------------------
+   Left rule carries the status: solid for approved, a hairline for snoozed,
+   nothing at all for dismissed. Dismissed rows are archived, not pending, so
+   they sit back — no fill, subtle text, no rule. */
+
+.done-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: var(--border-width-hair) solid var(--color-border-subtle);
+  border-left: var(--border-width-thick) solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.done-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.done-row--approved {
+  border-left-color: var(--color-status-approved-bg);
+}
+
+.done-row--snoozed {
+  border-left-color: var(--color-border-strong);
+}
+
+.done-row--dismissed {
+  background: var(--color-bg-subtle);
+  border-color: var(--color-border-subtle);
+  border-left-color: var(--color-border-subtle);
+}
+
+.done-row--dismissed:hover {
+  background: var(--color-surface-sunken);
+}
+
+.done-row__status {
+  padding-top: var(--space-1);
+}
+
+.done-row__body {
+  min-width: 0;
+}
+
+.done-row__who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  line-height: var(--leading-snug);
+}
+
+.done-row__contact {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.done-row__agency {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.done-row__action {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  line-height: var(--leading-snug);
+}
+
+.done-row__outcome {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  line-height: var(--leading-snug);
+}
+
+.done-row--dismissed .done-row__contact {
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+}
+
+.done-row--dismissed .done-row__agency,
+.done-row--dismissed .done-row__action,
+.done-row--dismissed .done-row__outcome {
+  color: var(--color-text-subtle);
+}
+
+.done-row__aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.done-row__time {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- Row actions: copy again, undo, un-snooze ---------------------------
+   The countdown is mono because it is machine output, tabular so the digits
+   do not shuffle as it ticks, and fixed-width so the row never reflows on the
+   9:59 -> 10:00 style boundary. Urgency under a minute is carried by weight,
+   never by colour: red and amber belong to the priority ramp and nothing else
+   may borrow them. */
+
+.done-row__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.done-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.done-undo__countdown {
+  min-width: 3ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-subtle);
+}
+
+.done-undo__countdown--urgent {
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-muted);
+}
+
+.done-undo__closed {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+  white-space: nowrap;
+}
+
+.done-row__error {
+  margin-top: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: var(--border-width-thick) solid var(--color-border-strong);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  line-height: var(--leading-snug);
+}
+
+/* ---- "That went back to your inbox" -------------------------------------
+   Undo returns an item to its position in /inbox, not to /done, so the one
+   thing this banner owes the user is a way there. */
+
+.done-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-raised);
+  border: var(--border-width-hair) solid var(--color-border);
+  border-left: var(--border-width-thick) solid var(--color-status-approved-bg);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.done-banner__text {
+  flex: 1 1 20rem;
+}
+
+.done-banner__link {
+  color: var(--color-accent);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.done-banner__link:hover {
+  text-decoration: underline;
+}
+
+.done-banner__dismiss {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
+}
+
+/* ---- Page-level states -------------------------------------------------
+   Deliberately not .error-message: that class is built from the
+   --color-danger aliases, and red on this surface would compete with the
+   priority ramp. Weight and a strong rule carry the emphasis instead. */
+
+.done-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-sunken);
+  border: var(--border-width-hair) solid var(--color-border);
+  border-left: var(--border-width-thick) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+/* ---- "Nothing done yet today" ------------------------------------------
+   The day has not started. Not a failure, not a celebration — quiet, with one
+   primary button and the shortcuts someone will need on the screen they are
+   about to open. */
+
+.done-blank {
+  max-width: var(--card-max-width);
+}
+
+.done-blank__eyebrow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-text-subtle);
+}
+
+.done-blank__zone {
+  opacity: 0.7;
+}
+
+.done-blank__headline {
+  margin-top: var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
+}
+
+.done-blank__body {
+  margin-top: var(--space-3);
+  max-width: var(--prose-measure);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  line-height: var(--leading-relaxed);
+}
+
+.done-blank__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.done-blank__hints {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.done-blank__hint-label {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--color-text-subtle);
+  margin-right: var(--space-2);
+}
+
+/* ---- "Queue cleared" ----------------------------------------------------
+   The payoff. It reuses the status-approved pair at full page scale, which
+   inverts the panel: near-black on the canvas in light mode, near-white in
+   dark. That pair already means "resolved" on every approved chip in the app,
+   so the loudest screen in the product introduces no new colour, spends none
+   of the accent budget, and themes for free.
+
+   Everything inside is currentColor at some opacity, which is why the panel
+   can invert wholesale without a single per-theme override. */
+
+.done-hero {
+  margin-bottom: var(--space-6);
+  padding: var(--space-7) var(--space-6);
+  background: var(--color-status-approved-bg);
+  color: var(--color-status-approved-fg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.done-hero__eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  opacity: 0.65;
+}
+
+.done-hero__headline {
+  margin-top: var(--space-3);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+.done-hero__subline {
+  margin-top: var(--space-2);
+  max-width: var(--prose-measure);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  opacity: 0.75;
+}
+
+/* Proportional, not decorative: the widths are the counts. Approved is the
+   most opaque because approved is the loudest outcome. */
+
+.done-hero__bar {
+  display: flex;
+  gap: var(--border-width-thick);
+  height: var(--space-2);
+  margin-top: var(--space-6);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.done-hero__seg {
+  min-width: var(--space-1);
+  background: currentColor;
+}
+
+.done-hero__seg--approved { opacity: 1; }
+.done-hero__seg--snoozed { opacity: 0.45; }
+.done-hero__seg--dismissed { opacity: 0.2; }
+
+.done-hero__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+}
+
+.done-hero__stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-5);
+}
+
+.done-hero__stat:first-child {
+  padding-left: 0;
+}
+
+/* A hairline rule that inherits the inverted foreground, so it needs no token
+   of its own and no dark-mode override. */
+.done-hero__stat + .done-hero__stat::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--border-width-hair);
+  background: currentColor;
+  opacity: 0.2;
+}
+
+.done-hero__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+.done-hero__label {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  opacity: 0.7;
+}
+
+.done-hero__sub {
+  min-height: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  opacity: 0.5;
+}
+
+.done-hero__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: var(--border-width-hair) solid currentColor;
+  font-size: var(--text-xs);
+  opacity: 0.7;
+}
+
+.done-hero__zone {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  opacity: 0.75;
+}
+
+.done-hero__note {
+  margin-left: auto;
+}
+
+.done-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 40rem) {
+  .done-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .done-row__aside {
+    grid-column: 2;
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .done-hero {
+    padding: var(--space-6) var(--space-5);
+  }
+
+  .done-hero__headline {
+    font-size: var(--text-xl);
+  }
+
+  /* Stacked tiles: a left rule would read as an indent, not a divider. */
+  .done-hero__stat {
+    padding-left: 0;
+  }
+
+  .done-hero__stat + .done-hero__stat::before {
+    display: none;
+  }
+
+  .done-hero__note {
+    margin-left: 0;
+  }
+}

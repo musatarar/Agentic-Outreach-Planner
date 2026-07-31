@@ -1,7 +1,8 @@
 """Provider-agnostic LLM layer.
 
-The active provider is chosen in ``config.toml``. Call :func:`get_llm_client`
-to obtain the configured adapter; all adapters expose the same
+The active provider/model/key are resolved from the database (see
+:mod:`project.app.services.llm.config`). Call :func:`get_llm_client` to
+obtain the configured adapter; all adapters expose the same
 :meth:`~project.app.services.llm.base.LLMClient.complete` interface.
 
 To add a provider: implement an :class:`LLMClient` subclass and register it in
@@ -49,7 +50,16 @@ _REGISTRY = {
 
 
 @lru_cache(maxsize=None)
-def _build_client(provider):
+def _build_client(provider, model, max_tokens, api_key):
+    """Construct and cache a client for this exact (provider, model,
+    max_tokens, api_key) tuple.
+
+    Keying the cache on the resolved api_key (not just ``provider``) is what
+    fixes the stale-client bug: saving a new configuration (different model,
+    max_tokens, or key) changes the cache key, so the next call builds a
+    fresh client instead of silently reusing one built under the old config.
+    A bare provider-string key would keep serving the old client forever.
+    """
     try:
         client_cls = _REGISTRY[provider]
     except KeyError:
@@ -57,29 +67,36 @@ def _build_client(provider):
             f"Unknown LLM provider '{provider}'. Valid options: {', '.join(sorted(_REGISTRY))}."
         )
 
-    provider_cfg = config.get_provider_config(provider)
-    kwargs = {}
-    if "model" in provider_cfg:
-        kwargs["model"] = provider_cfg["model"]
-    if "max_tokens" in provider_cfg:
-        kwargs["default_max_tokens"] = provider_cfg["max_tokens"]
+    kwargs = {"api_key": api_key}
+    if model is not None:
+        kwargs["model"] = model
+    if max_tokens is not None:
+        kwargs["default_max_tokens"] = max_tokens
     return client_cls(**kwargs)
 
 
+def _resolve_build_args(provider):
+    provider_cfg = config.get_provider_config(provider)
+    model = provider_cfg.get("model")
+    max_tokens = provider_cfg.get("max_tokens")
+    api_key, _key_source = config.resolve_active_key(provider)
+    return provider, model, max_tokens, api_key
+
+
 def get_llm_client():
-    """Return the LLM client for the provider named in ``config.toml``."""
-    return _build_client(config.get_provider())
+    """Return the LLM client for the currently active provider."""
+    return _build_client(*_resolve_build_args(config.get_provider()))
 
 
 def build_client(provider):
-    """Return the LLM client for an explicitly named configured provider.
+    """Return the LLM client for an explicitly named provider.
 
-    Like :func:`get_llm_client`, but selects ``provider`` (which must have a
-    ``[llm.<provider>]`` section in ``config.toml``) instead of the active one.
-    Used by the copy eval harness to score a chosen provider without mutating
-    ``config.toml``; an unknown name raises ``ValueError``.
+    Like :func:`get_llm_client`, but selects ``provider`` instead of the
+    active one -- used by the copy eval harness to score a chosen provider
+    without changing the saved active configuration. An unknown name raises
+    ``ValueError``.
     """
-    return _build_client(provider)
+    return _build_client(*_resolve_build_args(provider))
 
 
 __all__ = [

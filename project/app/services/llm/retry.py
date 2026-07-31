@@ -53,8 +53,8 @@ from .errors import LLMError
 T = TypeVar("T")
 
 # Defaults, used when a caller passes no policy. MUS-26 makes these
-# configurable via config.toml; until then this dataclass is the single
-# definition and callers override per call site.
+# configurable via Django settings read from env; until then this dataclass is
+# the single definition and callers override per call site.
 DEFAULT_MAX_ATTEMPTS = 4
 DEFAULT_INITIAL_BACKOFF_S = 0.5
 DEFAULT_MAX_BACKOFF_S = 30.0

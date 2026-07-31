@@ -8,12 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       provider:
-        description: "Generation provider (must have a [llm.<provider>] block in config.toml)"
+        description: "Generation provider (must be seeded in the LLM catalog)"
         type: choice
         default: groq
         options: [groq, claude, chatgpt, deepseek]
       judge_provider:
-        description: "Judge provider (blank = config [llm.judge] or the generation provider)"
+        description: "Judge provider (blank = the generation provider)"
         type: string
         default: ""
       update_baseline:
@@ -25,7 +25,7 @@ on:
         type: string
         default: ""
   schedule:
-    # 07:00 UTC nightly — gates the active provider (config.toml) against the baseline.
+    # 07:00 UTC nightly — gates the active database-configured provider against the baseline.
     - cron: "0 7 * * *"
 
 jobs:
@@ -47,6 +47,18 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
+
+      - name: Migrate + seed the LLM catalog
+        # The provider/model catalog and active-provider resolution are now
+        # database-backed (MUS-32) rather than read from a committed
+        # config.toml, so this ephemeral runner needs its own migrated +
+        # seeded SQLite DB before evals/run_copy_eval.py can resolve a
+        # provider at all. No LLM_KEY_ENCRYPTION_KEY needed here -- no key is
+        # ever saved to LLMConfiguration; providers use their env var secrets
+        # above (key_source="environment").
+        run: |
+          python manage.py migrate
+          python manage.py seed_llm_catalog
 
       - name: Run copy eval
         run: |

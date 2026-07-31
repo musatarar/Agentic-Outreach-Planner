@@ -28,18 +28,15 @@ if _env_file.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-# LLM provider keys. The active provider is selected in config.toml; each
-# adapter (project/app/services/llm/) reads its key from the environment:
-#   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, normalized below)
+# LLM provider/model/key selection lives in the database (LLMConfiguration,
+# see project/app/models.py), managed via the /api/llm/* endpoints. Each
+# adapter (project/app/services/llm/) is handed its key explicitly rather than
+# reading the environment itself; the env vars below remain the fallback when
+# no key is stored in the DB (see project/app/services/llm/config.py):
+#   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, aliased in config.py)
 #   chatgpt  -> OPENAI_API_KEY
 #   deepseek -> DEEPSEEK_API_KEY
 #   groq     -> GROQ_API_KEY   (free tier -- https://console.groq.com)
-# Keys stay in .env; config.toml never holds secrets.
-
-# The anthropic SDK reads ANTHROPIC_API_KEY; the .env uses CLAUDE_API_KEY
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY", "")
-if ANTHROPIC_API_KEY:
-    os.environ.setdefault("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
 
 # Grounding verifier strictness for generated outreach copy (MUS-22):
 #   off | standard (default) | strict. See project/app/services/verify.py.
@@ -166,3 +163,55 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# --- Magic-link auth (MUS-37) -------------------------------------------------
+LOGIN_ALLOWED_EMAILS = {
+    e.strip().lower() for e in os.environ.get("LOGIN_ALLOWED_EMAILS", "").split(",") if e.strip()
+}
+LOGIN_LINK_DELIVERY = os.environ.get("LOGIN_LINK_DELIVERY", "console")  # console | email
+LOGIN_TOKEN_TTL_SECONDS = int(os.environ.get("LOGIN_TOKEN_TTL_SECONDS", "900"))
+LOGIN_LINK_BASE_URL = os.environ.get("LOGIN_LINK_BASE_URL", "http://127.0.0.1:8000")
+LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
+LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
+LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "project.app.authentication.SessionAuthenticationWith401",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "EXCEPTION_HANDLER": "project.app.exceptions.contract_exception_handler",
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_request_ip": LOGIN_RATE_LIMIT_IP,
+        "auth_consume_ip": "60/hour",
+        "queue_verify": "120/min",
+    },
+}
+
+# Console delivery of the sign-in link is the demo path, which means the link
+# has to actually reach the server log. Django's default logging attaches a
+# handler to the `django` logger only, so an INFO record from `project.app`
+# falls through to logging's last-resort handler (WARNING and above) and is
+# silently dropped -- `docker compose up` would print nothing to paste.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {
+        "project.app": {
+            "handlers": ["console"],
+            "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+        },
+    },
+}
+
+# --- Triage queue (MUS-39) ----------------------------------------------------
+TRIAGE_UNDO_WINDOW_SECONDS = int(os.environ.get("TRIAGE_UNDO_WINDOW_SECONDS", "300"))
+TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS = int(
+    os.environ.get("TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS", "14")
+)
+TRIAGE_TIMEZONE = os.environ.get("TRIAGE_TIMEZONE", "UTC")

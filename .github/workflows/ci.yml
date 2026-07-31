@@ -38,6 +38,30 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: mypy project/app/services/
 
+  frontend:
+    name: Frontend (typecheck, tests, bundle freshness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      # The React bundle is committed and served by Django with no Node in the
+      # image, so a stale bundle means the app serves old code while the new
+      # source sits in the repo looking merged. Nothing else catches that.
+      - name: Fail if the committed bundle is stale
+        run: git diff --exit-code -- project/app/static/frontend/
+
   test:
     name: Test (py${{ matrix.python-version }}, ${{ matrix.database }})
     runs-on: ubuntu-latest
@@ -73,12 +97,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -r requirements-dev.txt
+      - name: Check for missing migrations
+        run: |
+          # Same dance as the test step below -- this command runs Django's
+          # system checks, which touch the database, so an empty DATABASE_URL
+          # fails it on the sqlite leg before it ever looks at a migration.
+          [ -n "$DATABASE_URL" ] || unset DATABASE_URL
+          python manage.py makemigrations --check --dry-run
       - name: Run tests with coverage
         run: |
           # dj_database_url treats a *present-but-empty* DATABASE_URL as
           # malformed (not "unset"), so drop it for the sqlite leg rather
           # than leaving it set to "".
-          [ -z "$DATABASE_URL" ] && unset DATABASE_URL
+          [ -n "$DATABASE_URL" ] || unset DATABASE_URL
           coverage run manage.py test project.app
           coverage report
 

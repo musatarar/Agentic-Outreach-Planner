@@ -1,8 +1,10 @@
 """Anthropic (Claude) adapter.
 
-Wraps the official ``anthropic`` SDK. The API key is read from the environment
-by the SDK (``ANTHROPIC_API_KEY``), exactly as the original ``generate_copy``
-implementation did.
+Wraps the official ``anthropic`` SDK. Both SDK clients are built once, in
+``__init__`` -- not per call -- using the explicit ``api_key`` passed in by the
+factory (:mod:`project.app.services.llm`), which resolves it from the database
+or the environment; when ``api_key`` is falsy the SDK falls back to its own
+``ANTHROPIC_API_KEY`` lookup.
 
 Every SDK exception is translated into the shared taxonomy in
 :mod:`project.app.services.llm.errors` before it leaves this module, so callers
@@ -24,7 +26,10 @@ nothing. It stays on until MUS-26 moves the planner onto the async path, at
 which point this asymmetry disappears on its own.
 
 Both clients get an explicit ``timeout``: the SDK default is a 600-second read
-timeout, which is not a bound anyone would choose for a 500-token completion.
+timeout, which is not a bound anyone would choose for a 500-token completion. A
+caller can tighten it for one call by passing ``timeout=`` to ``generate`` /
+``complete``, which rides on the request rather than the client -- that is what
+the config "test connection" endpoint uses to fail fast instead of hanging.
 """
 
 import time
@@ -48,38 +53,51 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Per-HTTP-attempt timeout. Passed explicitly rather than left to the SDK
 # default so both providers time out on the same schedule; MUS-26 feeds it from
-# config.toml and only has to change the caller, not this module.
+# Django settings and only has to change the caller, not this module.
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 
 class ClaudeClient(LLMClient):
-    # Our config.toml name for this provider (not the vendor's). Carried on
+    # Our configured name for this provider (not the vendor's). Carried on
     # LLMResult.provider and LLMError.provider so both a success and a failure
-    # can be joined back to [llm.<name>].
+    # can be joined back to the configured provider.
     provider_name = "claude"
 
     def __init__(
         self,
         model=DEFAULT_MODEL,
         default_max_tokens=500,
+        api_key=None,
         timeout_s=DEFAULT_TIMEOUT_SECONDS,
     ):
-        super().__init__(model=model, default_max_tokens=default_max_tokens)
+        super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)
         self.timeout_s = timeout_s
+        # Built once, here, rather than per call. ``api_key or None`` is what
+        # hands an unset key back to the SDK's own ANTHROPIC_API_KEY lookup --
+        # an empty string would be taken as a real (invalid) credential.
+        self._client = anthropic.Anthropic(api_key=api_key or None, timeout=self.timeout_s)
         self._async_client = LoopBoundAsyncClient(
             # max_retries=0: llm/retry.py owns the budget on this path.
-            factory=lambda: anthropic.AsyncAnthropic(max_retries=0, timeout=self.timeout_s),
+            factory=lambda: anthropic.AsyncAnthropic(
+                api_key=self.api_key or None, max_retries=0, timeout=self.timeout_s
+            ),
             closer=lambda client: client.close(),
         )
 
     # -- request construction (shared by both paths) ------------------------
 
-    def _request_kwargs(self, prompt, max_tokens):
-        return {
+    def _request_kwargs(self, prompt, max_tokens, timeout):
+        kwargs = {
             "model": self.model,
             "max_tokens": max_tokens or self.default_max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
+        # Per-request override only when asked for: passing it unconditionally
+        # would override the client-level timeout with None on every ordinary
+        # call, restoring the SDK's 600-second default by accident.
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return kwargs
 
     def _check_credentials(self, client):
         """Fail typed when the SDK could not resolve a credential.
@@ -115,10 +133,10 @@ class ClaudeClient(LLMClient):
 
     # -- the two call paths -------------------------------------------------
 
-    def generate(self, prompt, max_tokens=None) -> LLMResult:
-        # max_retries deliberately left at the SDK default here -- see the
-        # module docstring. Nothing wraps this path in retries yet.
-        client = anthropic.Anthropic(timeout=self.timeout_s)
+    def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
+        # max_retries deliberately left at the SDK default on the sync client --
+        # see the module docstring. Nothing wraps this path in retries yet.
+        client = self._client
         self._check_credentials(client)
 
         # Times the provider call and nothing else -- not our response parsing,
@@ -126,20 +144,22 @@ class ClaudeClient(LLMClient):
         # LLMResult.latency_s.
         started = time.perf_counter()
         try:
-            response = client.messages.create(**self._request_kwargs(prompt, max_tokens))
+            response = client.messages.create(**self._request_kwargs(prompt, max_tokens, timeout))
         except (anthropic.AnthropicError, httpx.HTTPError) as exc:
             raise self._mapped(exc, started) from exc
         latency_s = time.perf_counter() - started
 
         return self._build_result(response, latency_s)
 
-    async def agenerate(self, prompt, max_tokens=None) -> LLMResult:
+    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         client = self._async_client.get()
         self._check_credentials(client)
 
         started = time.perf_counter()
         try:
-            response = await client.messages.create(**self._request_kwargs(prompt, max_tokens))
+            response = await client.messages.create(
+                **self._request_kwargs(prompt, max_tokens, timeout)
+            )
         except (anthropic.AnthropicError, httpx.HTTPError) as exc:
             raise self._mapped(exc, started) from exc
         latency_s = time.perf_counter() - started

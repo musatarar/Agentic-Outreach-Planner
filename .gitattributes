@@ -1,0 +1,7 @@
+# The committed React bundle is generated (frontend/ is the source of truth).
+# -diff keeps minified output out of reviews; -merge makes git report a plain
+# conflict instead of splicing <<<<<<< markers into minified JS, which would
+# ship a syntactically broken bundle that nothing catches until a browser
+# loads it. See CONTRACT-MUS-35 §8.2.
+project/app/static/frontend/assets/index.js   -diff -merge linguist-generated
+project/app/static/frontend/assets/index.css  -diff -merge linguist-generated

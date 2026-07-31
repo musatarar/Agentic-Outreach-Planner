@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { errorMessage } from '../api/client';
-import { fetchOutreach, runOutreachPlan } from '../api/endpoints';
-import type { OutreachAction } from '../api/types';
+import { fetchLLMConfig, fetchOutreach, runOutreachPlan } from '../api/endpoints';
+import type { LLMConfig, OutreachAction } from '../api/types';
 import { CopyButton } from '../components/CopyButton';
 import { ErrorMessage } from '../components/Messages';
 import { PageHeader } from '../components/PageHeader';
@@ -59,6 +60,7 @@ export function PlannerPage() {
   const [actions, setActions] = useState<OutreachAction[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
 
   // Show whatever the last run produced. A failure here is non-fatal — the
   // page still offers the Run button, matching the old template's behaviour.
@@ -75,6 +77,24 @@ export function PlannerPage() {
       active = false;
     };
   }, []);
+
+  // Non-fatal: if this fails, Run stays enabled and just relies on the
+  // backend to error out per-lead as before.
+  useEffect(() => {
+    let active = true;
+    fetchLLMConfig()
+      .then((config) => {
+        if (active) setLlmConfig(config);
+      })
+      .catch((err: unknown) => {
+        console.error('Error loading LLM config:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const noKeyConfigured = llmConfig?.key_source === 'none';
 
   async function handleRun() {
     setError(null);
@@ -98,9 +118,19 @@ export function PlannerPage() {
         subtitle="Identify which leads need outreach today and generate suggested messaging"
       >
         <div className="controls">
-          <button type="button" onClick={handleRun} disabled={running}>
+          <button type="button" onClick={handleRun} disabled={running || noKeyConfigured}>
             Run Outreach Plan
           </button>
+          {llmConfig && !noKeyConfigured && (
+            <span className="status llm-status">
+              using {llmConfig.provider}/{llmConfig.model}
+            </span>
+          )}
+          {noKeyConfigured && (
+            <span className="status llm-status-warning">
+              No API key configured — <Link to="/settings/">set one up in Settings</Link>
+            </span>
+          )}
           {running && (
             <span className="status">
               <span className="loading-spinner" />{' '}

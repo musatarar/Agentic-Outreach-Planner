@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import datetime
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from project.app.services import actions
@@ -51,10 +51,95 @@ class Violation:
 
     ``kind`` is a machine-readable slug (e.g. ``"wrong_count"``); ``message``
     is the human-readable explanation shown to the BD reviewer.
+
+    ``start`` / ``end`` / ``field`` are defaulted so positional two-argument
+    construction still works (``tests_verify.py`` does exactly that).
     """
 
     kind: str
     message: str
+    start: int | None = None
+    end: int | None = None
+    field: str = ""
+
+
+@dataclass(frozen=True)
+class Claim:
+    """One assertion the copy makes, checked against the lead record.
+
+    Unlike :class:`Violation` this records *passes* too — "which claims were
+    checked and survived" is what the reviewer's green underlines are drawn
+    from, and it is the only thing "N of M claims verified" can be computed
+    from. See CONTRACT-MUS-35.md §4.3.
+    """
+
+    id: str
+    kind: str
+    start: int | None
+    end: int | None
+    text: str
+    verified: bool | None  # True=grounded  False=contradicted  None=not a claim
+    field: str
+    expected: Any
+    claimed: Any
+    message: str
+    counts_toward_summary: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "start": self.start,
+            "end": self.end,
+            "text": self.text,
+            "verified": self.verified,
+            "field": self.field,
+            "expected": _jsonable(self.expected),
+            "claimed": _jsonable(self.claimed),
+            "message": self.message,
+            "counts_toward_summary": self.counts_toward_summary,
+        }
+
+
+# Claim kind -> the `Violation.kind` slug a contradicted claim reports as. The
+# violation slugs are part of the frozen output `plan_outreach()` writes into
+# `further_action`, so they are deliberately NOT the claim kinds.
+_VIOLATION_KIND = {
+    "amount": "unsupported_amount",
+    "deals_count": "wrong_count",
+    "quotes_count": "wrong_count",
+    "producers_count": "wrong_count",
+    "years_count": "wrong_count",
+    "contact_name": "wrong_contact_name",
+    "iso_date": "unsupported_date",
+    "unauthorized_offer": "unauthorized_offer",
+    "unsupported_year": "unsupported_year",
+}
+# `omission` covers two distinct violation slugs; the checked field picks one.
+_OMISSION_VIOLATION_KIND = {
+    "contact_name": "contact_name_absent",
+    "agency_name": "agency_name_absent",
+}
+
+# Claim kinds that are deliberately excluded from the "N of M" ratio: targets
+# and scheduling language are not assertions about the record, and a prohibition
+# is not a claim about it either.
+_UNCOUNTED_KINDS = frozenset(
+    {"goal_reference", "future_date", "unauthorized_offer", "omission", "unsupported_year"}
+)
+
+# Claim kinds that block approval on their own, whatever the "N of M" ratio says.
+# The summary ratio and the approve gate answer two different questions: "how
+# much of this copy did we grade against the record?" and "may a reviewer send
+# it?". An unauthorized commercial promise is the single most consequential
+# thing generated copy can contain — `plan_outreach()` already fails closed on
+# it via `needs_human=True`, and the approve gate must agree.
+BLOCKING_KINDS = frozenset({"unauthorized_offer"})
+
+VERIFICATION_SCHEMA_VERSION = 1
+
+_GOAL_REFERENCE_MESSAGE = "Framed as a target, not a claim about the record."
+_FUTURE_DATE_MESSAGE = "Scheduling language: a future date is not grounded against the record."
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +352,99 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9']+", text.lower())
 
 
+def _jsonable(value: Any) -> Any:
+    """MUS-39 persists the report to a JSONField."""
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def normalize_copy(copy: str) -> str:
+    """Collapse ``\\r\\n`` / ``\\r`` to ``\\n`` before any offset is computed.
+
+    An LLM may emit ``\\r\\n`` and a ``<textarea>`` may submit it; Python counts
+    ``\\r\\n`` as two characters, so every span after the first line break would
+    be off by one per preceding line (CONTRACT-MUS-35.md §9.1(c)).
+    """
+    if not copy:
+        return copy
+    return copy.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _is_astral_safe(copy: str) -> bool:
+    """True when JS string indices equal Unicode code-point indices (§9.1(a))."""
+    return len(copy) == len(copy.encode("utf-16-le")) // 2
+
+
+def _trim_span(copy: str, start: int, end: int) -> tuple[int, int]:
+    """Trim surrounding whitespace off a match span (§9.1(b)).
+
+    ``_CURRENCY_RE`` matches ``"$1,400,000 "`` because its optional magnitude
+    suffix is ``\\b``-terminated; an untrimmed span underlines into the next word.
+    """
+    text = copy[start:end]
+    start += len(text) - len(text.lstrip())
+    end -= len(text) - len(text.rstrip())
+    return start, max(start, end)
+
+
+def _claim(
+    claims: list | None,
+    *,
+    kind: str,
+    copy: str,
+    start: int | None,
+    end: int | None,
+    verified: bool | None,
+    field: str,
+    expected: Any = None,
+    claimed: Any = None,
+    message: str = "",
+) -> Claim:
+    """Record one inspected claim — passing, failing, or not-a-claim.
+
+    ``id`` is assigned later, once the report is sorted by offset, so it is
+    stable within a report. De-duplication is keyed on
+    ``(kind, start, end, message)``: keying on ``message`` alone (which is what
+    ``verify_copy`` still does for its ``Violation`` list) collapses two
+    genuinely different offsets that happen to read the same (§4.7).
+    """
+    if start is not None and end is not None:
+        start, end = _trim_span(copy, start, end)
+        text = copy[start:end]
+    else:
+        start = end = None
+        text = ""
+    claim = Claim(
+        id="",
+        kind=kind,
+        start=start,
+        end=end,
+        text=text,
+        verified=verified,
+        field=field,
+        expected=expected,
+        claimed=claimed,
+        message=message,
+        counts_toward_summary=kind not in _UNCOUNTED_KINDS,
+    )
+    if claims is not None:
+        key = (claim.kind, claim.start, claim.end, claim.message)
+        if key not in {(c.kind, c.start, c.end, c.message) for c in claims}:
+            claims.append(claim)
+    return claim
+
+
+def _violation_kind(claim: Claim) -> str:
+    if claim.kind == "omission":
+        return _OMISSION_VIOLATION_KIND[claim.field]
+    return _VIOLATION_KIND[claim.kind]
+
+
 # --------------------------------------------------------------------------
 # individual checks
 # --------------------------------------------------------------------------
@@ -296,127 +474,206 @@ def _is_grounded_amount(value: float, grounded: list[float]) -> bool:
     return False
 
 
-def _check_amounts(lead: Any, copy: str) -> list[Violation]:
+def _check_amounts(lead: Any, copy: str, claims: list | None = None) -> None:
     grounded = _grounded_amounts(lead)
     if not grounded:  # nothing to check against (real leads always have a book)
-        return []
-    violations = []
+        return
+    book = _coerce_number(getattr(lead, "estimated_book_size_usd", None))
     for match in _CURRENCY_RE.finditer(copy):
         value = _money_to_number(match.group(1), match.group(2))
-        if not _is_grounded_amount(value, grounded):
-            violations.append(
-                Violation(
-                    "unsupported_amount",
-                    f"Copy cites {match.group(0).strip()} but no matching dollar "
-                    f"figure is in the lead record.",
-                )
-            )
-    return violations
+        ok = _is_grounded_amount(value, grounded)
+        _claim(
+            claims,
+            kind="amount",
+            copy=copy,
+            start=match.start(),
+            end=match.end(),
+            verified=ok,
+            field="estimated_book_size_usd",
+            expected=book,
+            claimed=value,
+            message=""
+            if ok
+            else (
+                f"Copy cites {match.group(0).strip()} but no matching dollar "
+                f"figure is in the lead record."
+            ),
+        )
 
 
-def _check_counts(lead: Any, copy: str) -> list[Violation]:
-    violations = []
-
+def _check_counts(lead: Any, copy: str, claims: list | None = None) -> None:
     deals = _int_attr(lead, "deals_closed")
     if deals is not None:
         for match in _DEALS_RE.finditer(copy):
-            if _is_goal_context(copy, match.start(), match.end()):
-                continue
             claimed = _first_group_int(match)
-            if claimed is not None and claimed != deals:
-                violations.append(
-                    Violation(
-                        "wrong_count",
-                        f"Copy claims {claimed} closed deals but the record shows {deals}.",
-                    )
-                )
+            if _is_goal_context(copy, match.start(), match.end()):
+                _goal_claim(claims, copy, match, "deals_closed", deals, claimed)
+                continue
+            if claimed is None:
+                continue
+            _count_claim(
+                claims,
+                copy,
+                match,
+                kind="deals_count",
+                field="deals_closed",
+                expected=deals,
+                claimed=claimed,
+                message=f"Copy claims {claimed} closed deals but the record shows {deals}.",
+            )
 
     created = _int_attr(lead, "quotes_created")
     submitted = _int_attr(lead, "quotes_submitted")
     for match in _QUOTES_RE.finditer(copy):
-        if _is_goal_context(copy, match.start(), match.end()):
-            continue
         if match.group(1) is not None:
             claimed, qualifier = int(match.group(1)), match.group(2).lower()
         else:
             claimed, qualifier = int(match.group(4)), match.group(3).lower()
+        field = "quotes_created" if qualifier == "created" else "quotes_submitted"
         expected = created if qualifier == "created" else submitted
-        if expected is not None and claimed != expected:
-            violations.append(
-                Violation(
-                    "wrong_count",
-                    f"Copy claims {claimed} quotes {qualifier} but the record shows {expected}.",
-                )
-            )
+        if _is_goal_context(copy, match.start(), match.end()):
+            _goal_claim(claims, copy, match, field, expected, claimed)
+            continue
+        if expected is None:
+            continue
+        _count_claim(
+            claims,
+            copy,
+            match,
+            kind="quotes_count",
+            field=field,
+            expected=expected,
+            claimed=claimed,
+            message=f"Copy claims {claimed} quotes {qualifier} but the record shows {expected}.",
+        )
 
     producers = _int_attr(lead, "num_producers")
     if producers is not None:
         for match in _PRODUCERS_RE.finditer(copy):
-            if _is_goal_context(copy, match.start(), match.end()):
-                continue
             claimed = int(match.group(1))
-            if claimed != producers:
-                violations.append(
-                    Violation(
-                        "wrong_count",
-                        f"Copy claims {claimed} producers but the record shows {producers}.",
-                    )
-                )
+            if _is_goal_context(copy, match.start(), match.end()):
+                _goal_claim(claims, copy, match, "num_producers", producers, claimed)
+                continue
+            _count_claim(
+                claims,
+                copy,
+                match,
+                kind="producers_count",
+                field="num_producers",
+                expected=producers,
+                claimed=claimed,
+                message=f"Copy claims {claimed} producers but the record shows {producers}.",
+            )
 
     years = _int_attr(lead, "years_in_business")
     if years is not None:
         for match in _YEARS_RE.finditer(copy):
-            if _is_goal_context(copy, match.start(), match.end()):
-                continue
             claimed = _first_group_int(match)
-            if claimed is not None and claimed != years:
-                violations.append(
-                    Violation(
-                        "wrong_count",
-                        f"Copy claims {claimed} years in business but the record shows {years}.",
-                    )
-                )
+            if _is_goal_context(copy, match.start(), match.end()):
+                _goal_claim(claims, copy, match, "years_in_business", years, claimed)
+                continue
+            if claimed is None:
+                continue
+            _count_claim(
+                claims,
+                copy,
+                match,
+                kind="years_count",
+                field="years_in_business",
+                expected=years,
+                claimed=claimed,
+                message=f"Copy claims {claimed} years in business but the record shows {years}.",
+            )
 
-    return violations
 
-
-def _check_contact_name(lead: Any, copy: str) -> Violation | None:
-    contact = (getattr(lead, "contact_name", "") or "").strip()
-    if not contact:
-        return None
-    contact_tokens = set(_tokens(contact))
-    match = _SALUTATION_RE.search(copy)
-    if not match:
-        return None
-    greeted = match.group(1).strip()
-    greeted_tokens = [t for t in _tokens(greeted) if t not in _HONORIFICS]
-    if not greeted_tokens:  # e.g. "Dear Sir," — nothing to contradict
-        return None
-    if contact_tokens.intersection(greeted_tokens):
-        return None
-    if set(greeted_tokens) <= _GENERIC_SALUTATIONS:
-        return None
-    return Violation(
-        "wrong_contact_name",
-        f'Copy greets "{greeted}" but the lead contact is {contact}.',
+def _count_claim(claims, copy, match, *, kind, field, expected, claimed, message) -> None:
+    ok = claimed == expected
+    _claim(
+        claims,
+        kind=kind,
+        copy=copy,
+        start=match.start(),
+        end=match.end(),
+        verified=ok,
+        field=field,
+        expected=expected,
+        claimed=claimed,
+        message="" if ok else message,
     )
 
 
-def _check_offer(lead: Any, copy: str, action_type: str) -> list[Violation]:
+def _goal_claim(claims, copy, match, field, expected, claimed) -> None:
+    """A count framed as a target ("on track for the 20 closed deals mark").
+
+    Not an assertion about the record, so it is neither a violation nor part of
+    the "N of M" ratio — but the reviewer still wants to see it was inspected.
+    """
+    _claim(
+        claims,
+        kind="goal_reference",
+        copy=copy,
+        start=match.start(),
+        end=match.end(),
+        verified=None,
+        field=field,
+        expected=expected,
+        claimed=claimed,
+        message=_GOAL_REFERENCE_MESSAGE,
+    )
+
+
+def _check_contact_name(lead: Any, copy: str, claims: list | None = None) -> None:
+    contact = (getattr(lead, "contact_name", "") or "").strip()
+    if not contact:
+        return
+    contact_tokens = set(_tokens(contact))
+    match = _SALUTATION_RE.search(copy)
+    if not match:
+        return
+    greeted = match.group(1).strip()
+    greeted_tokens = [t for t in _tokens(greeted) if t not in _HONORIFICS]
+    if not greeted_tokens:  # e.g. "Dear Sir," — nothing to contradict
+        return
+    if set(greeted_tokens) <= _GENERIC_SALUTATIONS:  # "Hi there," — no assertion
+        return
+    ok = bool(contact_tokens.intersection(greeted_tokens))
+    _claim(
+        claims,
+        kind="contact_name",
+        copy=copy,
+        start=match.start(1),
+        end=match.end(1),
+        verified=ok,
+        field="contact_name",
+        expected=contact,
+        claimed=greeted,
+        message="" if ok else f'Copy greets "{greeted}" but the lead contact is {contact}.',
+    )
+
+
+def _check_offer(lead: Any, copy: str, action_type: str, claims: list | None = None) -> None:
     # Volume pricing / discounts are authorized only for the reward action.
     if action_type == actions.POWER_USER_REWARD:
-        return []
+        return
     for pattern in _OFFER_RES:
         match = pattern.search(copy)
         if match:
-            return [
-                Violation(
-                    "unauthorized_offer",
+            _claim(
+                claims,
+                kind="unauthorized_offer",
+                copy=copy,
+                start=match.start(),
+                end=match.end(),
+                verified=False,
+                field="action_type",
+                expected=action_type,
+                claimed=match.group(0).strip(),
+                message=(
                     f'Copy makes a commercial promise ("{match.group(0).strip()}") that '
-                    f"is not authorized for a {action_type} action.",
-                )
-            ]
-    return []
+                    f"is not authorized for a {action_type} action."
+                ),
+            )
+            return
 
 
 def _record_dates(lead: Any) -> set[datetime.date]:
@@ -432,26 +689,37 @@ def _record_dates(lead: Any) -> set[datetime.date]:
     return dates
 
 
-def _check_iso_dates(lead: Any, copy: str, today: datetime.date) -> list[Violation]:
+def _check_iso_dates(
+    lead: Any, copy: str, today: datetime.date, claims: list | None = None
+) -> None:
     record = _record_dates(lead)
-    violations = []
     for match in _ISO_DATE_RE.finditer(copy):
         try:
             cited = datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
         except ValueError:
             continue  # not a real calendar date
-        if cited in record:
-            continue
+        grounded = cited in record
         # A past/today ISO date in prose is a copied record fact; a future one
         # is scheduling language ("let's talk on ..."), which we don't ground.
-        if cited <= today:
-            violations.append(
-                Violation(
-                    "unsupported_date",
-                    f"Copy cites the date {match.group(0)}, which is not in the lead record.",
-                )
-            )
-    return violations
+        future = not grounded and cited > today
+        _claim(
+            claims,
+            kind="future_date" if future else "iso_date",
+            copy=copy,
+            start=match.start(),
+            end=match.end(),
+            verified=None if future else grounded,
+            field="record_dates",
+            expected=sorted(d.isoformat() for d in record),
+            claimed=cited.isoformat(),
+            message=_FUTURE_DATE_MESSAGE
+            if future
+            else (
+                ""
+                if grounded
+                else f"Copy cites the date {match.group(0)}, which is not in the lead record."
+            ),
+        )
 
 
 def _agency_tokens(lead: Any) -> list[str]:
@@ -459,29 +727,42 @@ def _agency_tokens(lead: Any) -> list[str]:
     return [t for t in _tokens(name) if len(t) >= 3 and t not in _AGENCY_STOPWORDS]
 
 
-def _check_strict(lead: Any, copy: str, today: datetime.date) -> list[Violation]:
+def _check_strict(lead: Any, copy: str, today: datetime.date, claims: list | None = None) -> None:
     """Omission / loose-grounding checks layered on top of ``standard``."""
-    violations = []
     low = copy.lower()
 
     contact = (getattr(lead, "contact_name", "") or "").strip()
     if contact:
         first = _tokens(contact)[0] if _tokens(contact) else ""
         if len(first) >= 2 and not re.search(rf"\b{re.escape(first)}\b", low):
-            violations.append(
-                Violation(
-                    "contact_name_absent",
-                    f"Copy never addresses the contact by name ({contact}).",
-                )
+            # An omission has no span: there is nothing in the copy to underline.
+            _claim(
+                claims,
+                kind="omission",
+                copy=copy,
+                start=None,
+                end=None,
+                verified=False,
+                field="contact_name",
+                expected=contact,
+                claimed=None,
+                message=f"Copy never addresses the contact by name ({contact}).",
             )
 
     agency_tokens = _agency_tokens(lead)
     if agency_tokens and not any(re.search(rf"\b{re.escape(t)}\b", low) for t in agency_tokens):
-        violations.append(
-            Violation(
-                "agency_name_absent",
-                f'Copy never names the agency ("{getattr(lead, "agency_name", "")}").',
-            )
+        agency = getattr(lead, "agency_name", "")
+        _claim(
+            claims,
+            kind="omission",
+            copy=copy,
+            start=None,
+            end=None,
+            verified=False,
+            field="agency_name",
+            expected=agency,
+            claimed=None,
+            message=f'Copy never names the agency ("{agency}").',
         )
 
     allowed_years = {today.year, today.year + 1}
@@ -489,19 +770,45 @@ def _check_strict(lead: Any, copy: str, today: datetime.date) -> list[Violation]
     for match in _YEAR_RE.finditer(copy):
         year = int(match.group(0))
         if year not in allowed_years:
-            violations.append(
-                Violation(
-                    "unsupported_year",
-                    f"Copy mentions the year {year}, which is not tied to any record date.",
-                )
+            _claim(
+                claims,
+                kind="unsupported_year",
+                copy=copy,
+                start=match.start(),
+                end=match.end(),
+                verified=False,
+                field="record_dates",
+                expected=sorted(allowed_years),
+                claimed=year,
+                message=f"Copy mentions the year {year}, which is not tied to any record date.",
             )
-
-    return violations
 
 
 # --------------------------------------------------------------------------
 # public API
 # --------------------------------------------------------------------------
+
+
+def _collect_claims(
+    lead: Any, copy: str, action_type: str, level: str, today: datetime.date
+) -> list[Claim]:
+    """Run every check over ``copy``, recording passes as well as failures.
+
+    Check order is load-bearing: ``verify_copy`` derives its ``Violation`` list
+    from this list, and the order of the messages a BD reviewer reads must not
+    change.
+    """
+    claims: list[Claim] = []
+    if level == LEVEL_OFF or not copy:
+        return claims
+    _check_amounts(lead, copy, claims)
+    _check_counts(lead, copy, claims)
+    _check_contact_name(lead, copy, claims)
+    _check_offer(lead, copy, action_type, claims)
+    _check_iso_dates(lead, copy, today, claims)
+    if level == LEVEL_STRICT:
+        _check_strict(lead, copy, today, claims)
+    return claims
 
 
 def verify_copy(
@@ -511,6 +818,7 @@ def verify_copy(
     *,
     level: str = DEFAULT_LEVEL,
     today: datetime.date | None = None,
+    claims: list | None = None,
 ) -> list[Violation]:
     """Check generated ``copy`` against the ``lead`` record.
 
@@ -518,21 +826,22 @@ def verify_copy(
     ``level`` selects strictness (``off | standard | strict``); ``action_type``
     gates the unauthorized-offer check (volume pricing is fine for a reward).
     Pure and deterministic: no database, no LLM.
-    """
-    if level == LEVEL_OFF or not copy:
-        return []
-    today = today or datetime.date.today()
 
-    violations: list[Violation] = []
-    violations += _check_amounts(lead, copy)
-    violations += _check_counts(lead, copy)
-    name_violation = _check_contact_name(lead, copy)
-    if name_violation is not None:
-        violations.append(name_violation)
-    violations += _check_offer(lead, copy, action_type)
-    violations += _check_iso_dates(lead, copy, today)
-    if level == LEVEL_STRICT:
-        violations += _check_strict(lead, copy, today)
+    ``claims`` is a keyword-only *out*-parameter: pass a list to also receive
+    every inspected :class:`Claim`, including the ones that passed. The return
+    value, its order and its de-duplication are unchanged either way — see
+    ``tests_verify_spans.py``.
+    """
+    today = today or datetime.date.today()
+    collected = _collect_claims(lead, normalize_copy(copy), action_type, level, today)
+    if claims is not None:
+        claims.extend(collected)
+
+    violations = [
+        Violation(_violation_kind(c), c.message, c.start, c.end, c.field)
+        for c in collected
+        if c.verified is False
+    ]
 
     # Overlapping patterns can surface the same problem twice; keep first seen.
     seen: set[str] = set()
@@ -542,6 +851,63 @@ def verify_copy(
             seen.add(violation.message)
             unique.append(violation)
     return unique
+
+
+def verify_spans(
+    lead: Any,
+    copy: str,
+    action_type: str,
+    *,
+    level: str = DEFAULT_LEVEL,
+    today: datetime.date | None = None,
+) -> dict:
+    """Build the v1 verification report (CONTRACT-MUS-35.md §4.4).
+
+    The report is what the reviewer's underlines and the
+    "N of M claims verified" summary are rendered from. ``copy`` is normalized
+    (§9.1(c)) and echoed back: offsets index into ``report["copy"]``, never into
+    whatever the client currently has in its textarea (§9.2).
+
+    ``can_approve`` has **two independent causes** and is false if either holds:
+    a contradicted claim about the record, or a claim of a
+    :data:`BLOCKING_KINDS` kind. The two compose — neither overrides the other —
+    so a reviewer's warning state may have to point at an offer span rather than
+    at a mismatched number.
+
+    Pure: no database, no LLM, duck-typed on the same lead attributes.
+    """
+    today = today or datetime.date.today()
+    copy = normalize_copy(copy)
+    claims = _collect_claims(lead, copy, action_type, level, today)
+
+    # Offsets order the report; ids are assigned afterwards so they are stable
+    # within it. Omission claims have no span and sort last.
+    claims.sort(key=lambda c: (c.start is None, c.start or 0, c.end or 0, c.kind))
+    ordered = [
+        replace(claim, id=f"claim-{index:04d}") for index, claim in enumerate(claims, start=1)
+    ]
+
+    counted = [c for c in ordered if c.counts_toward_summary]
+    verified_count = sum(1 for c in counted if c.verified is True)
+    unverified_count = sum(1 for c in counted if c.verified is False)
+    checked_count = verified_count + unverified_count
+    # A prohibition stays out of the ratio (it is not a claim about the record)
+    # but still blocks approval on its own.
+    blocked = any(c.kind in BLOCKING_KINDS for c in ordered)
+    return {
+        "version": VERIFICATION_SCHEMA_VERSION,
+        "level": level,
+        "today": today.isoformat(),
+        "copy": copy,
+        "copy_length": len(copy),
+        "is_astral_safe": _is_astral_safe(copy),
+        "verified_count": verified_count,
+        "unverified_count": unverified_count,
+        "checked_count": checked_count,
+        "summary": f"{verified_count} of {checked_count} claims verified",
+        "can_approve": unverified_count == 0 and not blocked,
+        "claims": [c.to_dict() for c in ordered],
+    }
 
 
 def format_violations(violations: list[Violation]) -> str:

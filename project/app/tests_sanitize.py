@@ -98,7 +98,7 @@ class ValidateCopyTests(unittest.TestCase):
         "your team through the final steps personally and answer anything that came "
         "up afterward. Would you have time for a quick call this week to wrap up "
         "onboarding?\n\n"
-        "Best,\nThe Eventual team"
+        "Best,\nThe Locked In team"
     )
 
     def test_well_formed_email_has_no_problems(self):

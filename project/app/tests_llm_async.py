@@ -282,7 +282,7 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
         class _Sync(claude_mod.LLMClient):
             provider_name = "stub"
 
-            def generate(self, prompt, max_tokens=None):  # pragma: no cover - unused
+            def generate(self, prompt, max_tokens=None, timeout=None):  # pragma: no cover - unused
                 raise AssertionError
 
         self.assertIsNone(await _Sync(model="m").aclose())
