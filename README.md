@@ -173,6 +173,25 @@ The two timeouts are nested deliberately. The per-lead bound is the one that mat
 concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
 retryable failures has to be given up on rather than waited out.
 
+### Database cost
+
+A run is **11 queries, flat in lead count**: two dedupe-ledger reads, the leads, their events
+(one prefetch), four to resolve the provider, and `BEGIN` / one `INSERT … RETURNING` / `COMMIT`.
+
+Before `prefetch_related("events")` it was `10 + 7N` — every lead's events were re-read by the
+classifier, the prompt builder, the grounding verifier and the trace snapshot in turn. Measured
+by reverting the prefetch and re-running the assertion: **94 queries for 12 leads**, and about
+1,400 for the 200-lead benchmark set. `assertNumQueries(11)` in
+`project/app/tests_planner_perf.py` is the regression lock, alongside a second test that runs
+3 leads and then 24 and asserts the *same* number — a constant on its own could be updated
+past an N+1, two equal counts at different sizes could not.
+
+`_events_list` still accepts a related manager *or* a plain list, because
+`evals/run_rules_eval.py` feeds the classifier `SimpleNamespace` leads and its whole point is
+running without a database. Prefetch is compatible: `.all()` on a prefetched instance is served
+from `_prefetched_objects_cache`. Calling `.filter()` or `.count()` there instead would bypass
+the cache and quietly restore the N+1.
+
 ### What the review queue says when there is no copy
 
 The review queue is a *finite* list of things a human has to decide, and its whole value is
