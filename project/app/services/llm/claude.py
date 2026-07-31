@@ -113,8 +113,16 @@ class ClaudeClient(LLMClient):
         question is "did the SDK resolve a credential?" -- the SDK's own
         resolution order (env, explicit arg, ...) rather than a second copy of
         it that can drift.
+
+        All THREE mechanisms count, not just the two static ones. ``credentials``
+        covers the profile-on-disk and workload-identity-federation providers,
+        which authenticate by injecting an ``Authorization`` header per request
+        and leave ``api_key`` and ``auth_token`` as ``None``. The SDK's own
+        error names all three ("Expected one of api_key, auth_token, or
+        credentials to be set"); checking only the first two would reject a
+        deployment that works, and reject it non-retryably.
         """
-        if client.api_key or client.auth_token:
+        if client.api_key or client.auth_token or getattr(client, "credentials", None):
             return
         raise LLMAuthError(
             "Claude provider selected but ANTHROPIC_API_KEY is not set. Add it to your .env file.",

@@ -202,7 +202,13 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patcher.stop)
         client = mock_cls.return_value
         client.api_key = "test-key"
+        # Both of the other credential mechanisms are pinned to None explicitly.
+        # A Mock invents any attribute you read, so leaving them unset would
+        # make _check_credentials pass on a truthy auto-attribute rather than on
+        # a credential -- and the missing-credentials test below would assert
+        # nothing at all.
         client.auth_token = None
+        client.credentials = None
         client.messages.create = mock.AsyncMock(**create)
         return mock_cls, client
 
@@ -259,9 +265,23 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
         _, client = self._patch_sdk(return_value=_text_response())
         client.api_key = None
         client.auth_token = None
+        client.credentials = None
         with self.assertRaises(errors.LLMAuthError):
             await claude_mod.ClaudeClient().agenerate("p")
         client.messages.create.assert_not_awaited()
+
+    async def test_a_credentials_provider_counts_as_a_resolved_credential(self):
+        # The SDK authenticates by profile-on-disk or workload-identity
+        # federation through a credentials provider that injects Authorization
+        # per request, leaving api_key and auth_token None. Checking only the
+        # two static mechanisms would reject a deployment that works, and
+        # reject it non-retryably.
+        _, client = self._patch_sdk(return_value=_text_response())
+        client.api_key = None
+        client.auth_token = None
+        client.credentials = object()
+        result = await claude_mod.ClaudeClient().agenerate("p")
+        self.assertEqual(result.text, "Subject: Hi\n\nBody")
 
     async def test_acomplete_returns_text(self):
         self._patch_sdk(return_value=_text_response("Just the copy"))

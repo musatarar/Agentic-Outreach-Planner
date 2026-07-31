@@ -1164,7 +1164,7 @@ Write the email now. Requirements:
 - Output only the email (subject + body), no commentary."""
 
 
-def generate_copy(lead, action_type, reason, *, prompt=None):
+def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     """Generate a personalized outreach email via the configured LLM provider.
 
     The provider (Claude, ChatGPT, DeepSeek, Groq, ...) is selected via the
@@ -1178,6 +1178,11 @@ def generate_copy(lead, action_type, reason, *, prompt=None):
     ``prompt`` pass no ``lead``, and the guard below makes that explicit: every
     lead attribute has a ``getattr`` default, so a ``None`` lead would otherwise
     silently produce a prompt full of blanks rather than fail.
+
+    ``client`` lets a caller supply an already-resolved provider client, for the
+    same reason: resolving one reads the ``LLMConfiguration`` row, and the
+    planner's phase 3 must not touch the ORM. Omitted, this resolves its own —
+    the single-lead path, where one extra read is the correct trade.
     """
     if prompt is None:
         if lead is None:
@@ -1185,7 +1190,9 @@ def generate_copy(lead, action_type, reason, *, prompt=None):
                 "generate_copy needs either a lead to build a prompt from, or a prompt."
             )
         prompt = _build_copy_prompt(lead, action_type, reason)
-    return get_llm_client().complete(prompt, max_tokens=MAX_COPY_TOKENS)
+    if client is None:
+        client = get_llm_client()
+    return client.complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
 
 def validate_copy(email):
@@ -1271,6 +1278,12 @@ def format_shape_problems(problems):
 # reaches for a lead attribute fails immediately and locally, rather than
 # emitting a lazy query that only misbehaves once phase 3 is concurrent.
 #
+# The provider client is resolved the same way, and for the same reason.
+# `get_llm_client()` reads the LLMConfiguration row, so calling it per lead --
+# as the single-lead `generate_copy` path still does -- would put four queries
+# inside the phase that is supposed to hold none. Phase 3 is handed a client
+# that already exists (see `_resolve_client`).
+#
 # The skip rules stay in phase 2, ahead of the prompt: a suppressed or
 # already-open recommendation must cost neither a prompt nor an LLM call.
 #
@@ -1330,7 +1343,7 @@ class ReviewOutcome:
     further_action: str
 
 
-def _build_work_item(lead, suppressed, open_keys):
+def _build_work_item(lead, suppressed, open_keys, today):
     """Phase 2 for one lead: classify it, apply the skip rules, and build its
     prompt while we still have cheap access to the ORM.
 
@@ -1338,13 +1351,15 @@ def _build_work_item(lead, suppressed, open_keys):
     rules in :func:`plan_outreach`. The check sits between the classification
     (which produces the key) and the prompt, so a skipped lead costs neither a
     prompt nor a provider call.
+
+    ``today`` is the run's date, fixed in phase 1 -- see :func:`plan_outreach`.
     """
     # Local import for the same reason plan_outreach's are: this module stays
     # importable without Django configured.
     from project.app.services import dedupe as dedupe_service
 
-    priority = determine_priority(lead)
-    action_type, reason = determine_action(lead)
+    priority = determine_priority(lead, today)
+    action_type, reason = determine_action(lead, today)
     key = dedupe_service.dedupe_key(lead.id, action_type)
     if key in suppressed or key in open_keys:
         return None
@@ -1371,7 +1386,32 @@ def _build_work_item(lead, suppressed, open_keys):
     )
 
 
-def _generate_for(item):
+def _resolve_client(work):
+    """Resolve the provider client once, before phase 3 runs.
+
+    Returns ``(client, error)``, exactly one of which is set — or ``(None,
+    None)`` when nothing in this run needs copy, so a run of purely unmatched
+    leads still contacts no configuration at all, as it did before.
+
+    Resolution is an ORM read (``get_llm_client`` → ``LLMConfiguration`` /
+    ``LLMModel`` / the encrypted key), which is why it happens here rather than
+    inside each call: doing it per lead would put four queries and a key
+    decryption inside the one phase that must hold neither.
+
+    A resolution failure is *returned*, not raised. When every lead resolved its
+    own client, a bad configuration became one "Copy generation failed" per lead
+    and the run still produced a full set of rows; raising here would turn that
+    into a dead run.
+    """
+    if not any(item.prompt is not None for item in work):
+        return None, None
+    try:
+        return get_llm_client(), None
+    except Exception as exc:
+        return None, exc
+
+
+def _generate_for(item, client, client_error=None):
     """Phase 3 for one lead: the provider call, and nothing else.
 
     Goes through the module-level ``generate_copy`` rather than reaching for the
@@ -1382,7 +1422,8 @@ def _generate_for(item):
     the ORM, and the cheapest way to guarantee that is to not give it one:
     anything added here that reaches for a lead attribute fails loudly and
     locally instead of emitting a lazy query that only misbehaves later, inside
-    an event loop, in someone else's branch.
+    an event loop, in someone else's branch. ``client`` is passed in for the
+    same reason — see :func:`_resolve_client`.
     """
     from project.app.services import queue_copy
 
@@ -1390,19 +1431,21 @@ def _generate_for(item):
         return CopyOutcome(error=item.prompt_error)
     if item.prompt is None:
         return CopyOutcome()
+    if client_error is not None:
+        return CopyOutcome(error=client_error)
     try:
         # Normalized on the way out of the provider, inside the same guard the
         # call is under: `suggested_copy` is immutable after this point, and
         # every span offset computed later indexes it.
         text = queue_copy.normalize_copy(
-            generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
+            generate_copy(None, item.action_type, item.reason, prompt=item.prompt, client=client)
         )
     except Exception as exc:  # don't let one API failure sink the run
         return CopyOutcome(error=exc)
     return CopyOutcome(text=text)
 
 
-def _review(item, outcome, level):
+def _review(item, outcome, level, today):
     """Phase 4 for one lead: decide whether a human needs to see this."""
     if item.action_type == actions.UNKNOWN:
         return ReviewOutcome(
@@ -1433,7 +1476,9 @@ def _review(item, outcome, level):
     # Any problem from either gate routes the (kept) draft to a human
     # with the specific issues spelled out.
     shape_problems = validate_copy(outcome.text)
-    violations = verify.verify_copy(item.lead, outcome.text, item.action_type, level=level)
+    violations = verify.verify_copy(
+        item.lead, outcome.text, item.action_type, level=level, today=today
+    )
     if not (shape_problems or violations):
         return ReviewOutcome(suggested_copy=outcome.text, needs_human=False, further_action="")
 
@@ -1470,6 +1515,16 @@ def plan_outreach():
     #      generation means it costs no LLM call either.
     #   2. An open item wins. POSTing /api/outreach/run/ twice would otherwise
     #      double the inbox (section 9.8).
+    #
+    # Rule 2 is a read-then-write with no lock, so two runs genuinely overlapping
+    # in time can both see an empty `open_keys` and both plan the same lead.
+    # That race predates the phase split, but the split widens its window from
+    # "one provider call" to "the whole run", because no row is committed until
+    # phase 5. `OutreachAction.dedupe_key` is indexed but not unique, so nothing
+    # underneath catches it. Closing it properly needs either a partial unique
+    # constraint over the open statuses or a lock on the ledger -- a migration,
+    # and out of scope for a refactor. Recorded here so it is a known gap rather
+    # than a surprise.
     suppressed = set(
         DismissedOutreachKey.objects.filter(revoked_at__isnull=True).values_list(
             "dedupe_key", flat=True
@@ -1483,6 +1538,15 @@ def plan_outreach():
         .values_list("dedupe_key", flat=True)
     )
 
+    # The run's date, fixed once. Every rule, every trace and every grounding
+    # check downstream takes a `today`, and each of them would otherwise call
+    # `date.today()` for itself -- fine when the whole run took one LLM call,
+    # not fine now that phases 2, 4 and 5 are separated by every LLM call in the
+    # run. A run straddling midnight would persist a `reason` computed on one
+    # day beside a `rule_trace` computed on the next, which is exactly the
+    # contradiction the snapshot exists to prevent.
+    today = datetime.date.today()
+
     # 1. read
     leads = list(Lead.objects.all())
 
@@ -1490,7 +1554,7 @@ def plan_outreach():
     #    before the provider call)
     work = []
     for lead in leads:
-        item = _build_work_item(lead, suppressed, open_keys)
+        item = _build_work_item(lead, suppressed, open_keys, today)
         if item is None:
             continue
         work.append(item)
@@ -1499,18 +1563,39 @@ def plan_outreach():
         open_keys.add(item.dedupe_key)
 
     # 3. call the provider -- no ORM beyond this point until phase 4
-    outcomes = [_generate_for(item) for item in work]
+    client, client_error = _resolve_client(work)
+    outcomes = [_generate_for(item, client, client_error) for item in work]
 
     # 4. run the output gates
     # strict=True on every zip: these lists cannot diverge today, but phase 3
     # becomes an asyncio.gather downstream, and a silently truncated zip there
     # would drop leads from the run without a trace.
-    reviews = [_review(item, outcome, level) for item, outcome in zip(work, outcomes, strict=True)]
+    reviews = [
+        _review(item, outcome, level, today) for item, outcome in zip(work, outcomes, strict=True)
+    ]
 
-    # 5. write. Atomic because the split already moved every write to after
-    # every provider call: an escape mid-run now means no rows rather than the
-    # first N-1, so it may as well be all-or-nothing on purpose instead of by
-    # accident.
+    # 5. write. The two snapshots are computed FIRST, outside the transaction:
+    # `explain()` re-runs the whole rule engine and `build_verification()` walks
+    # `lead.events`, so leaving them inline would hold a write transaction open
+    # across several queries per lead for no atomicity benefit -- only the
+    # inserts need to be atomic.
+    #
+    # Atomic at all because the split already moved every write to after every
+    # provider call: an escape mid-run now means no rows rather than the first
+    # N-1, so it may as well be all-or-nothing on purpose instead of by accident.
+    snapshots = [
+        (
+            # Taken once at planning time and never recomputed: every relative
+            # figure in the trace ("28d since last contact") is only true as of
+            # `trace.today`, so recomputing at read time would silently
+            # contradict the `reason` prose persisted beside it (section 9.9).
+            explain(item.lead, today),
+            queue_copy.build_verification(
+                item.lead, review.suggested_copy, item.action_type, level=level, today=today
+            ),
+        )
+        for item, review in zip(work, reviews, strict=True)
+    ]
     with transaction.atomic():
         planned = [
             OutreachAction.objects.create(
@@ -1522,17 +1607,12 @@ def plan_outreach():
                 needs_human=review.needs_human,
                 further_action=review.further_action,
                 dedupe_key=item.dedupe_key,
-                # Snapshot, taken once at planning time and never recomputed:
-                # every relative figure in it ("28d since last contact") is only
-                # true as of `trace.today`, so recomputing at read time would
-                # silently contradict the `reason` prose persisted beside it
-                # (section 9.9).
-                rule_trace=explain(item.lead),
-                verification=queue_copy.build_verification(
-                    item.lead, review.suggested_copy, item.action_type, level=level
-                ),
+                rule_trace=rule_trace,
+                verification=verification,
             )
-            for item, review in zip(work, reviews, strict=True)
+            for item, review, (rule_trace, verification) in zip(
+                work, reviews, snapshots, strict=True
+            )
         ]
 
     planned.sort(key=lambda a: a.priority)

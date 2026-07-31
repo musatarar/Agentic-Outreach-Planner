@@ -575,7 +575,18 @@ class AdapterErrorTranslationTests(unittest.TestCase):
         # fails at send time with a bare TypeError, which is not an
         # AnthropicError. Without the up-front check that would be the one
         # missing-key path in the repo that isn't an LLMAuthError.
-        with self.assertRaises(errors.LLMAuthError) as ctx:
+        #
+        # default_credentials() is patched off because clearing os.environ is
+        # not enough to make this test hermetic: the SDK also reads the active
+        # profile from disk, so on a developer machine that has ever logged in,
+        # the client would resolve a credential and this would fail for a reason
+        # that has nothing to do with the code under test.
+        with (
+            mock.patch.object(
+                claude_mod.anthropic._client, "default_credentials", return_value=None
+            ),
+            self.assertRaises(errors.LLMAuthError) as ctx,
+        ):
             claude_mod.ClaudeClient().complete("p")
         self.assertFalse(ctx.exception.retryable)
         self.assertEqual(ctx.exception.provider, "claude")

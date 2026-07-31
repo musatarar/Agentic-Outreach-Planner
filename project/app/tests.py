@@ -330,3 +330,37 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertIn("Copy generation failed (unrenderable lead)", failed.further_action)
+
+    def test_an_unresolvable_provider_costs_the_rows_nothing(self):
+        # The client is resolved once now, before phase 3, so that phase holds
+        # no ORM handle. That moved the failure of a bad LLM configuration out
+        # of the per-lead try -- so it is carried as a value instead. Previously
+        # every lead resolved its own client and a broken config became one
+        # "Copy generation failed" per lead with the run still producing a full
+        # set of rows; this pins that it still does, rather than killing the run.
+        self._classifiable_lead()
+        self._unclassifiable_lead()
+        with patch(
+            "project.app.services.outreach.get_llm_client",
+            side_effect=ValueError("Unknown LLM provider 'bogus'."),
+        ):
+            planned = plan_outreach()
+
+        self.assertEqual(len(planned), 2)
+        failed = OutreachAction.objects.get(lead_id="lead_fails")
+        self.assertTrue(failed.needs_human)
+        self.assertEqual(failed.suggested_copy, "")
+        self.assertIn(
+            "Copy generation failed (Unknown LLM provider 'bogus'.)", failed.further_action
+        )
+        # The unmatched lead is untouched by a provider problem it never needed.
+        unmatched = OutreachAction.objects.get(lead_id="lead_unknown")
+        self.assertIn("no automated outreach pattern matched", unmatched.further_action)
+
+    def test_a_run_with_nothing_to_generate_never_resolves_a_provider(self):
+        # A run of purely unmatched leads contacted no configuration before the
+        # client was hoisted out of the loop, and must still contact none.
+        self._unclassifiable_lead()
+        with patch("project.app.services.outreach.get_llm_client") as get_client:
+            plan_outreach()
+        get_client.assert_not_called()
