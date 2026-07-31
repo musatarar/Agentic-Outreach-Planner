@@ -40,14 +40,18 @@ in a 4xx body. The full message still reaches the reviewer via
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from opentelemetry import metrics as metrics_api
+from opentelemetry import trace as trace_api
 from opentelemetry.metrics import Histogram
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
@@ -58,6 +62,16 @@ if TYPE_CHECKING:  # pragma: no cover - annotations only
     from opentelemetry.trace import Span
 
     from ..llm.base import LLMResult
+
+logger = logging.getLogger(__name__)
+
+# A provider's raw stop reason is text off the wire, and this module's whole
+# stance is that provider-authored text does not reach the trace backend. It is
+# an enum-ish token in every SDK we ship against, so anything that is not one is
+# dropped rather than truncated -- a mangled 200-character "reason" on a span is
+# no more useful than an absent one, and it would be unbounded cardinality if it
+# ever reached a metric.
+_SAFE_FINISH_REASON = re.compile(r"\A[A-Za-z0-9_.-]{1,32}\Z")
 
 # Our configured provider name -> the spec's `gen_ai.provider.name` enum member.
 # Total over the four providers this app ships. A name that is not a key here
@@ -91,8 +105,6 @@ def instruments() -> _Instruments:
     the no-op provider it replaced would record into nothing forever.
     """
     global _instruments, _instruments_provider
-
-    from opentelemetry import metrics as metrics_api
 
     provider = metrics_api.get_meter_provider()
     with _instruments_lock:
@@ -175,10 +187,16 @@ class ProviderCall:
     def metric_attributes(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         """Attribute set shared by both histograms.
 
-        ``gen_ai.operation.name`` is Required on both; ``gen_ai.provider.name``
-        is Required on token.usage. Kept deliberately small — every distinct
-        combination is a separate time series, so a per-lead or per-attempt
-        attribute here would be a cardinality bomb.
+        ``gen_ai.operation.name`` and ``gen_ai.provider.name`` are both Required
+        on **both** instruments. For a provider outside the spec's enum — a stub
+        or a self-hosted endpoint — both instruments therefore emit without a
+        Required attribute, and ``outreach.llm.provider`` is the join key
+        instead. That is the right trade: an invented enum member would be
+        accepted by every validator and wrong in every dashboard.
+
+        Kept deliberately small — every distinct combination is a separate time
+        series, so a per-lead or per-attempt attribute here would be a
+        cardinality bomb.
         """
         attributes: dict[str, Any] = {
             sc.GEN_AI_OPERATION_NAME: sc.OPERATION_CHAT,
@@ -259,9 +277,18 @@ def _finish_reasons(result: "LLMResult") -> list[str] | None:
     aggregating across providers is not split between ``end_turn`` and ``stop``;
     the raw value is used when normalization declined to guess, because a
     provider's own word beats nothing.
+
+    The raw fallback is the one attribute in this module carrying text off the
+    provider's wire, so it is shape-checked before it is emitted (see
+    :data:`_SAFE_FINISH_REASON`). Normalized reasons come from our own closed
+    vocabulary and need no such check.
     """
-    reason = result.finish_reason or result.raw_finish_reason
-    return [reason] if reason else None
+    if result.finish_reason:
+        return [result.finish_reason]
+    raw = result.raw_finish_reason
+    if raw and _SAFE_FINISH_REASON.match(raw):
+        return [raw]
+    return None
 
 
 def _record_success(span: "Span", call: ProviderCall, result: "LLMResult") -> None:
@@ -279,24 +306,28 @@ def _record_success(span: "Span", call: ProviderCall, result: "LLMResult") -> No
         # count is worse than no total at all.
         attributes[sc.LLM_TOKEN_COUNT_TOTAL] = result.input_tokens + result.output_tokens
     span.set_attributes(attributes)
+    # Explicitly OK, not left Unset. The spec says instrumentation SHOULD NOT
+    # set Ok unless the application asserts the outcome -- and here it does: a
+    # provider call that returned a readable LLMResult succeeded, full stop.
+    # Phoenix also renders on status, and "two red spans and a green one" is the
+    # acceptance evidence for the retry behaviour, which Unset would not show.
     span.set_status(Status(StatusCode.OK))
 
 
-def _record_failure(span: "Span", exc: BaseException) -> float | None:
-    """Mark the span failed. Returns the provider's ``Retry-After``, if any."""
+def _record_failure(span: "Span", exc: BaseException) -> None:
+    """Mark the span failed."""
     kind = error_type(exc)
     retry_after = getattr(exc, "retry_after", None)
-    span.set_attribute(sc.ERROR_TYPE, kind)
-    _set_if_span(span, sc.LLM_RETRY_AFTER_S, retry_after)
+    attributes: dict[str, Any] = {sc.ERROR_TYPE: kind}
+    # Narrowed before it is set, not after: `retry_after` is read off an
+    # arbitrary exception, and a non-numeric one would otherwise reach
+    # set_attribute to be logged and dropped by the SDK.
+    if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool):
+        attributes[sc.LLM_RETRY_AFTER_S] = retry_after
+    span.set_attributes(attributes)
     # Description is the class name, never str(exc) -- see the module docstring
     # on why a provider's error prose does not go to the trace backend.
     span.set_status(Status(StatusCode.ERROR, kind))
-    return retry_after if isinstance(retry_after, (int, float)) else None
-
-
-def _set_if_span(span: "Span", key: str, value: Any) -> None:
-    if value is not None:
-        span.set_attribute(key, value)
 
 
 def _record_metrics(
@@ -306,7 +337,21 @@ def _record_metrics(
     result: "LLMResult | None" = None,
     exc: BaseException | None = None,
 ) -> None:
-    """One duration point per attempt; two token points per successful call.
+    """Record the two GenAI instruments for one attempt.
+
+    **The two have different denominators, and it matters.**
+    ``gen_ai.client.operation.duration`` is recorded once per **HTTP attempt**,
+    so a throttled call that succeeded on its third try contributes three
+    observations, not one. ``gen_ai.client.token.usage`` is recorded once per
+    **logical call**, because only the attempt that succeeded has any usage to
+    report.
+
+    That is a deliberate departure from reading the spec's "per operation"
+    literally, and it is the only reading that makes a rate-limited run legible:
+    aggregating an attempt and its two failed predecessors into one number would
+    hide exactly the thing the histogram exists to show. ``error.type`` is what
+    separates the two populations — filter it out and the remaining series is
+    successful-attempt latency.
 
     Token usage is recorded **only** when the provider reported it. Recording a
     zero for a provider that simply omitted ``usage`` would poison the histogram
@@ -330,10 +375,34 @@ def _record_metrics(
         kit.tokens.record(count, call.metric_attributes({sc.GEN_AI_TOKEN_TYPE: token_type}))
 
 
-AttemptScope = Callable[[int], Any]
+def _safely(what: str, record: Callable[[], None]) -> None:
+    """Run a recording step, swallowing anything it raises.
+
+    **Telemetry must never be the thing that fails a provider call.** These
+    steps run inside the scope's ``__exit__``, after ``acall_with_retry`` has
+    already evaluated ``return result`` — so an exception here would replace a
+    successful return with one the retry helper does not catch (it is not an
+    ``LLMError``), and the planner would report a hard failure for a call the
+    provider actually answered. On the failure path it would be worse: it would
+    *replace* the ``LLMError`` and silently disable the retry.
+
+    The SDK is forgiving (bad attribute types and duplicate instrument
+    registrations are logged, not raised), so this should never fire. It is
+    three lines against a failure mode whose name is "observability took down
+    the planner", and it will run eight-wide once MUS-26 lands.
+    """
+    try:
+        record()
+    except Exception:
+        logger.debug("GenAI telemetry: %s failed", what, exc_info=True)
 
 
-def provider_call_scope(call: ProviderCall, *, tracer: Any = None) -> AttemptScope:
+AttemptScope = Callable[[int], AbstractContextManager[Callable[["LLMResult"], None]]]
+
+
+def provider_call_scope(
+    call: ProviderCall, *, tracer: "trace_api.Tracer | None" = None
+) -> AttemptScope:
     """Build an ``attempt_scope`` for ``acall_with_retry``.
 
     Usage — the whole integration, at the one call site that retries::
@@ -376,17 +445,28 @@ def provider_call_scope(call: ProviderCall, *, tracer: Any = None) -> AttemptSco
             try:
                 yield recorded.append
             except BaseException as exc:
-                _record_failure(span, exc)
+                # BaseException, not Exception, and the reason is asyncio:
+                # `CancelledError` derives from BaseException, and cancelling a
+                # sibling task mid-flight is a normal event once MUS-26 runs
+                # eight leads concurrently. Narrowing this to Exception would
+                # leave those spans open -- and an unended span is never
+                # exported, so cancelled leads would vanish from the trace
+                # rather than show as cancelled.
+                #
                 # The failure's own latency, measured by the adapter, beats our
                 # wall clock: it excludes our parsing and error mapping. It is
                 # absent only for a caller-constructed error.
-                latency = getattr(exc, "latency_s", None)
-                _record_metrics(
-                    call,
-                    duration_s=latency
-                    if isinstance(latency, (int, float))
-                    else time.perf_counter() - started,
-                    exc=exc,
+                # Bound to a local because `except ... as exc` unbinds `exc` at
+                # the end of the block, and the closures below outlive the name.
+                failure = exc
+                latency = getattr(failure, "latency_s", None)
+                duration = (
+                    latency if isinstance(latency, (int, float)) else time.perf_counter() - started
+                )
+                _safely("failure attributes", lambda: _record_failure(span, failure))
+                _safely(
+                    "failure metrics",
+                    lambda: _record_metrics(call, duration_s=duration, exc=failure),
                 )
                 raise
             else:
@@ -394,15 +474,20 @@ def provider_call_scope(call: ProviderCall, *, tracer: Any = None) -> AttemptSco
                 # result (nullcontext semantics). The span still closes green;
                 # it simply has no response-side attributes.
                 result = recorded[-1] if recorded else None
+                # Duration is recorded whatever happened -- the attempt took as
+                # long as it took, and a caller declining to report a result is
+                # not a reason for the Required latency instrument to under-count.
+                duration = (
+                    result.latency_s
+                    if result is not None and result.latency_s is not None
+                    else time.perf_counter() - started
+                )
                 if result is not None:
-                    _record_success(span, call, result)
-                    _record_metrics(
-                        call,
-                        duration_s=result.latency_s
-                        if result.latency_s is not None
-                        else time.perf_counter() - started,
-                        result=result,
-                    )
+                    _safely("success attributes", lambda: _record_success(span, call, result))
+                _safely(
+                    "success metrics",
+                    lambda: _record_metrics(call, duration_s=duration, result=result),
+                )
 
     return scope
 

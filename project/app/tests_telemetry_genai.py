@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from django.test import SimpleTestCase
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
@@ -30,7 +30,7 @@ from project.app.services.llm.errors import (
 )
 from project.app.services.telemetry import genai, semconv, setup
 
-from .tests_telemetry_support import install_in_memory_tracing, reset_spans, spans_named
+from .tests_telemetry_support import RecordingTestCase, spans_named
 
 CALL = genai.ProviderCall(
     provider="groq",
@@ -139,16 +139,7 @@ class ProviderCallTests(SimpleTestCase):
         self.assertNotIn(semconv.SERVER_PORT, genai._server_attributes("http://host:notaport/v1"))
 
 
-class _SpanTestCase(SimpleTestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.exporter = install_in_memory_tracing()
-
-    def setUp(self):
-        super().setUp()
-        reset_spans()
-
+class _SpanTestCase(RecordingTestCase):
     async def _run(self, operation, *, call=CALL, max_attempts=4):
         return await retry.acall_with_retry(
             operation,
@@ -344,15 +335,96 @@ class RetrySpanTests(_SpanTestCase):
         self.assertEqual(span.attributes[semconv.ERROR_TYPE], "ValueError")
         self.assertEqual(span.status.status_code, trace.StatusCode.ERROR)
 
+    async def test_a_cancelled_attempt_still_closes_its_span(self):
+        """``CancelledError`` derives from ``BaseException``, which is why the
+        handler catches that and not ``Exception``.
+
+        Not a hypothetical: once MUS-26 runs eight leads under
+        ``asyncio.gather``, one lead's failure cancels the others mid-flight.
+        Narrowing the handler would leave those spans open -- and an unended
+        span is never exported, so the cancelled leads would vanish from the
+        trace rather than appear as cancelled. A green suite would not notice.
+        """
+        import asyncio
+
+        async def operation():
+            raise asyncio.CancelledError()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await self._run(operation)
+
+        (span,) = self.client_spans()
+        self.assertEqual(span.attributes[semconv.ERROR_TYPE], "CancelledError")
+        self.assertEqual(span.status.status_code, trace.StatusCode.ERROR)
+
+    async def test_a_broken_recorder_cannot_fail_a_call_the_provider_answered(self):
+        """These steps run in ``__exit__``, after ``acall_with_retry`` has
+        already evaluated ``return result``. An exception here would replace a
+        successful return with one the retry helper does not catch, and the
+        planner would report a hard failure for a call that worked. Telemetry
+        must never be the thing that fails a provider call."""
+
+        async def operation():
+            return RESULT
+
+        with mock.patch.object(genai, "_record_success", side_effect=RuntimeError("boom")):
+            with mock.patch.object(genai, "_record_metrics", side_effect=RuntimeError("boom")):
+                result = await self._run(operation)
+
+        self.assertIs(result, RESULT)
+
+    async def test_a_broken_recorder_cannot_swallow_a_provider_failure(self):
+        """Worse than the success case: here an unguarded raise would *replace*
+        the ``LLMError``, and the retry helper would stop retrying because what
+        reached it was not retryable."""
+
+        async def operation():
+            raise LLMRateLimitError("throttled", provider="groq")
+
+        with mock.patch.object(genai, "_record_failure", side_effect=RuntimeError("boom")):
+            with self.assertRaises(LLMRateLimitError):
+                await self._run(operation, max_attempts=1)
+
+    async def test_a_provider_authored_finish_reason_is_shape_checked(self):
+        """``raw_finish_reason`` is the one attribute here carrying text off the
+        provider's wire, and this module's stance is that such text does not
+        reach the trace backend. An enum-ish token passes; a sentence does not."""
+        smuggled = LLMResult(
+            text="x",
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            finish_reason=None,
+            raw_finish_reason="stopped because " + "A" * 200,
+        )
+
+        async def operation():
+            return smuggled
+
+        await self._run(operation)
+        (span,) = self.client_spans()
+        self.assertNotIn(semconv.GEN_AI_RESPONSE_FINISH_REASONS, span.attributes)
+
 
 class NoTelemetryPathTests(SimpleTestCase):
-    """The same helper, driven against the API's no-op provider.
+    """The same helper, driven against the API's no-op providers.
 
     This is the test that proves there is no second code path: the planner will
     call exactly these statements whether or not an endpoint is configured, and
     with none configured they must complete without raising and without
-    recording.
+    recording. Both providers are stubbed out, not just the tracer -- otherwise
+    ``instruments()`` would still reach the process-global meter and the class
+    would only be true of tracing.
     """
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(
+            mock.patch.object(
+                genai, "get_meter", lambda: metrics.NoOpMeterProvider().get_meter("t")
+            )
+        )
+        genai._reset_instruments_for_tests()
+        self.addCleanup(genai._reset_instruments_for_tests)
 
     async def test_the_scope_works_against_a_no_op_tracer(self):
         tracer = trace.get_tracer(__name__, tracer_provider=trace.NoOpTracerProvider())
@@ -364,11 +436,13 @@ class NoTelemetryPathTests(SimpleTestCase):
         with self.assertRaises(LLMRateLimitError), scope(1):
             raise LLMRateLimitError("throttled", provider="groq", retry_after=1.0)
 
+
+class NullContextSemanticsTests(_SpanTestCase):
     async def test_a_scope_whose_caller_reports_no_result_still_closes_green(self):
-        """``nullcontext`` semantics: a caller may opt out of reporting. The
-        span then has no response-side attributes but is not an error."""
-        exporter = install_in_memory_tracing()
-        exporter.clear()
+        """A caller may opt out of reporting a result (``nullcontext``
+        semantics). The span then has no response-side attributes but is not an
+        error -- and the attempt still took as long as it took, so the Required
+        latency instrument must not under-count."""
         scope = genai.provider_call_scope(CALL)
         with scope(0):
             pass

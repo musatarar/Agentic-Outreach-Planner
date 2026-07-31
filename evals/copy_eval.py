@@ -47,6 +47,7 @@ from project.app.services.llm import build_client, retry  # noqa: E402
 from project.app.services.llm import config as llm_config  # noqa: E402
 from project.app.services.outreach import MAX_COPY_TOKENS, _build_copy_prompt  # noqa: E402
 from project.app.services.telemetry import genai as telemetry_genai  # noqa: E402
+from project.app.services.telemetry import setup as telemetry_setup  # noqa: E402
 
 RUBRIC_PATH = REPO_ROOT / "evals" / "rubrics" / "copy.md"
 JUDGE_MAX_TOKENS = 800
@@ -93,6 +94,23 @@ def _estimate_tokens(text):
 _EVAL_RETRY_POLICY = retry.RetryPolicy(max_attempts=6, initial_backoff_s=2.0, max_backoff_s=65.0)
 
 
+def _attempt_scope(client, max_tokens):
+    """A traced attempt scope for this eval's provider calls (MUS-25).
+
+    ``telemetry.configure_from_env()`` normally runs from ``AppConfig.ready()``,
+    and this harness never calls ``django.setup()`` -- so without this the scope
+    would run against the API's no-op provider for the whole eval and emit
+    nothing at all. Called here rather than at import time because import-time
+    side effects are exactly what ``ready()`` exists to avoid; it is idempotent
+    and a no-op unless an OTLP endpoint is configured, so the cost per call is
+    an environment read.
+    """
+    telemetry_setup.configure_from_env()
+    return telemetry_genai.provider_call_scope(
+        telemetry_genai.ProviderCall.from_client(client, max_tokens)
+    )
+
+
 async def _generate_with_retry(client, prompt, max_tokens):
     """Call the provider natively async, retrying only retryable failures.
 
@@ -114,9 +132,7 @@ async def _generate_with_retry(client, prompt, max_tokens):
         # endpoint is configured, so an unattended eval run costs nothing for it
         # -- but a run against a live Phoenix shows exactly how much of a long
         # eval was the model and how much was the free tier throttling us.
-        attempt_scope=telemetry_genai.provider_call_scope(
-            telemetry_genai.ProviderCall.from_client(client, max_tokens)
-        ),
+        attempt_scope=_attempt_scope(client, max_tokens),
     )
 
 

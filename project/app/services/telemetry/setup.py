@@ -107,8 +107,12 @@ METRICS_ENDPOINT_ENV_VARS = ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",)
 # eyeballing the histograms without standing up a Prometheus.
 CONSOLE_METRICS_ENV = "OUTREACH_OTEL_CONSOLE_METRICS"
 
-# Explicit histogram buckets, both taken from the semantic conventions. The SDK
-# default boundaries (0, 5, 10, 25, ... 10000) are wrong for both instruments
+# Explicit histogram buckets. These are the semantic conventions' advised
+# boundaries VERBATIM, not a scheme derived here -- the doubling and quadrupling
+# described below is the spec's, and the ladders should be updated by copying
+# from the spec rather than by extending the pattern.
+#
+# The SDK's defaults (0, 5, 10, 25, ... 10000) are wrong for both instruments
 # and wrong in opposite directions: a sub-second latency in seconds falls
 # entirely in the first bucket, and a 2000-token prompt lands near the top of a
 # range that stops at 10000.
@@ -421,7 +425,11 @@ def configure_from_env() -> bool:
     """
     if _is_autoreload_parent() or _is_test_runner():
         return False
-    return _install("traces", _configure_traces) | _install("metrics", configure_metrics)
+    # Two statements, not `a or b`: both halves must run. Short-circuiting would
+    # silently skip metrics whenever traces installed first.
+    traces = _install("traces", _configure_traces)
+    metrics_installed = _install("metrics", configure_metrics)
+    return traces or metrics_installed
 
 
 def _configure_traces() -> bool:
