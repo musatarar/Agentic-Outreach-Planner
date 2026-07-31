@@ -46,6 +46,7 @@ from project.app.services import actions  # noqa: E402
 from project.app.services.llm import build_client, retry  # noqa: E402
 from project.app.services.llm import config as llm_config  # noqa: E402
 from project.app.services.outreach import MAX_COPY_TOKENS, _build_copy_prompt  # noqa: E402
+from project.app.services.telemetry import genai as telemetry_genai  # noqa: E402
 
 RUBRIC_PATH = REPO_ROOT / "evals" / "rubrics" / "copy.md"
 JUDGE_MAX_TOKENS = 800
@@ -109,6 +110,13 @@ async def _generate_with_retry(client, prompt, max_tokens):
     return await retry.acall_with_retry(
         lambda: client.agenerate(prompt, max_tokens=max_tokens),
         policy=_EVAL_RETRY_POLICY,
+        # One CLIENT span per HTTP attempt (MUS-25). A no-op unless an OTLP
+        # endpoint is configured, so an unattended eval run costs nothing for it
+        # -- but a run against a live Phoenix shows exactly how much of a long
+        # eval was the model and how much was the free tier throttling us.
+        attempt_scope=telemetry_genai.provider_call_scope(
+            telemetry_genai.ProviderCall.from_client(client, max_tokens)
+        ),
     )
 
 
