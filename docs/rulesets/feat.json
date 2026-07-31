@@ -1,11 +1,11 @@
 {
   "name": "feat/* — PR + required checks, no bypass",
   "target": "branch",
-  "enforcement": "evaluate",
+  "enforcement": "active",
   "conditions": {
     "ref_name": {
       "include": ["refs/heads/feat/*"],
-      "exclude": []
+      "exclude": ["refs/heads/feat/*--*"]
     }
   },
   "rules": [

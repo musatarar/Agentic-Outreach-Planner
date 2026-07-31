@@ -1,7 +1,7 @@
 {
   "name": "master — PR + required checks, no bypass",
   "target": "branch",
-  "enforcement": "evaluate",
+  "enforcement": "active",
   "conditions": {
     "ref_name": {
       "include": ["refs/heads/master"],

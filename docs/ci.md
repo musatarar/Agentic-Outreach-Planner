@@ -31,8 +31,14 @@ branches are single-level by construction):
 - block force pushes,
 - **zero bypass actors** — "forced to pass" includes the admin, or it's theater.
 
+The `feat/*` ruleset **excludes `refs/heads/feat/*--*`** — the skeleton/mini/contract PR
+*head* branches. Those are where development pushes happen; putting a pull-request rule on
+them would reject every push and kill the workflow. The enforcement boundary is the
+integration branch `feat/<x>` (and `master`): a head branch only becomes code via a gated
+PR into a protected base, so nothing is lost by leaving heads pushable.
+
 The configuration is committed as `docs/rulesets/master.json` and
-`docs/rulesets/feat.json` (enforcement deliberately starts at `evaluate`). Create both:
+`docs/rulesets/feat.json`. Create both:
 
 ```bash
 gh api repos/musatarar/Agentic-Outreach-Planner/rulesets --input docs/rulesets/master.json
@@ -47,26 +53,26 @@ gh api repos/musatarar/Agentic-Outreach-Planner/rulesets   # note the ids
 gh api repos/musatarar/Agentic-Outreach-Planner/rulesets/<id>
 ```
 
-### Evaluate → Active procedure
+### Activation procedure
 
-1. Create both rulesets with `"enforcement": "evaluate"` (as committed).
-2. Exercise one red PR and one green PR per protected pattern; confirm the ruleset
-   **Insights** (Settings → Rules → Insights, or
-   `gh api repos/{owner}/{repo}/rulesets/rule-suites`) log would-block / would-pass
-   respectively, and that the `feat/*` pattern actually matched the branches.
-3. Flip to active:
+GitHub's **Evaluate** (dry-run) enforcement is not available on this plan — the API
+returns `422: Enforcement evaluate option is not supported on this plan. Please upgrade
+to Enterprise` (verified 2026-07-31; it is an Enterprise feature, not a public-repo
+freebie). The committed JSON therefore carries `"enforcement": "active"`, and activation
+uses the pre-staged-verdicts fallback:
 
-   ```bash
-   gh api -X PUT repos/musatarar/Agentic-Outreach-Planner/rulesets/<id> \
-     -f enforcement=active
-   ```
+1. With **no rulesets in existence**, rehearse the gate on real PRs (the full playbook:
+   red and green verdicts for every class) while the merge button is still unconstrained.
+2. Pre-stage one **red** PR and one **green** PR against a protected base.
+3. Create both rulesets (already `active`, quiet moment) with the commands above.
+4. Immediately verify both directions: the red PR's merge button is dead ("Required
+   check workflow-gate has failed"), the green PR merges, and a direct push to `master`
+   or `feat/<x>` is rejected. This also confirms the patterns matched real branches —
+   the proof Evaluate-mode insights would have given, with a smaller window.
 
-4. Immediately verify both directions again: a red PR shows a dead merge button; a green
-   PR merges; a direct push to a protected branch is rejected.
-
-Never activate before the gate code has passed three layers: its tier-1 unit suite, an
-advisory rehearsal on real PRs, and Evaluate-mode insights. Activating a gate that always
-fails is the lockout scenario below.
+Never activate before the gate code has passed both prior layers: its tier-1 unit suite
+and the advisory rehearsal on real PRs. Activating a gate that always fails is the
+lockout scenario below.
 
 ### Recovery path (lockout)
 
