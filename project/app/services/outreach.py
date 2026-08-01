@@ -24,6 +24,7 @@ from project.app.services.llm import (
     LLMTimeoutError,
     LLMTransientError,
     get_llm_client,
+    wrap_unexpected,
 )
 from project.app.services.llm import runtime as llm_runtime
 from project.app.services.llm.retry import acall_with_retry
@@ -1285,15 +1286,31 @@ async def agenerate_copy(
     if timeouts is None:
         timeouts = llm_runtime.get_timeouts()
 
+    # Imported here for the same reason plan_outreach does it: this module
+    # stays importable with no telemetry configured, and the OTel API hands
+    # back no-ops when nothing is.
+    from project.app.services.telemetry import genai
+
     attempts = 0
     last_error = None
     started = time.monotonic()
+
+    # One description of the call, built once and shared by every attempt for
+    # this lead (MUS-25): hooked into the retry helper's `attempt_scope` seam,
+    # it opens one `chat {model}` CLIENT span per HTTP attempt, so a 429 that
+    # was retried and a success that followed it are siblings under the same
+    # lead rather than one blurred interval.
+    call_scope = genai.provider_call_scope(genai.ProviderCall.from_client(client, MAX_COPY_TOKENS))
 
     async def attempt():
         nonlocal attempts, last_error
         attempts += 1
         try:
-            return await client.acomplete(
+            # `agenerate`, not `acomplete`: the span recorder is handed the
+            # attempt's result while its span is still open, and it needs the
+            # full LLMResult -- usage, served model, finish reason -- not the
+            # text the rest of this function cares about.
+            return await client.agenerate(
                 prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
             )
         except LLMError as exc:
@@ -1316,7 +1333,8 @@ async def agenerate_copy(
         # it caused into a TimeoutError at its own boundary, so a CancelledError
         # from somewhere else still reads as a cancellation.
         async with asyncio.timeout(timeouts.per_lead_s) as budget:
-            return await acall_with_retry(attempt, policy=retry)
+            result = await acall_with_retry(attempt, policy=retry, attempt_scope=call_scope)
+            return result.text
     except LLMError as exc:
         raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
     except TimeoutError as exc:
@@ -1548,11 +1566,20 @@ class CopyOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReviewOutcome:
-    """The three fields phase 4 decides and phase 5 writes."""
+    """The three fields phase 4 decides and phase 5 writes, plus its workings.
+
+    The two counts are not written to the database -- they are the reason phase 4
+    reached its verdict, which the lead span records (MUS-25). They are carried
+    rather than recomputed because recomputing them would mean running both
+    output gates a second time, and a second run of a fail-closed check is a
+    second chance to disagree with the decision already made.
+    """
 
     suggested_copy: str
     needs_human: bool
     further_action: str
+    shape_problem_count: int = 0
+    violation_count: int = 0
 
 
 def _build_work_item(lead, suppressed, open_keys, today):
@@ -1619,8 +1646,18 @@ def _resolve_client(work):
         return None, None
     try:
         return get_llm_client(), None
-    except Exception as exc:
+    except LLMError as exc:
+        # An unset key raises LLMAuthError from the adapter's constructor, and
+        # that is genuinely a configuration fault -- so it arrives already
+        # classified and reaches the span as `configuration` rather than
+        # `unknown`.
         return None, exc
+    except Exception as exc:
+        # Everything else here is our bug (a bad provider name, a decryption
+        # failure), not a provider's. Wrapped rather than passed through so
+        # phase 4 has exactly one exception type to reason about, and named
+        # rather than flattened so it is still legible as the bug it is.
+        return None, wrap_unexpected(exc)
 
 
 def _outcome_without_calling(item, client_error):
@@ -1686,14 +1723,29 @@ async def _agenerate_for(item, client, runtime, client_error=None):
         # provider error's own `retryable` flag, and it should not have to know
         # that phase 3 wraps things.
         return CopyOutcome(error=exc.error, attempts=exc.attempts, elapsed_s=exc.elapsed_s)
-    except Exception as exc:  # don't let one API failure sink the run
+    except LLMError as exc:
+        # Already classified by the adapter. Passed through untouched -- the
+        # whole value of the taxonomy is that this class survives to the span.
         return CopyOutcome(error=exc)
+    except Exception as exc:  # don't let one lead's bug sink the run
+        # Wrapped rather than passed through (MUS-58): the caller gets one
+        # exception family to reason about, and
+        # ``LLMUnexpectedError.failure_kind`` still names what really
+        # happened, so nothing escapes untyped and nothing is mis-typed.
+        return CopyOutcome(error=wrap_unexpected(exc))
     return CopyOutcome(text=text)
 
 
-async def _agenerate_all(work, client, client_error, runtime):
+async def _agenerate_all(work, lead_spans, client, client_error, runtime):
     """Phase 3 for the whole run: every lead at once, at most
     ``runtime.max_in_flight`` of them actually talking to the provider.
+
+    ``lead_spans`` rides along zipped with ``work`` (MUS-25): each lead's
+    provider call runs with its own span active, so the ``chat`` span each HTTP
+    attempt opens parents to that lead rather than to whichever sibling
+    happened to be current. Activation is per *task* — ``use_span`` is
+    contextvar-backed and every gather task carries its own context copy — so
+    eight in-flight leads cannot leak spans into each other.
 
     A semaphore rather than a chunked loop. Chunking is the obvious way to bound
     concurrency and the wrong one: it waits for the slowest call in each batch
@@ -1722,7 +1774,7 @@ async def _agenerate_all(work, client, client_error, runtime):
     """
     semaphore = asyncio.Semaphore(runtime.max_in_flight)
 
-    async def bounded(item):
+    async def bounded(item, lead_span):
         # The skip cases never take a slot: an unmatched lead has no provider
         # call to make, so making it queue for permission to make one would be
         # pure latency.
@@ -1730,10 +1782,14 @@ async def _agenerate_all(work, client, client_error, runtime):
         if outcome is not None:
             return outcome
         async with semaphore:
-            return await _agenerate_for(item, client, runtime, client_error)
+            with lead_span.active():
+                return await _agenerate_for(item, client, runtime, client_error)
 
     try:
-        results = await asyncio.gather(*(bounded(item) for item in work), return_exceptions=True)
+        results = await asyncio.gather(
+            *(bounded(item, span) for item, span in zip(work, lead_spans, strict=True)),
+            return_exceptions=True,
+        )
     finally:
         await _aclose_quietly(client)
     return [_as_outcome(result) for result in results]
@@ -2073,18 +2129,33 @@ def _review(item, outcome, level, today):
         suggested_copy=outcome.text,
         needs_human=True,
         further_action="\n\n".join(messages),
+        shape_problem_count=len(shape_problems),
+        violation_count=len(violations),
     )
 
 
 def plan_outreach():
     """Plan outreach for every lead: decide priority + action, generate copy,
-    persist OutreachAction rows, and return them sorted by priority."""
+    persist OutreachAction rows, and return them sorted by priority.
+
+    Traced end to end (MUS-25): one ``invoke_agent outreach_planner`` span for
+    the run, one ``plan_lead`` span per lead, and one ``chat {model}`` span per
+    HTTP attempt underneath. Every span statement below is a ``with`` block
+    delegating to :mod:`project.app.services.telemetry.genai` — no telemetry
+    decision is taken in this function, so the instrumentation neither
+    complicates the planner's own logic nor moves when the planner does.
+
+    With no OTLP endpoint configured the same statements run against the OTel
+    API's no-op provider and cost nothing, so there is no branch here to keep in
+    step.
+    """
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
     from django.db import transaction
 
     from project.app.models import DismissedOutreachKey, Lead, OutreachAction
     from project.app.services import queue_copy
+    from project.app.services.telemetry import genai
 
     # Copy grounding strictness (off | standard | strict); see verify.py.
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
@@ -2134,124 +2205,179 @@ def plan_outreach():
     # contradiction the snapshot exists to prevent.
     today = datetime.date.today()
 
-    # 1. read. `prefetch_related` is the whole N+1 fix: every lead's events are
-    # walked at least three times in a run -- `_notes_blob` in phase 2,
-    # `_format_events_for_prompt` while building the prompt, `verify_copy` in
-    # phase 4 and `explain` in phase 5 -- and without it each of those is a
-    # query per lead. Two queries total instead of 1 + 4N.
-    leads = list(Lead.objects.prefetch_related("events"))
-
-    # 2. classify, apply the skip rules, and build prompts (the last phase
-    #    before the provider call)
-    work = []
-    for lead in leads:
-        item = _build_work_item(lead, suppressed, open_keys, today)
-        if item is None:
-            continue
-        work.append(item)
-        # This lead now has an item in this run, so a later lead sharing the key
-        # (or a re-entrant run) skips it rather than duplicating.
-        open_keys.add(item.dedupe_key)
-
-    # 3. call the provider, concurrently -- no ORM in this phase, at all.
-    # The knobs are resolved once, here, rather than per lead: they describe
-    # this run, and 200 leads each re-reading Django settings would be 200
-    # chances for a mid-run configuration change to make half a run behave
-    # differently from the other half.
+    # The knobs are resolved once, ahead of the run span rather than inside
+    # phase 3: they describe this run (the span records `max_in_flight`, and a
+    # per-lead latency reading is uninterpretable without it), and 200 leads
+    # each re-reading Django settings would be 200 chances for a mid-run
+    # configuration change to make half a run behave differently from the
+    # other half.
     runtime = llm_runtime.get_planner_runtime()
-    client, client_error = _resolve_client(work)
-    outcomes = _run_coroutine(_agenerate_all(work, client, client_error, runtime))
 
-    # 4. run the output gates
-    # strict=True on every zip: these lists cannot diverge today, but phase 3
-    # becomes an asyncio.gather downstream, and a silently truncated zip there
-    # would drop leads from the run without a trace.
-    reviews = [
-        _review(item, outcome, level, today) for item, outcome in zip(work, outcomes, strict=True)
-    ]
+    with genai.run_span(verify_level=level, max_in_flight=runtime.max_in_flight) as run:
+        # 1. read. `prefetch_related` is the whole N+1 fix: every lead's events
+        # are walked at least three times in a run -- `_notes_blob` in phase 2,
+        # `_format_events_for_prompt` while building the prompt, `verify_copy`
+        # in phase 4 and `explain` in phase 5 -- and without it each of those
+        # is a query per lead. Two queries total instead of 1 + 4N.
+        leads = list(Lead.objects.prefetch_related("events"))
 
-    # 5. write. The two snapshots are computed FIRST, outside the transaction:
-    # `explain()` re-runs the whole rule engine and `build_verification()` walks
-    # `lead.events`, so leaving them inline would hold a write transaction open
-    # across several queries per lead for no atomicity benefit -- only the
-    # inserts need to be atomic.
-    #
-    # Atomic at all because the split already moved every write to after every
-    # provider call: an escape mid-run now means no rows rather than the first
-    # N-1, so it may as well be all-or-nothing on purpose instead of by accident.
-    snapshots = [
-        (
-            # Taken once at planning time and never recomputed: every relative
-            # figure in the trace ("28d since last contact") is only true as of
-            # `trace.today`, so recomputing at read time would silently
-            # contradict the `reason` prose persisted beside it (section 9.9).
-            explain(item.lead, today),
-            queue_copy.build_verification(
-                item.lead, review.suggested_copy, item.action_type, level=level, today=today
-            ),
-        )
-        for item, review in zip(work, reviews, strict=True)
-    ]
-    rows = [
-        OutreachAction(
-            lead=item.lead,
-            priority=item.priority,
-            action_type=item.action_type,
-            reason=item.reason,
-            suggested_copy=review.suggested_copy,
-            needs_human=review.needs_human,
-            further_action=review.further_action,
-            dedupe_key=item.dedupe_key,
-            rule_trace=rule_trace,
-            verification=verification,
-        )
-        for item, review, (rule_trace, verification) in zip(work, reviews, snapshots, strict=True)
-    ]
-    with transaction.atomic():
-        # Supersede the failed-attempt rows this run is replacing. They were let
-        # through the open-item rule on purpose (see failed_generation_filter),
-        # so without this a lead that failed on Monday and succeeded on Tuesday
-        # would show a real draft and a stale "the provider was down" row side
-        # by side in the same finite queue. Deleted rather than marked: a failed
-        # attempt carries no draft, and the one decision it can carry -- a
-        # snooze -- was aimed at the stale failure notice, not at whatever this
-        # run just produced. Un-snoozing here is deliberate: the fresh outcome
-        # goes in front of a reviewer rather than inheriting a "not now" that
-        # answered a different question. Nothing else in the row is worth an
-        # audit trail that the run's own log does not already have.
-        OutreachAction.objects.filter(
-            dedupe_key__in=[item.dedupe_key for item in work],
-            status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
-        ).filter(failed_generation_filter()).delete()
+        # 2. classify, apply the skip rules, and build prompts (the last phase
+        #    before the provider call)
+        work = []
+        for lead in leads:
+            item = _build_work_item(lead, suppressed, open_keys, today)
+            if item is None:
+                continue
+            work.append(item)
+            # This lead now has an item in this run, so a later lead sharing the
+            # key (or a re-entrant run) skips it rather than duplicating.
+            open_keys.add(item.dedupe_key)
 
-        # One statement per batch instead of one per lead. `bulk_create` skips
-        # `save()` and the pre/post-save signals; neither is used by this model,
-        # and `auto_now_add` on `created_at` is applied by the field itself
-        # (`pre_save`), not by `save()`, so the timestamps survive. Both are
-        # asserted in tests_planner_perf rather than assumed -- "bulk_create
-        # skips things" is exactly the kind of half-remembered fact that turns
-        # into a null column in production.
+        # A span per lead, opened here and closed in phase 4. It deliberately
+        # spans both phases: "how long did this lead take" is the question it
+        # exists to answer, and that answer starts at the provider call and ends
+        # at the verdict. The run owns them, so an escape between the two phases
+        # cannot leave one open (an unended span is never exported at all, so
+        # the symptom would be a lead silently missing from the trace).
+        lead_spans = [
+            run.start_lead(
+                lead_id=item.lead.id,
+                action_type=item.action_type,
+                priority=item.priority,
+                prompt=item.prompt,
+            )
+            for item in work
+        ]
+
+        # 3. call the provider, concurrently -- no ORM in this phase, at all.
+        client, client_error = _resolve_client(work)
+        outcomes = _run_coroutine(_agenerate_all(work, lead_spans, client, client_error, runtime))
+
+        # 4. run the output gates
+        # strict=True on every zip: these lists cannot diverge today, but phase 3
+        # is an asyncio.gather, and a silently truncated zip here would drop
+        # leads from the run without a trace.
+        reviews = []
+        for item, outcome, lead_span in zip(work, outcomes, lead_spans, strict=True):
+            with lead_span.active():
+                review = _review(item, outcome, level, today)
+            genai.finish_lead(
+                lead_span,
+                run_id=run.run_id,
+                lead_id=item.lead.id,
+                skipped=item.action_type == actions.UNKNOWN,
+                generated=outcome.error is None and bool(outcome.text),
+                needs_human=review.needs_human,
+                shape_problem_count=review.shape_problem_count,
+                violation_count=review.violation_count,
+                output_text=review.suggested_copy,
+                failure=outcome.error,
+            )
+            reviews.append(review)
+
+        # 5. write. The two snapshots are computed FIRST, outside the
+        # transaction: `explain()` re-runs the whole rule engine and
+        # `build_verification()` walks `lead.events`, so leaving them inline
+        # would hold a write transaction open across several queries per lead
+        # for no atomicity benefit -- only the inserts need to be atomic.
         #
-        # Batching is the backend's decision, not ours. Django's SQLite backend
-        # caps a batch at `max_query_params (999) // len(fields)`, which for this
-        # model's 18 insertable fields is 55 rows; Postgres does not cap at all
-        # and sends one statement. So a 200-lead run is 4 INSERTs on the SQLite
-        # CI leg and 1 on the Postgres one -- see tests_planner_perf, which
-        # computes the expectation from `connection.ops.bulk_batch_size` rather
-        # than hardcoding either.
-        #
-        # One thing worth knowing when a write fails: an IntegrityError from a
-        # per-row `create()` named one object, and from here it names a batch.
-        # Bisect the batch rather than trusting the message to point at a row.
-        planned = OutreachAction.objects.bulk_create(rows)
+        # Atomic at all because the split already moved every write to after
+        # every provider call: an escape mid-run now means no rows rather than
+        # the first N-1, so it may as well be all-or-nothing on purpose instead
+        # of by accident.
+        snapshots = [
+            (
+                # Taken once at planning time and never recomputed: every
+                # relative figure in the trace ("28d since last contact") is only
+                # true as of `trace.today`, so recomputing at read time would
+                # silently contradict the `reason` prose persisted beside it
+                # (section 9.9).
+                explain(item.lead, today),
+                queue_copy.build_verification(
+                    item.lead, review.suggested_copy, item.action_type, level=level, today=today
+                ),
+            )
+            for item, review in zip(work, reviews, strict=True)
+        ]
+        rows = [
+            OutreachAction(
+                lead=item.lead,
+                priority=item.priority,
+                action_type=item.action_type,
+                reason=item.reason,
+                suggested_copy=review.suggested_copy,
+                needs_human=review.needs_human,
+                further_action=review.further_action,
+                dedupe_key=item.dedupe_key,
+                # Stamped so each row can be traced back to the run that
+                # produced it -- and, in the other direction, so a lead span
+                # can name the row it will produce before that row exists.
+                trace_run_id=run.run_id,
+                rule_trace=rule_trace,
+                verification=verification,
+            )
+            for item, review, (rule_trace, verification) in zip(
+                work, reviews, snapshots, strict=True
+            )
+        ]
+        with transaction.atomic():
+            # Supersede the failed-attempt rows this run is replacing. They were
+            # let through the open-item rule on purpose (see
+            # failed_generation_filter), so without this a lead that failed on
+            # Monday and succeeded on Tuesday would show a real draft and a
+            # stale "the provider was down" row side by side in the same finite
+            # queue. Deleted rather than marked: a failed attempt carries no
+            # draft, and the one decision it can carry -- a snooze -- was aimed
+            # at the stale failure notice, not at whatever this run just
+            # produced. Un-snoozing here is deliberate: the fresh outcome goes
+            # in front of a reviewer rather than inheriting a "not now" that
+            # answered a different question. Nothing else in the row is worth an
+            # audit trail that the run's own log does not already have.
+            OutreachAction.objects.filter(
+                dedupe_key__in=[item.dedupe_key for item in work],
+                status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
+            ).filter(failed_generation_filter()).delete()
 
-    # `bulk_create` returns the objects with primary keys populated on Postgres
-    # (RETURNING) and on SQLite >= 3.35 (also RETURNING); both CI legs qualify.
-    # It matters because the serializer emits `id` and the triage queue addresses
-    # rows by it, so a run that returned pk-less objects would serialize
-    # `"id": null` into the API response. Asserted explicitly in the tests --
-    # this is a guarantee about the *database*, not about our code, which is
-    # precisely why it deserves a test rather than a comment. Deploys CI never
-    # sees are covered at boot by checks.bulk_create_pk_check (app.E003).
+            # One statement per batch instead of one per lead. `bulk_create`
+            # skips `save()` and the pre/post-save signals; neither is used by
+            # this model, and `auto_now_add` on `created_at` is applied by the
+            # field itself (`pre_save`), not by `save()`, so the timestamps
+            # survive. Both are asserted in tests_planner_perf rather than
+            # assumed -- "bulk_create skips things" is exactly the kind of
+            # half-remembered fact that turns into a null column in production.
+            #
+            # Batching is the backend's decision, not ours. Django's SQLite
+            # backend caps a batch at `max_query_params (999) // len(fields)`,
+            # which for this model's 18 insertable fields is 55 rows; Postgres
+            # does not cap at all and sends one statement. So a 200-lead run is
+            # 4 INSERTs on the SQLite CI leg and 1 on the Postgres one -- see
+            # tests_planner_perf, which computes the expectation from
+            # `connection.ops.bulk_batch_size` rather than hardcoding either.
+            #
+            # One thing worth knowing when a write fails: an IntegrityError from
+            # a per-row `create()` named one object, and from here it names a
+            # batch. Bisect the batch rather than trusting the message to point
+            # at a row.
+            #
+            # `bulk_create` returns the objects with primary keys populated on
+            # Postgres (RETURNING) and on SQLite >= 3.35 (also RETURNING); both
+            # CI legs qualify. It matters because the serializer emits `id` and
+            # the triage queue addresses rows by it, so a run that returned
+            # pk-less objects would serialize `"id": null` into the API
+            # response. Asserted explicitly in the tests -- this is a guarantee
+            # about the *database*, not about our code, which is precisely why
+            # it deserves a test rather than a comment. Deploys CI never sees
+            # are covered at boot by checks.bulk_create_pk_check (app.E003).
+            planned = OutreachAction.objects.bulk_create(rows)
+
+        # After the write, deliberately. A run that rolled back should not be
+        # holding a tidy summary of the rows it did not create -- it escapes
+        # with `error.type` on the run span instead, which is the only honest
+        # report of "planned 200 leads, saved none".
+        run.finish(
+            lead_count=len(work),
+            needs_human_count=sum(1 for review in reviews if review.needs_human),
+        )
+
     planned.sort(key=lambda a: a.priority)
     return planned

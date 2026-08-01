@@ -38,6 +38,8 @@ from .errors import (
     LLMRateLimitError,
     LLMTimeoutError,
     LLMTransientError,
+    LLMUnexpectedError,
+    wrap_unexpected,
 )
 from .groq import GroqClient
 from .stub import StubClient
@@ -128,4 +130,6 @@ __all__ = [
     "LLMAuthError",
     "LLMBadRequestError",
     "LLMMalformedResponseError",
+    "LLMUnexpectedError",
+    "wrap_unexpected",
 ]
