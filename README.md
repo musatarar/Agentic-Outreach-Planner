@@ -195,6 +195,21 @@ There is deliberately **no `failure_kind` column**. The ticket asks for the dist
 `further_action`, the frontend renders that field as prose, and an enum column would mean a
 migration, a serializer field and a frontend change for something nobody queries.
 
+A failed row does not hold the recommendation's dedupe slot, which is what makes *"re-run the
+planner"* an instruction that works. Without that, the "an open item wins" rule would skip
+exactly the lead the message named, and the row would sit in a finite queue for ever — clearable
+only by dismissing the recommendation permanently or approving an empty draft. The next
+successful run supersedes it. Unmatched-classification rows *do* keep their slot: those are real
+decisions, and raising them twice a day is the duplicate-inbox bug the rule exists to prevent.
+
+**A run has no overall deadline, and that is a known bound rather than an oversight.** Worst case
+is `ceil(leads / OUTREACH_MAX_IN_FLIGHT) × OUTREACH_PER_LEAD_TIMEOUT_S` — with the defaults and
+200 leads, about 62 minutes inside one synchronous `POST /api/outreach/run/`, and because phase 5
+is a single transaction at the end, a proxy timing out at minute 30 writes nothing. Size
+`OUTREACH_PER_LEAD_TIMEOUT_S` against your own proxy's limit and lead count. A run-level deadline
+that preserves partial results needs per-task bookkeeping (the outer timeout would otherwise
+cancel the gather and discard completed leads), which is more than this ticket should carry.
+
 Bad values are rejected **at boot**, by a Django system check, with the offending environment
 variable named in the message — `OUTREACH_BACKOFF_MULTIPLIER must be at least 1, got 0.5.`
 rather than a `ValueError` about a dataclass field an operator has never heard of, and long

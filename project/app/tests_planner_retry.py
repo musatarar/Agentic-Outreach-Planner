@@ -86,16 +86,24 @@ class _ScriptedClient:
 
 
 class _HangingClient:
-    """A provider that never answers, for the per-lead budget."""
+    """A provider that answers far too late, for the per-lead budget.
+
+    A *bounded* sleep, not `asyncio.Event().wait()`. With an unbounded wait,
+    deleting the `asyncio.timeout` makes this suite HANG rather than fail --
+    and `.github/workflows/ci.yml` sets no `timeout-minutes`, so that would
+    burn GitHub's 360-minute default and report as a cancelled job instead of a
+    red test. Thirty seconds is far past every deadline these tests set.
+    """
 
     provider_name = "groq"
+    HANG_S = 30.0
 
     def __init__(self):
         self.attempts = 0
 
     async def acomplete(self, prompt, max_tokens=None, timeout=None):
         self.attempts += 1
-        await asyncio.Event().wait()  # never resolves
+        await asyncio.sleep(self.HANG_S)
 
     async def aclose(self):
         return None
@@ -189,11 +197,12 @@ class RateLimitIsRetriedTests(TestCase):
         self.assertFalse(OutreachAction.objects.get().needs_human)
         self.assertEqual(client.attempts, 2)
 
-    def test_a_retry_after_header_is_honoured_without_stalling_the_test(self):
-        # `retry_after` wins on magnitude over the configured backoff, capped by
-        # OUTREACH_MAX_BACKOFF_S -- which is 0 here, so a hostile 300-second
-        # header costs this test nothing. That the cap applies at all is the
-        # assertion; the schedule itself is the retry helper's own suite.
+    def test_a_hostile_retry_after_header_cannot_park_the_run(self):
+        # `retry_after` wins on magnitude over the configured backoff, but is
+        # capped by OUTREACH_MAX_BACKOFF_S -- which is 0 here, so a 300-second
+        # header costs this test nothing. The cap is the assertion (a run that
+        # honoured the raw header would hang for five minutes); whether the
+        # header is honoured *at all* is the retry helper's own suite.
         _lead()
         client = _ScriptedClient(rate_limit(retry_after=300.0))
 
@@ -233,7 +242,10 @@ class ExhaustedRetriesTests(TestCase):
             elapsed=sentinel,
             provider="groq",
             kind=outreach.FAILURE_KINDS[LLMRateLimitError],
-            detail="Rate limit reached",
+            # `_safe_detail` punctuates, so the provider's bare message
+            # arrives with a full stop rather than running into the next
+            # sentence.
+            detail="Rate limit reached.",
             action_type=actions.COMPLETE_ONBOARDING,
         )
         self.assertRegex(action.further_action, re.escape(expected).replace(sentinel, r"\d+\.\d"))
@@ -270,7 +282,17 @@ class ExhaustedRetriesTests(TestCase):
             plan_outreach()
 
         self.assertEqual(client.attempts, 4)
-        self.assertIn("after 4 attempt(s)", OutreachAction.objects.get().further_action)
+        self.assertIn(
+            outreach.COPY_RETRIES_EXHAUSTED.format(
+                attempts=4,
+                elapsed="",
+                provider="",
+                kind="",
+                detail="",
+                action_type="",
+            ).split(" over ")[0],
+            OutreachAction.objects.get().further_action,
+        )
 
 
 @override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
@@ -347,7 +369,14 @@ class PerLeadBudgetTests(TestCase):
         self.assertIn(outreach.FAILURE_KINDS[LLMTimeoutError], action.further_action)
         self.assertIn("OUTREACH_PER_LEAD_TIMEOUT_S", action.further_action)
 
-    @override_settings(OUTREACH_REQUEST_TIMEOUT_S=0.05, OUTREACH_PER_LEAD_TIMEOUT_S=0.2)
+    @override_settings(
+        OUTREACH_REQUEST_TIMEOUT_S=0.05,
+        OUTREACH_PER_LEAD_TIMEOUT_S=0.2,
+        # A pool of ONE. With the default 8 both leads get a slot regardless, so
+        # the test would pass even if the expiring timeout leaked its semaphore.
+        # At 1, the healthy lead can only be served if the slow one released.
+        OUTREACH_MAX_IN_FLIGHT=1,
+    )
     def test_one_slow_lead_does_not_take_the_others_down(self):
         _lead("lead_slow")
         _lead("lead_fine")
@@ -553,3 +582,180 @@ class AgenerateCopyRetryUnitTests(SimpleTestCase):
         )
 
         self.assertEqual(result, "drafted")
+
+
+@override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
+class ReRunActuallyWorksTests(TestCase):
+    """The instruction the message gives has to do something.
+
+    ``COPY_RETRIES_EXHAUSTED`` tells a reviewer to re-run the planner once the
+    provider recovers. That sentence is the component's entire payload -- and
+    for it to be true, the failed row must not hold the dedupe slot, because
+    "an open item wins" would otherwise skip exactly the lead it named. A row
+    that cannot be cleared by the action it prescribes is worse than no message,
+    because it sits in a finite queue for ever telling a human to do something
+    that does nothing.
+    """
+
+    def test_a_lead_that_failed_is_re_planned_on_the_next_run(self):
+        _lead()
+        throttled = _ScriptedClient(*[rate_limit()] * 3, then=rate_limit())
+
+        with _with_client(throttled):
+            plan_outreach()
+
+        failed = OutreachAction.objects.get()
+        self.assertTrue(failed.needs_human)
+        self.assertEqual(failed.suggested_copy, "")
+        self.assertIn("Re-run the planner", failed.further_action)
+
+        # Now do exactly what the message says. Nothing else -- no dismiss (that
+        # would suppress the recommendation permanently), no approve (that would
+        # put an empty draft on someone's clipboard).
+        healthy = _ScriptedClient()
+        with _with_client(healthy):
+            planned = plan_outreach()
+
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0].suggested_copy, GOOD_COPY)
+        self.assertFalse(planned[0].needs_human)
+
+    def test_the_stale_failure_row_is_superseded_rather_than_left_beside_it(self):
+        # Otherwise the queue shows the real draft and "the provider was down"
+        # side by side, which is a different way of wasting the same reviewer.
+        _lead()
+        with _with_client(_ScriptedClient(*[rate_limit()] * 3, then=rate_limit())):
+            plan_outreach()
+        with _with_client(_ScriptedClient()):
+            plan_outreach()
+
+        self.assertEqual(OutreachAction.objects.count(), 1)
+        self.assertEqual(OutreachAction.objects.get().suggested_copy, GOOD_COPY)
+
+    def test_an_unmatched_lead_still_suppresses_its_re_plan(self):
+        """The other half, and the reason this is not just `.exclude(copy="")`.
+
+        An unmatched lead is real BD work with a decision pending. Raising it
+        again on every run would be the duplicate-inbox bug the open-item rule
+        exists to prevent -- so the exclusion has to distinguish "no copy
+        because we failed" from "no copy because there was never any to write".
+        """
+        _unmatched_lead()
+
+        first = plan_outreach()
+        second = plan_outreach()
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertEqual(OutreachAction.objects.count(), 1)
+
+    def test_a_flagged_draft_still_suppresses_its_re_plan(self):
+        # A generation that succeeded but failed a gate keeps its draft, so it
+        # is not a "failed generation" and must go on holding the slot.
+        _lead()
+        with _with_client(_ScriptedClient(then="Subject: too short\n\nHi.")):
+            plan_outreach()
+
+        flagged = OutreachAction.objects.get()
+        self.assertTrue(flagged.needs_human)
+        self.assertNotEqual(flagged.suggested_copy, "")
+
+        with _with_client(_ScriptedClient()):
+            self.assertEqual(plan_outreach(), [])
+
+
+@override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
+class BudgetExpiryReportsTheRealCauseTests(TestCase):
+    """What the per-lead budget says when it fires."""
+
+    @override_settings(
+        # The request timeout has to come down with it: 26-a rejects a per-lead
+        # budget shorter than one attempt, on the grounds that it fails every lead.
+        OUTREACH_REQUEST_TIMEOUT_S=0.15,
+        OUTREACH_PER_LEAD_TIMEOUT_S=0.15,
+        OUTREACH_MAX_ATTEMPTS=50,
+    )
+    def test_a_run_of_429s_that_runs_out_of_time_is_reported_as_rate_limits(self):
+        """The most likely production path, and the one that read wrong.
+
+        `asyncio.timeout` cancels whatever was in flight, so the exception the
+        provider was raising is gone by the time the budget branch runs.
+        Fabricating a fresh timeout there described a throttled free tier --
+        the exact case `retry.py`'s docstring names as motivating -- as "kept
+        returning timeouts", pointing an engineer at a network problem that
+        does not exist.
+        """
+        _lead()
+        # Retry-After keeps it retrying until the budget goes.
+        client = _ScriptedClient(*[rate_limit(retry_after=0.02)] * 50, then=GOOD_COPY)
+
+        with override_settings(OUTREACH_INITIAL_BACKOFF_S=0.02, OUTREACH_MAX_BACKOFF_S=0.02):
+            with _with_client(client):
+                plan_outreach()
+
+        further = OutreachAction.objects.get().further_action
+        self.assertIn(outreach.FAILURE_KINDS[LLMRateLimitError], further)
+        self.assertNotIn(outreach.FAILURE_KINDS[LLMTimeoutError], further)
+        # ...and the budget is still named, because that is the knob to turn.
+        self.assertIn("OUTREACH_PER_LEAD_TIMEOUT_S", further)
+
+    @override_settings(OUTREACH_REQUEST_TIMEOUT_S=0.05, OUTREACH_PER_LEAD_TIMEOUT_S=0.05)
+    def test_a_provider_that_simply_never_answers_is_reported_as_a_timeout(self):
+        _lead()
+
+        with _with_client(_HangingClient()):
+            plan_outreach()
+
+        further = OutreachAction.objects.get().further_action
+        self.assertIn(outreach.FAILURE_KINDS[LLMTimeoutError], further)
+        self.assertIn("did not answer", further)
+
+
+@override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
+class ForeignTimeoutTests(TestCase):
+    """A `TimeoutError` we did not cause must not be relabelled as our budget."""
+
+    @override_settings(OUTREACH_PER_LEAD_TIMEOUT_S=120.0, OUTREACH_REQUEST_TIMEOUT_S=60.0)
+    def test_a_bare_timeout_error_keeps_its_own_words(self):
+        # `TimeoutError` is a builtin (and an OSError subclass), so a client
+        # that raises one directly -- rather than the taxonomy's -- would
+        # otherwise be reported as the per-lead budget expiring. An engineer
+        # would raise OUTREACH_PER_LEAD_TIMEOUT_S and watch nothing change.
+        _lead()
+        client = _ScriptedClient(TimeoutError("[Errno 60] Operation timed out"))
+
+        with _with_client(client):
+            plan_outreach()
+
+        further = OutreachAction.objects.get().further_action
+        self.assertIn("Operation timed out", further)
+        self.assertNotIn("OUTREACH_PER_LEAD_TIMEOUT_S", further)
+
+
+class DetailIsSafeToPersistTests(SimpleTestCase):
+    """`further_action` is stored and rendered. Provider text is not trusted."""
+
+    def test_an_api_key_shaped_string_is_redacted(self):
+        detail = outreach._safe_detail(
+            RuntimeError("401 from https://x.test/v1?api_key=sk-abcdef0123456789 (bad key)")
+        )
+
+        self.assertNotIn("sk-abcdef0123456789", detail)
+        self.assertIn("[redacted]", detail)
+
+    def test_a_bearer_token_is_redacted(self):
+        detail = outreach._safe_detail(RuntimeError("sent Authorization: Bearer hunter2secret"))
+        self.assertNotIn("hunter2secret", detail)
+
+    def test_an_enormous_provider_body_is_truncated(self):
+        # The Anthropic SDK puts the whole response body in its message, falling
+        # back to raw text when it isn't JSON -- so a proxy's HTML error page
+        # would otherwise land in a TextField once per lead.
+        detail = outreach._safe_detail(RuntimeError("<html>" + "x" * 200_000 + "</html>"))
+
+        self.assertLessEqual(len(detail), outreach.DETAIL_MAX_CHARS + 20)
+        self.assertTrue(detail.endswith("(truncated)"))
+
+    def test_punctuation_is_not_doubled(self):
+        self.assertTrue(outreach._safe_detail(RuntimeError("Already punctuated.")).endswith("d."))
+        self.assertTrue(outreach._safe_detail(RuntimeError("Not punctuated")).endswith("d."))

@@ -1242,9 +1242,11 @@ async def agenerate_copy(
 
     **Only this path retries**, which is a decision rather than an oversight.
     The shared helper in :mod:`project.app.services.llm.retry` is async-only by
-    design; a sync twin would be a second copy of the backoff schedule to keep
-    in step, for a caller — one lead, a human waiting on it — where failing fast
-    and showing the error is the better behaviour anyway.
+    design, and a sync twin would be a second copy of the backoff schedule to
+    keep in step. It costs nothing today: ``generate_copy`` has no production
+    caller at all — the red-team suite and the copy tests are the whole of its
+    traffic — so there is no path on which a reviewer meets an unretried 429.
+    Should one appear, this is the decision to revisit.
 
     **Pass ``client``.** Unlike the sync twin, where resolving one is "the
     single-lead path, where one extra read is the correct trade", the fallback
@@ -1271,14 +1273,24 @@ async def agenerate_copy(
         timeouts = llm_runtime.get_timeouts()
 
     attempts = 0
+    last_error = None
     started = time.monotonic()
 
     async def attempt():
-        nonlocal attempts
+        nonlocal attempts, last_error
         attempts += 1
-        return await client.acomplete(
-            prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
-        )
+        try:
+            return await client.acomplete(
+                prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
+            )
+        except LLMError as exc:
+            # Remembered because the per-lead budget expiring *discards* the
+            # exception in flight, and the reviewer's message is then built from
+            # nothing. A run of 429s that runs out of time is the single most
+            # likely production path here, and reporting it as "kept returning
+            # timeouts" would send an engineer looking at the wrong thing.
+            last_error = exc
+            raise
 
     try:
         # Two nested deadlines. `timeouts.request_s` rides on each HTTP attempt;
@@ -1290,20 +1302,52 @@ async def agenerate_copy(
         # `asyncio.timeout` rather than `wait_for`: it converts the cancellation
         # it caused into a TimeoutError at its own boundary, so a CancelledError
         # from somewhere else still reads as a cancellation.
-        async with asyncio.timeout(timeouts.per_lead_s):
+        async with asyncio.timeout(timeouts.per_lead_s) as budget:
             return await acall_with_retry(attempt, policy=retry)
     except LLMError as exc:
         raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
     except TimeoutError as exc:
-        # The per-lead budget, not one request timing out -- that arrives as an
-        # LLMTimeoutError through the branch above. Wrapped in the taxonomy so
-        # the review message classifies it the same way as any other timeout,
-        # and so the provider name survives into the prose.
-        budget = LLMTimeoutError(
-            f"Gave up on this lead after {timeouts.per_lead_s:g}s (OUTREACH_PER_LEAD_TIMEOUT_S).",
+        if not budget.expired():
+            # Someone else's TimeoutError -- a client raising the builtin
+            # directly rather than the taxonomy's, say. Relabelling it as our
+            # per-lead budget would name a knob that had nothing to do with it,
+            # and an engineer would raise OUTREACH_PER_LEAD_TIMEOUT_S and watch
+            # nothing change. Let it fall through to the catch-all, which at
+            # least reports the error's own words.
+            raise
+        raise CopyGenerationGaveUp(
+            _budget_error(client, timeouts.per_lead_s, last_error),
+            attempts,
+            time.monotonic() - started,
+        ) from exc
+
+
+def _budget_error(client, per_lead_s, last_error):
+    """The error to report when the per-lead budget expires.
+
+    ``asyncio.timeout`` cancels whatever was in flight, so the exception the
+    provider was raising is gone by the time we get here. Rebuilding it from
+    ``last_error`` matters because that is the *diagnosis*: "kept returning rate
+    limits, and ran out of time doing it" is actionable, while "kept returning
+    timeouts" points an engineer at a network problem that does not exist.
+
+    Falls back to a plain timeout when nothing failed yet -- a first attempt
+    that simply never came back.
+    """
+    note = f"gave up after {per_lead_s:g}s (OUTREACH_PER_LEAD_TIMEOUT_S)"
+    if last_error is None:
+        return LLMTimeoutError(
+            f"The provider did not answer; {note}",
             provider=getattr(client, "provider_name", None),
         )
-        raise CopyGenerationGaveUp(budget, attempts, time.monotonic() - started) from exc
+    # Same class, so `failure_kind` still reports what the provider was actually
+    # doing, with the budget noted alongside.
+    return type(last_error)(
+        f"{last_error} ({note})",
+        provider=last_error.provider,
+        status_code=last_error.status_code,
+        retry_after=last_error.retry_after,
+    )
 
 
 def _prompt_for(lead, action_type, reason, prompt):
@@ -1793,14 +1837,14 @@ CLASSIFICATION_UNMATCHED = (
 
 COPY_RETRIES_EXHAUSTED = (
     "Copy generation gave up after {attempts} attempt(s) over {elapsed}s -- the "
-    "{provider} API kept returning {kind}. Last error: {detail}. This is a "
-    "transient provider failure, not a problem with this lead: the "
-    "{action_type} classification and the reason above still stand. Re-run the "
-    "planner once the provider recovers."
+    "{provider} API returned {kind}. Last error: {detail} This is a transient "
+    "provider failure, not a problem with this lead: the {action_type} "
+    "classification and the reason above still stand. Re-run the planner once "
+    "the provider recovers -- this row will be replaced by a real draft."
 )
 
 COPY_FAILED_PERMANENTLY = (
-    "Copy generation failed and was not retryable ({kind}: {detail}). The "
+    "Copy generation failed and was not retryable ({kind}: {detail}) The "
     "{action_type} classification and the reason above still stand -- this is a "
     "configuration or provider-contract problem an engineer should look at, not "
     "something to fix from the review queue."
@@ -1818,8 +1862,9 @@ COPY_FAILED_UNEXPECTEDLY = (
 # Error class -> the words a reviewer reads. Table rather than `type(exc).__name__`
 # so the prose stays prose ("rate limits (HTTP 429)", not "LLMRateLimitError"),
 # and so renaming a class cannot silently rewrite what two hundred rows say.
-# Ordered most specific first; lookup walks the MRO, so a subclass added to the
-# taxonomy tomorrow degrades to its parent's label instead of to "unknown".
+# Insertion order is irrelevant -- `failure_kind` walks the exception's own MRO,
+# so a subclass added to the taxonomy tomorrow inherits its parent's label
+# rather than falling through to "unclassified".
 FAILURE_KINDS = {
     LLMRateLimitError: "rate limits (HTTP 429)",
     LLMTimeoutError: "timeouts",
@@ -1831,6 +1876,38 @@ FAILURE_KINDS = {
 }
 
 FAILURE_KIND_UNKNOWN = "an unclassified provider failure"
+
+# Provider error text goes into `further_action`, which is persisted and
+# rendered to a reviewer. Two problems with passing it through raw, and the
+# second is the one that will actually happen:
+#
+#   * the Anthropic SDK builds its message as f"Error code: {status} - {body}"
+#     with the *whole* response body, falling back to the raw text when it isn't
+#     JSON. A proxy or WAF answering with a 200KB HTML error page would put that
+#     page into a TextField, once per lead, and destroy the queue UI.
+#   * `base_url` is a class attribute today, so credentials ride in a header and
+#     not in any URL a message could echo. errors.py already anticipates an
+#     operator-configurable base_url, and providers that take the key as a query
+#     parameter exist -- the day that lands, this field would start persisting
+#     keys in front of reviewers with nobody having changed a line here.
+#
+# Redacting and truncating now costs three lines and makes the "provider text is
+# untrusted" posture uniform with how `suggested_copy` is already treated.
+_SECRET_PATTERN = re.compile(
+    r"(?i)(sk-[A-Za-z0-9_\-]{8,}|(?:api[-_]?key|access[-_]?token|token|key)=[^\s&\"']+"
+    r"|Bearer\s+\S+)"
+)
+DETAIL_MAX_CHARS = 300
+
+
+def _safe_detail(error):
+    """Provider text, fit to be persisted and shown to a human."""
+    text = _SECRET_PATTERN.sub("[redacted]", str(error)).strip()
+    if len(text) > DETAIL_MAX_CHARS:
+        return text[:DETAIL_MAX_CHARS].rstrip() + "... (truncated)"
+    # A trailing full stop is added here rather than in the templates so the
+    # message never ends up with ".." when the provider already punctuated.
+    return text if text.endswith((".", "!", "?")) else text + "."
 
 
 def failure_kind(error):
@@ -1874,19 +1951,45 @@ def _describe_failure(item, outcome):
             elapsed=f"{outcome.elapsed_s:.1f}",
             provider=error.provider or "LLM",
             kind=failure_kind(error),
-            # The last error's own words. Carries the provider's message on a
-            # genuine exhaustion, and -- for the per-lead budget -- names
-            # OUTREACH_PER_LEAD_TIMEOUT_S, which is the knob whoever reads this
-            # would actually reach for.
-            detail=error,
+            # The last error's own words, redacted and bounded. Carries the
+            # provider's message on a genuine exhaustion, and -- for the
+            # per-lead budget -- names OUTREACH_PER_LEAD_TIMEOUT_S, which is the
+            # knob whoever reads this would actually reach for.
+            detail=_safe_detail(error),
             action_type=item.action_type,
         )
 
     return COPY_FAILED_PERMANENTLY.format(
         kind=failure_kind(error),
-        detail=error,
+        detail=_safe_detail(error),
         action_type=item.action_type,
     )
+
+
+def failed_generation_filter():
+    """Rows that record a *failed attempt* rather than a recommendation.
+
+    A row with a real action type, no copy, and ``needs_human`` is one where we
+    classified the lead, tried to write the email, and got nothing back. Those
+    three fields identify it exactly, and no new column is needed:
+
+    * an unmatched lead has ``action_type == UNKNOWN`` (real BD work, and it
+      must keep suppressing re-plans -- nobody wants it raised twice a day);
+    * a *successful* generation always keeps its draft, even when a gate flags
+      it, so ``suggested_copy`` is non-empty whenever the provider answered.
+
+    This exists because of the sentence :data:`COPY_RETRIES_EXHAUSTED` puts in
+    front of a reviewer: *"Re-run the planner once the provider recovers."*
+    Without this exclusion that instruction is a no-op. The failed row is
+    ``pending``, so the "an open item wins" rule skips exactly the lead the
+    message told you to re-run, and it sits in the finite queue for ever --
+    dismissable only by suppressing the recommendation permanently, or
+    approvable only as an empty draft. The row would be a lie about a queue
+    whose whole value is that everything in it is work.
+    """
+    from django.db.models import Q
+
+    return Q(needs_human=True, suggested_copy="") & ~Q(action_type=actions.UNKNOWN)
 
 
 def _review(item, outcome, level, today):
@@ -1975,6 +2078,11 @@ def plan_outreach():
             status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED)
         )
         .exclude(dedupe_key="")
+        # A row recording a failed generation is not a recommendation anybody
+        # can act on, so it must not hold the dedupe slot -- see
+        # failed_generation_filter() for why that is load-bearing rather than
+        # tidy. It is superseded by this run's row in phase 5.
+        .exclude(failed_generation_filter())
         .values_list("dedupe_key", flat=True)
     )
 
@@ -2042,6 +2150,18 @@ def plan_outreach():
         for item, review in zip(work, reviews, strict=True)
     ]
     with transaction.atomic():
+        # Supersede the failed-attempt rows this run is replacing. They were let
+        # through the open-item rule on purpose (see failed_generation_filter),
+        # so without this a lead that failed on Monday and succeeded on Tuesday
+        # would show a real draft and a stale "the provider was down" row side
+        # by side in the same finite queue. Deleted rather than marked: a failed
+        # attempt carries no human decision and no draft, so there is nothing in
+        # it worth an audit trail that the run's own log does not already have.
+        OutreachAction.objects.filter(
+            dedupe_key__in=[item.dedupe_key for item in work],
+            status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
+        ).filter(failed_generation_filter()).delete()
+
         planned = [
             OutreachAction.objects.create(
                 lead=item.lead,
