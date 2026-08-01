@@ -32,10 +32,19 @@ from project.app.services.telemetry import setup
 
 from .tests_telemetry_support import RecordingTestCase, spans_named
 
-# Every environment variable that can switch tracing on, cleared together. A
-# test that clears only one of them passes for the wrong reason on a machine
-# where the other is exported.
-_TRACING_ENV = {name: "" for name in setup.ENDPOINT_ENV_VARS}
+# Every environment variable that can switch telemetry on, cleared together. A
+# test that clears only some of them passes for the wrong reason on a machine
+# where the others are exported -- and the metrics ones matter most, because a
+# leaked OTEL_EXPORTER_OTLP_METRICS_ENDPOINT would have the suite construct a
+# real network exporter.
+_TRACING_ENV = {
+    name: ""
+    for name in (
+        *setup.ENDPOINT_ENV_VARS,
+        *setup.METRICS_ENDPOINT_ENV_VARS,
+        setup.CONSOLE_METRICS_ENV,
+    )
+}
 
 
 class _ConfigureTestCase(SimpleTestCase):
