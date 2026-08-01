@@ -173,6 +173,43 @@ The two timeouts are nested deliberately. The per-lead bound is the one that mat
 concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
 retryable failures has to be given up on rather than waited out.
 
+### What the review queue says when there is no copy
+
+The review queue is a *finite* list of things a human has to decide, and its whole value is
+that everything in it is work. A 429 from a free tier used to land there looking exactly like
+"no automated outreach pattern matched" — same `needs_human`, same shape of sentence about the
+lead. A reviewer with no way to tell a provider's bad thirty seconds from a real judgement call
+learns to skim the queue, which costs far more than the rate limit did.
+
+So a rate limit is now **retried rather than escalated**, and when retries genuinely run out
+the row says whose problem it is:
+
+| Situation | What the row says |
+|---|---|
+| No rule matched | *BD review needed … no automated outreach pattern matched.* Real work: read the notes, decide. |
+| Retryable error, budget spent | *Gave up after 4 attempt(s) over 31.2s — the groq API kept returning rate limits (HTTP 429). **This is a transient provider failure, not a problem with this lead.*** Re-run later. |
+| Non-retryable error | *Failed and was not retryable (an authentication failure: …) — a configuration or provider-contract problem an engineer should look at.* |
+| Anything else | The pre-existing catch-all, for a prompt that wouldn't build or a client that wouldn't resolve. |
+
+There is deliberately **no `failure_kind` column**. The ticket asks for the distinction in
+`further_action`, the frontend renders that field as prose, and an enum column would mean a
+migration, a serializer field and a frontend change for something nobody queries.
+
+A failed row does not hold the recommendation's dedupe slot, which is what makes *"re-run the
+planner"* an instruction that works. Without that, the "an open item wins" rule would skip
+exactly the lead the message named, and the row would sit in a finite queue for ever — clearable
+only by dismissing the recommendation permanently or approving an empty draft. The next
+successful run supersedes it. Unmatched-classification rows *do* keep their slot: those are real
+decisions, and raising them twice a day is the duplicate-inbox bug the rule exists to prevent.
+
+**A run has no overall deadline, and that is a known bound rather than an oversight.** Worst case
+is `ceil(leads / OUTREACH_MAX_IN_FLIGHT) × OUTREACH_PER_LEAD_TIMEOUT_S` — with the defaults and
+200 leads, about 62 minutes inside one synchronous `POST /api/outreach/run/`, and because phase 5
+is a single transaction at the end, a proxy timing out at minute 30 writes nothing. Size
+`OUTREACH_PER_LEAD_TIMEOUT_S` against your own proxy's limit and lead count. A run-level deadline
+that preserves partial results needs per-task bookkeeping (the outer timeout would otherwise
+cancel the gather and discard completed leads), which is more than this ticket should carry.
+
 Bad values are rejected **at boot**, by a Django system check, with the offending environment
 variable named in the message — `OUTREACH_BACKOFF_MULTIPLIER must be at least 1, got 0.5.`
 rather than a `ValueError` about a dataclass field an operator has never heard of, and long
