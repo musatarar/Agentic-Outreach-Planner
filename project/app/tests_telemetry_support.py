@@ -86,12 +86,15 @@ def one_span_named(name: str):
     return matches[0]
 
 
-class RecordingTestCase(SimpleTestCase):
-    """Base for any test that asserts on recorded spans.
+class RecordingMixin:
+    """Installs the shared provider and clears it between tests.
 
-    Exists so the "clear the shared exporter in ``setUp``" contract is inherited
-    rather than remembered. Forgetting it does not fail — it makes a test pass
-    on a span some earlier module emitted, which is worse.
+    A mixin rather than a base class because the two callers need different
+    Django bases — span tests that touch no database use ``SimpleTestCase``,
+    the planner tests need ``TestCase`` — and the "clear the shared exporter in
+    ``setUp``" contract must be inherited by both rather than remembered by
+    either. Forgetting it does not fail; it makes a test pass on a span some
+    earlier module emitted, which is worse.
     """
 
     exporter: InMemorySpanExporter
@@ -104,3 +107,7 @@ class RecordingTestCase(SimpleTestCase):
     def setUp(self):
         super().setUp()
         reset_spans()
+
+
+class RecordingTestCase(RecordingMixin, SimpleTestCase):
+    """A database-free test that asserts on recorded spans."""

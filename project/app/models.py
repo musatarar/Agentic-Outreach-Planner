@@ -112,6 +112,24 @@ class OutreachAction(models.Model):  # what the planner decided/did
     # to stop a re-run duplicating an already-open item. See DismissedOutreachKey.
     dedupe_key = models.CharField(max_length=128, blank=True, default="", db_index=True)
 
+    # The planner run that produced this row -- a UUID, also carried on that
+    # run's trace as `outreach.run.id` (MUS-25). One indexed column, and it
+    # exists to resolve a genuine ordering problem rather than for reporting.
+    #
+    # A lead's span has to close when that lead's work ends: at concurrency 8
+    # over 200 leads, holding every lead span open until the run finishes would
+    # give the lead processed at t=0 a 45-second span and destroy the per-lead
+    # latency signal entirely. But the span wants to reference the row it
+    # produced, and no primary key exists until the write at the *end* of the
+    # run. `trace_run_id` is the identity that is known *before* the row exists:
+    # the span records `outreach_action:{trace_run_id}:{lead_id}` and closes on
+    # time, and the row is resolvable later by
+    # `.get(trace_run_id=..., lead_id=...)`.
+    #
+    # Blank on rows written before this field existed, and on any write that
+    # does not come from a planner run.
+    trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
+
     # Structured rule trace snapshot (schema v1, section 3), produced by
     # MUS-42's services/outreach.py::explain(). A SNAPSHOT: never recomputed
     # after creation, because every relative figure in it ("28d since last
@@ -160,6 +178,23 @@ class OutreachAction(models.Model):  # what the planner decided/did
         indexes = [
             models.Index(fields=["status", "priority", "lead"], name="oa_queue_order"),
             models.Index(fields=["status", "-status_changed_at"], name="oa_done_order"),
+        ]
+        constraints = [
+            # A trace's `outreach.output.ref` promises that
+            # `.get(trace_run_id=..., lead_id=...)` resolves to one row. It is
+            # true by construction -- one WorkItem per lead per run -- but a
+            # promise a reader relies on should be enforced by the schema
+            # rather than by an invariant several modules away.
+            #
+            # Partial, because every row written before MUS-25 has
+            # trace_run_id="" and they are not unique per lead: an
+            # unconditional constraint would fail to apply on any existing
+            # database.
+            models.UniqueConstraint(
+                fields=["trace_run_id", "lead"],
+                condition=~Q(trace_run_id=""),
+                name="oa_one_row_per_lead_per_run",
+            ),
         ]
 
     def __str__(self):
