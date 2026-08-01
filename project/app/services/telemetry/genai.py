@@ -149,8 +149,30 @@ def error_type(exc: BaseException) -> str:
     Crucially it is *not* the exception's message — that is provider-authored
     text of unbounded cardinality, and putting it here would both blow up a
     metric's attribute set and route provider prose into the trace backend.
+
+    An exception may override it by exposing a ``failure_kind`` string. Exactly
+    one thing does: ``LLMUnexpectedError``, the wrapper the planner puts around
+    a residual exception. Reporting the wrapper's own name there would make
+    every genuine bug indistinguishable from every other, which is the problem
+    the taxonomy exists to solve, reintroduced one level up.
     """
+    override = getattr(exc, "failure_kind", None)
+    if isinstance(override, str) and override:
+        return override
     return type(exc).__qualname__
+
+
+def fault_domain(exc: BaseException) -> str:
+    """Whose problem this failure is: ``provider``, ``configuration``,
+    ``contract`` or ``unknown``.
+
+    Read off the exception class, which is where the taxonomy declares it (see
+    ``llm/errors.py``) — so this is a lookup, not a second copy of the table
+    that could disagree with the first. Anything that is not an ``LLMError``,
+    and so never declared one, is ``unknown`` rather than assumed.
+    """
+    declared = getattr(exc, "fault_domain", None)
+    return declared if isinstance(declared, str) and declared else "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -717,6 +739,7 @@ class LeadSpan:
         _set_if(attributes, sc.OUTPUT_SHA256, output_sha256)
         if failure is not None:
             attributes[sc.FAILURE_KIND] = error_type(failure)
+            attributes[sc.FAILURE_DOMAIN] = fault_domain(failure)
         self._span.set_attributes(attributes)
         if failure is not None:
             # ERROR, not OK: this lead did not produce usable copy. The run as a
@@ -740,6 +763,7 @@ class LeadSpan:
         self._span.set_attribute(sc.VERIFY_OUTCOME, sc.VERIFY_NOT_GENERATED)
         if exc is not None:
             self._span.set_attribute(sc.FAILURE_KIND, error_type(exc))
+            self._span.set_attribute(sc.FAILURE_DOMAIN, fault_domain(exc))
             self._span.set_status(Status(StatusCode.ERROR, error_type(exc)))
         self._span.end()
 
@@ -961,6 +985,7 @@ __all__ = [
     "ProviderCall",
     "RunRecorder",
     "error_type",
+    "fault_domain",
     "finish_lead",
     "instruments",
     "output_ref",

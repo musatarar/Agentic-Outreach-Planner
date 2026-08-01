@@ -311,7 +311,11 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")  # nothing to keep
-        self.assertIn("Copy generation failed (provider exploded)", failed.further_action)
+        # Wrapped as LLMUnexpectedError on the way out of phase 3 (MUS-58), so
+        # the review message names it a non-retryable engineer problem rather
+        # than flattening it into an anonymous "failed".
+        self.assertIn("Copy generation failed and was not retryable", failed.further_action)
+        self.assertIn("provider exploded", failed.further_action)
         self.assertIn("complete_onboarding", failed.further_action)
 
     def test_a_prompt_that_cannot_be_built_also_costs_only_one_lead(self):
@@ -350,9 +354,10 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
-        self.assertIn(
-            "Copy generation failed (Unknown LLM provider 'bogus'.)", failed.further_action
-        )
+        # `_resolve_client` wraps the ValueError (MUS-58), so the message calls
+        # out a configuration-shaped failure instead of echoing it bare.
+        self.assertIn("Copy generation failed and was not retryable", failed.further_action)
+        self.assertIn("Unknown LLM provider 'bogus'.", failed.further_action)
         # The unmatched lead is untouched by a provider problem it never needed.
         unmatched = OutreachAction.objects.get(lead_id="lead_unknown")
         self.assertIn("no automated outreach pattern matched", unmatched.further_action)

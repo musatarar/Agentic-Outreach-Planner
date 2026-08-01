@@ -142,7 +142,13 @@ VERIFY_OUTCOME = "outreach.verify.outcome"
 VERIFY_VIOLATION_COUNT = "outreach.verify.violation_count"
 SHAPE_PROBLEM_COUNT = "outreach.shape.problem_count"
 LLM_ATTEMPTS = "outreach.llm.attempts"
+# The exception class that ended this lead's work ("LLMRateLimitError"), and
+# whose problem it is ("provider" | "configuration" | "contract" | "unknown").
+# Two attributes rather than one because they answer different questions: the
+# kind says what happened, the domain says which page to open. See
+# ``llm/errors.py``, which declares the domain on each exception class.
 FAILURE_KIND = "outreach.failure.kind"
+FAILURE_DOMAIN = "outreach.failure.domain"
 
 # Provider-call scope. `outreach.llm.provider` carries OUR configured provider
 # name ("groq", "claude", ...) and is emitted even when gen_ai.provider.name is

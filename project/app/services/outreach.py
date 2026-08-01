@@ -24,6 +24,7 @@ from project.app.services.llm import (
     LLMTimeoutError,
     LLMTransientError,
     get_llm_client,
+    wrap_unexpected,
 )
 from project.app.services.llm import runtime as llm_runtime
 from project.app.services.llm.retry import acall_with_retry
@@ -1645,8 +1646,18 @@ def _resolve_client(work):
         return None, None
     try:
         return get_llm_client(), None
-    except Exception as exc:
+    except LLMError as exc:
+        # An unset key raises LLMAuthError from the adapter's constructor, and
+        # that is genuinely a configuration fault -- so it arrives already
+        # classified and reaches the span as `configuration` rather than
+        # `unknown`.
         return None, exc
+    except Exception as exc:
+        # Everything else here is our bug (a bad provider name, a decryption
+        # failure), not a provider's. Wrapped rather than passed through so
+        # phase 4 has exactly one exception type to reason about, and named
+        # rather than flattened so it is still legible as the bug it is.
+        return None, wrap_unexpected(exc)
 
 
 def _outcome_without_calling(item, client_error):
@@ -1712,8 +1723,16 @@ async def _agenerate_for(item, client, runtime, client_error=None):
         # provider error's own `retryable` flag, and it should not have to know
         # that phase 3 wraps things.
         return CopyOutcome(error=exc.error, attempts=exc.attempts, elapsed_s=exc.elapsed_s)
-    except Exception as exc:  # don't let one API failure sink the run
+    except LLMError as exc:
+        # Already classified by the adapter. Passed through untouched -- the
+        # whole value of the taxonomy is that this class survives to the span.
         return CopyOutcome(error=exc)
+    except Exception as exc:  # don't let one lead's bug sink the run
+        # Wrapped rather than passed through (MUS-58): the caller gets one
+        # exception family to reason about, and
+        # ``LLMUnexpectedError.failure_kind`` still names what really
+        # happened, so nothing escapes untyped and nothing is mis-typed.
+        return CopyOutcome(error=wrap_unexpected(exc))
     return CopyOutcome(text=text)
 
 
