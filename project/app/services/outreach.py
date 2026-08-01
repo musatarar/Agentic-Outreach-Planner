@@ -93,7 +93,20 @@ ACTION_RULES = (
 
 
 def _events_list(lead):
-    """Return lead events as a list, accepting a manager (.all()) or a list."""
+    """Return lead events as a list, accepting a manager (.all()) or a list.
+
+    The duck-typing is load-bearing, not defensive. ``determine_priority`` and
+    ``determine_action`` are the actual product, and they are exercised without
+    Django at all -- ``evals/run_rules_eval.py`` feeds them ``SimpleNamespace``
+    leads whose ``events`` is a plain list, and ``tests_logic.py`` does the same.
+    Narrowing this to ``lead.events.all()`` would make the rules eval require a
+    database, which is the one thing it is designed not to need.
+
+    Compatible with the ``prefetch_related("events")`` phase 1 does: ``.all()``
+    on a prefetched instance is served from ``_prefetched_objects_cache`` and
+    emits no query. Calling anything else here -- ``.filter()``, ``.count()`` --
+    would silently bypass that cache and restore the N+1 this exists beside.
+    """
     events = getattr(lead, "events", None)
     if events is None:
         return []
@@ -2095,8 +2108,12 @@ def plan_outreach():
     # contradiction the snapshot exists to prevent.
     today = datetime.date.today()
 
-    # 1. read
-    leads = list(Lead.objects.all())
+    # 1. read. `prefetch_related` is the whole N+1 fix: every lead's events are
+    # walked at least three times in a run -- `_notes_blob` in phase 2,
+    # `_format_events_for_prompt` while building the prompt, `verify_copy` in
+    # phase 4 and `explain` in phase 5 -- and without it each of those is a
+    # query per lead. Two queries total instead of 1 + 4N.
+    leads = list(Lead.objects.prefetch_related("events"))
 
     # 2. classify, apply the skip rules, and build prompts (the last phase
     #    before the provider call)
@@ -2149,6 +2166,21 @@ def plan_outreach():
         )
         for item, review in zip(work, reviews, strict=True)
     ]
+    rows = [
+        OutreachAction(
+            lead=item.lead,
+            priority=item.priority,
+            action_type=item.action_type,
+            reason=item.reason,
+            suggested_copy=review.suggested_copy,
+            needs_human=review.needs_human,
+            further_action=review.further_action,
+            dedupe_key=item.dedupe_key,
+            rule_trace=rule_trace,
+            verification=verification,
+        )
+        for item, review, (rule_trace, verification) in zip(work, reviews, snapshots, strict=True)
+    ]
     with transaction.atomic():
         # Supersede the failed-attempt rows this run is replacing. They were let
         # through the open-item rule on purpose (see failed_generation_filter),
@@ -2162,23 +2194,33 @@ def plan_outreach():
             status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
         ).filter(failed_generation_filter()).delete()
 
-        planned = [
-            OutreachAction.objects.create(
-                lead=item.lead,
-                priority=item.priority,
-                action_type=item.action_type,
-                reason=item.reason,
-                suggested_copy=review.suggested_copy,
-                needs_human=review.needs_human,
-                further_action=review.further_action,
-                dedupe_key=item.dedupe_key,
-                rule_trace=rule_trace,
-                verification=verification,
-            )
-            for item, review, (rule_trace, verification) in zip(
-                work, reviews, snapshots, strict=True
-            )
-        ]
+        # One statement per batch instead of one per lead. `bulk_create` skips
+        # `save()` and the pre/post-save signals; neither is used by this model,
+        # and `auto_now_add` on `created_at` is applied by the field itself
+        # (`pre_save`), not by `save()`, so the timestamps survive. Both are
+        # asserted in tests_planner_perf rather than assumed -- "bulk_create
+        # skips things" is exactly the kind of half-remembered fact that turns
+        # into a null column in production.
+        #
+        # Batching is the backend's decision, not ours. Django's SQLite backend
+        # caps a batch at `max_query_params (999) // len(fields)`, which for this
+        # model's 18 insertable fields is 55 rows; Postgres does not cap at all
+        # and sends one statement. So a 200-lead run is 4 INSERTs on the SQLite
+        # CI leg and 1 on the Postgres one -- see tests_planner_perf, which
+        # computes the expectation from `connection.ops.bulk_batch_size` rather
+        # than hardcoding either.
+        #
+        # One thing worth knowing when a write fails: an IntegrityError from a
+        # per-row `create()` named one object, and from here it names a batch.
+        # Bisect the batch rather than trusting the message to point at a row.
+        planned = OutreachAction.objects.bulk_create(rows)
 
+    # `bulk_create` returns the objects with primary keys populated on Postgres
+    # (RETURNING) and on SQLite >= 3.35 (also RETURNING); both CI legs qualify.
+    # It matters because the serializer emits `id` and the triage queue addresses
+    # rows by it, so a run that returned pk-less objects would serialize
+    # `"id": null` into the API response. Asserted explicitly in the tests --
+    # this is a guarantee about the *database*, not about our code, which is
+    # precisely why it deserves a test rather than a comment.
     planned.sort(key=lambda a: a.priority)
     return planned
