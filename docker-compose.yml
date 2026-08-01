@@ -13,13 +13,33 @@ services:
       timeout: 5s
       retries: 10
 
+  # Trace backend for the OpenTelemetry GenAI instrumentation (MUS-25).
+  # `docker compose up` and the trace UI is at http://localhost:6006.
+  #
+  # ONE published port, not three. 6006 serves the UI *and* the OTLP/HTTP
+  # collector at /v1/traces -- which is why the app's exporter is the HTTP one
+  # and the endpoint below is a bare origin (the exporter appends the path
+  # itself). Phoenix also offers OTLP over gRPC on 4317 and Prometheus on 9090;
+  # neither is used, so neither is published.
+  #
+  # The tag is PINNED. `:latest` in a demo compose file is how the screenshot in
+  # the README stops matching what a reviewer sees.
+  phoenix:
+    image: arizephoenix/phoenix:19.13.0
+    ports:
+      - "6006:6006"
+    environment:
+      # Without this Phoenix keeps its traces in the container's filesystem and
+      # `docker compose down` takes them with it -- so the trace you captured
+      # for the README is gone the first time anyone restarts the stack.
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix_data:/mnt/data
+
   web:
     build: .
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     # Compose automatically reads a .env file in this directory for ${VAR}
     # interpolation. Copy .env.example -> .env first -- DJANGO_SECRET_KEY is
     # required (a working local/demo key ships in .env.example); DATABASE_URL
@@ -64,6 +84,35 @@ services:
       LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
       LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
       LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
+      # OpenTelemetry (MUS-25). Setting the endpoint is what switches tracing
+      # on at all: with it unset the app installs no SDK provider and every
+      # span is a no-op, which is a supported state rather than a degraded one.
+      # A bare origin -- the OTLP/HTTP exporter appends /v1/traces itself.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-outreach-planner}
+      # Forward-compatibility and a statement of intent, NOT a behavioural
+      # switch here. This variable is read by *instrumentation libraries* that
+      # choose to honour it, to decide whether to emit the current or the
+      # previous shape of the GenAI conventions. Our spans are hand-rolled and
+      # never read it -- they always emit the shape documented in
+      # services/telemetry/semconv.py. Anyone who assumes changing this changes
+      # what we emit will lose an afternoon.
+      OTEL_SEMCONV_STABILITY_OPT_IN: ${OTEL_SEMCONV_STABILITY_OPT_IN:-gen_ai_latest_experimental}
+      # Metrics are OFF by default and deliberately not pointed at Phoenix,
+      # which ingests traces and is not an OTel metrics backend -- aiming them
+      # there would be a steady trickle of 404s from a stack that is otherwise
+      # working perfectly. Set this only if you have a real metrics collector.
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
+      OUTREACH_OTEL_CONSOLE_METRICS: ${OUTREACH_OTEL_CONSOLE_METRICS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      # Not a health condition: the app must start whether or not Phoenix does.
+      # A trace backend that is down is a lost trace, never a failed boot -- the
+      # exporter retries in the background and the planner never notices.
+      phoenix:
+        condition: service_started
 
 volumes:
   postgres_data:
+  phoenix_data:

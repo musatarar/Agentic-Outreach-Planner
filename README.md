@@ -72,9 +72,11 @@ cp .env.example .env   # required: DJANGO_SECRET_KEY and LOGIN_ALLOWED_EMAILS.
 docker compose up      # optionally set a provider key too
 ```
 
-This starts Postgres, builds the app image, applies migrations, seeds the demo pipeline, and
-serves the app at **http://127.0.0.1:8000/**. The server starts even without an LLM provider
-key — you just can't run the LLM copy step until one is set.
+This starts Postgres and [Arize Phoenix](#tracing), builds the app image, applies migrations,
+seeds the demo pipeline, and serves the app at **http://127.0.0.1:8000/** with the trace UI at
+**http://localhost:6006**. The server starts even without an LLM provider key — you just can't
+run the LLM copy step until one is set — and it starts even if Phoenix doesn't, because a trace
+backend that is down is a lost trace, never a failed boot.
 
 ### Signing in
 
@@ -294,9 +296,75 @@ The React build is **committed** to `project/app/static/frontend/`, and Django s
 (`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`
 alone runs the whole app — **no Node required** to demo or review.
 
+## Tracing
+
+`docker compose up` also starts [Arize Phoenix](https://github.com/Arize-ai/phoenix) at
+**http://localhost:6006**. One outreach run produces a readable trace tree:
+
+```
+invoke_agent outreach_planner              INTERNAL   ← the run
+├── plan_lead                              INTERNAL   ← one per lead
+│   └── chat llama-3.1-8b-instant          CLIENT     ← one per HTTP attempt
+└── plan_lead
+    ├── chat llama-3.1-8b-instant          CLIENT     ✗ 429
+    ├── chat llama-3.1-8b-instant          CLIENT     ✗ 429
+    └── chat llama-3.1-8b-instant          CLIENT     ✓
+```
+
+![Trace of a rate-limited outreach run](docs/img/mus-25-trace.png)
+
+The shot is a real run against Groq's free tier — nothing simulated. The highlighted lead drew two
+genuine 429s (the attribute pane shows `error.type = LLMRateLimitError`, `outreach.llm.attempt = 1`
+and the provider's own `retry_after_s = 6`) and recovered on the third attempt, whose token count
+sits beside the green span. The leads whose every attempt was throttled show as red `plan_lead`
+spans — those are the ones routed to a human. [`docs/img/README.md`](docs/img/README.md) has the
+exact capture commands.
+
+Four things about the trace are deliberate.
+
+**One span per HTTP attempt, not per logical call.** A throttled lead renders as three CLIENT
+spans — two red, one green — instead of one slow one. The retry policy becomes a picture rather
+than a log line, and the duration stays honest: the retry helper leaves its backoff sleep
+*outside* the span, so a span covers the provider call and nothing else.
+
+**No prompts, no completions, ever.** Spans carry a *reference* and a digest —
+`outreach.input.ref = "lead:lead_007"` with `outreach.input.sha256`, and
+`outreach.output.ref = "outreach_action:{run}:{lead}"` with `outreach.output.sha256`. A prompt
+embeds the lead's HubSpot notes and a completion is the outreach email itself, so neither goes to
+a third-party trace backend. A red-team-shaped test plants canaries in every free-text lead field
+and in the generated copy, then walks every attribute, name, status description, link and event on
+every exported span asserting they appear nowhere. Provider *error messages* are excluded on the
+same grounds — the span's status is the exception's class name, and the message reaches the
+reviewer via `further_action` instead.
+
+**Two conventions on every span.** The
+[OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai)
+are the standard, but self-hosted Phoenix reads
+[OpenInference](https://github.com/Arize-ai/openinference) and not `gen_ai.*`
+([#10622](https://github.com/Arize-ai/phoenix/issues/10622)) — a span carrying only the official
+keys renders as an unlabelled grey bar with empty model and token panes. So the same values are
+emitted under both. `llm.input_messages` / `llm.output_messages` are the one pair that never is;
+they are OpenInference's prompt and completion carriers.
+
+**Metrics are emitted and nothing displays them, on purpose.**
+`gen_ai.client.operation.duration` and `gen_ai.client.token.usage` are recorded with the spec's
+explicit bucket boundaries, but **Phoenix ingests traces and is not an OTel metrics backend** —
+pointing the metrics exporter at it would be a steady trickle of 404s from a stack that is
+otherwise working. So metrics have their own switch (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or
+`OUTREACH_OTEL_CONSOLE_METRICS=1` to print them locally), and their correctness is proven by
+`InMemoryMetricReader` tests asserting instrument names, units, bucket boundaries and point counts
+rather than by a screenshot of an empty dashboard.
+
+**Tracing is off unless you switch it on.** Instrumentation uses the OTel *API* unconditionally
+and installs the *SDK* only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. With it unset,
+`get_tracer()` returns a no-op and every `set_attribute` is an empty method body — so there is no
+`if TRACING_ENABLED:` anywhere for a later edit to get wrong on one branch, and CI exercises the
+same code path the demo does, minus the exporter. Running outside Docker, uncomment the
+observability block in `.env.example`.
+
 ## Stack
 
-Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres (Docker) · React 18 · TypeScript · Vite
+Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres (Docker) · React 18 · TypeScript · Vite · OpenTelemetry + Arize Phoenix
 
 ## Tests
 
