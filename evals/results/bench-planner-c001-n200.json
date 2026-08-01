@@ -1,0 +1,17 @@
+{
+  "leads": 200,
+  "concurrency": 1,
+  "repeat": 1,
+  "seed": 1234,
+  "latency_mean_s": 1.87,
+  "rate_limit_rate": 0.0,
+  "failure_rate": 0.0,
+  "elapsed_s_median": 323.399,
+  "elapsed_s_min": 323.399,
+  "elapsed_s_max": 323.399,
+  "planned": 200,
+  "with_copy": 175,
+  "needs_human": 25,
+  "provider_calls": 175,
+  "sequential_provider_s": 327.25
+}

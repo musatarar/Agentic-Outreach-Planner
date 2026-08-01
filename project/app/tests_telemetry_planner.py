@@ -26,6 +26,7 @@ from opentelemetry import trace
 
 from project.app.models import Lead, OutreachAction
 from project.app.services import outreach
+from project.app.services.llm import runtime as llm_runtime
 from project.app.services.outreach import plan_outreach
 from project.app.services.telemetry import genai, semconv
 
@@ -89,11 +90,20 @@ class _PlannerSpanTestCase(RecordingMixin, TestCase):
         return Lead.objects.create(**defaults)
 
     def plan(self, copy=GOOD_COPY, side_effect=None):
-        target = "project.app.services.outreach.generate_copy"
-        if side_effect is not None:
-            with mock.patch(target, side_effect=side_effect):
-                return plan_outreach()
-        with mock.patch(target, return_value=copy):
+        # The planner's phase 3 goes through the async twin (MUS-26), so that
+        # is the seam to stub — a plain ``return_value`` would hand the
+        # planner an unawaitable. A raised ``LLMError`` lands in
+        # ``_agenerate_for``'s ``except Exception`` and is reported as a
+        # provider failure with its taxonomy class intact, which is exactly
+        # what the error-path tests here assert on.
+        target = "project.app.services.outreach.agenerate_copy"
+
+        async def stub(*args, **kwargs):
+            if side_effect is not None:
+                raise side_effect
+            return copy
+
+        with mock.patch(target, stub):
             return plan_outreach()
 
     def run_span(self):
@@ -130,7 +140,10 @@ class RunSpanTests(_PlannerSpanTestCase):
         self.assertEqual(attributes[semconv.GEN_AI_AGENT_NAME], "outreach_planner")
         self.assertEqual(attributes[semconv.LEAD_COUNT], 1)
         self.assertEqual(attributes[semconv.NEEDS_HUMAN_COUNT], 0)
-        self.assertEqual(attributes[semconv.CONCURRENCY_MAX_IN_FLIGHT], outreach.MAX_IN_FLIGHT)
+        self.assertEqual(
+            attributes[semconv.CONCURRENCY_MAX_IN_FLIGHT],
+            llm_runtime.get_planner_runtime().max_in_flight,
+        )
         self.assertEqual(attributes[semconv.VERIFY_LEVEL], "standard")
         self.assertEqual(attributes[semconv.OPENINFERENCE_SPAN_KIND], "AGENT")
         self.assertTrue(attributes[semconv.RUN_ID])

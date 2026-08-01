@@ -73,7 +73,11 @@ class ProviderCallTests(SimpleTestCase):
         """
         from project.app.services.llm import _REGISTRY
 
-        self.assertEqual(set(_REGISTRY), set(genai.PROVIDER_NAMES))
+        # The bench-only stub is the one registry entry deliberately left out:
+        # it is exactly the "stub or self-hosted provider" the map's comment
+        # says must emit no `gen_ai.provider.name` rather than an invented
+        # enum member. Every provider a user can actually configure must map.
+        self.assertEqual(set(_REGISTRY) - {"stub"}, set(genai.PROVIDER_NAMES))
         legal = {
             semconv.PROVIDER_ANTHROPIC,
             semconv.PROVIDER_OPENAI,
