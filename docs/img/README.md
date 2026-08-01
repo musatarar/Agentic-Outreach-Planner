@@ -2,9 +2,9 @@
 
 ## `mus-25-trace.png` — the acceptance evidence for MUS-25 and MUS-26
 
-**Not committed yet.** It needs a real provider key and a genuinely rate-limited run, and a
-mocked-up picture of a trace would be worth less than no picture: the whole claim it makes is
-"this happened", and a synthesised one makes exactly the opposite claim while looking identical.
+**Captured from a real run** (Groq free tier, 2026-08-01): the committed image is a genuine
+throttled run, not a mock — the whole claim it makes is "this happened", and a synthesised one
+would make exactly the opposite claim while looking identical. The commands below reproduce it.
 
 ### What the shot has to show
 
@@ -33,8 +33,8 @@ $EDITOR .env            # set DJANGO_SECRET_KEY (one ships in the example) and G
 #    docker-compose.yml -- OTEL_EXPORTER_OTLP_ENDPOINT points at phoenix:6006.
 docker compose up --build
 
-# 3. Seed the pipeline and plan. 200 leads at concurrency 8 reliably trips the
-#    free tier; a smaller run may not.
+# 3. Seed the pipeline and plan. The 12 demo leads at the default concurrency
+#    (OUTREACH_MAX_IN_FLIGHT=8) reliably trip the free tier's TPM ceiling.
 docker compose exec web python scripts/populate_demo_data.py
 docker compose exec web python manage.py shell -c \
   "from project.app.services.outreach import plan_outreach; plan_outreach()"
@@ -43,8 +43,8 @@ docker compose exec web python manage.py shell -c \
 open http://localhost:6006
 ```
 
-Then save the screenshot here as `mus-25-trace.png` and replace the "Screenshot pending" block in
-`README.md` with:
+To refresh the shot, save the new screenshot over `mus-25-trace.png` — `README.md` already embeds
+it as:
 
 ```markdown
 ![Trace of a rate-limited outreach run](docs/img/mus-25-trace.png)

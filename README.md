@@ -304,18 +304,21 @@ alone runs the whole app — **no Node required** to demo or review.
 ```
 invoke_agent outreach_planner              INTERNAL   ← the run
 ├── plan_lead                              INTERNAL   ← one per lead
-│   └── chat llama-3.3-70b-versatile       CLIENT     ← one per HTTP attempt
+│   └── chat llama-3.1-8b-instant          CLIENT     ← one per HTTP attempt
 └── plan_lead
-    ├── chat llama-3.3-70b-versatile       CLIENT     ✗ 429
-    ├── chat llama-3.3-70b-versatile       CLIENT     ✗ 429
-    └── chat llama-3.3-70b-versatile       CLIENT     ✓
+    ├── chat llama-3.1-8b-instant          CLIENT     ✗ 429
+    ├── chat llama-3.1-8b-instant          CLIENT     ✗ 429
+    └── chat llama-3.1-8b-instant          CLIENT     ✓
 ```
 
-> **Screenshot pending.** `docs/img/mus-25-trace.png` is not committed yet — capturing it needs a
-> real provider key and a throttled run, and a mocked-up image of a trace would be worth less than
-> no image. [`docs/img/README.md`](docs/img/README.md) has the exact commands; drop the file in and
-> replace this block with
-> `![Trace of a rate-limited outreach run](docs/img/mus-25-trace.png)`.
+![Trace of a rate-limited outreach run](docs/img/mus-25-trace.png)
+
+The shot is a real run against Groq's free tier — nothing simulated. The highlighted lead drew two
+genuine 429s (the attribute pane shows `error.type = LLMRateLimitError`, `outreach.llm.attempt = 1`
+and the provider's own `retry_after_s = 6`) and recovered on the third attempt, whose token count
+sits beside the green span. The leads whose every attempt was throttled show as red `plan_lead`
+spans — those are the ones routed to a human. [`docs/img/README.md`](docs/img/README.md) has the
+exact capture commands.
 
 Four things about the trace are deliberate.
 
