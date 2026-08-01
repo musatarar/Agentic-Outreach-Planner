@@ -207,6 +207,40 @@ running without a database. Prefetch is compatible: `.all()` on a prefetched ins
 from `_prefetched_objects_cache`. Calling `.filter()` or `.count()` there instead would bypass
 the cache and quietly restore the N+1.
 
+### Wall clock
+
+`evals/bench_planner.py` measures `plan_outreach()` end to end — rules, prompts, semaphore,
+retry loop, both output gates, bulk write — on synthetic leads seeded from the golden dataset
+(`manage.py seed_synthetic_leads`, which re-anchors the golden records' dates on today so each
+lead keeps the classification it was labelled with). Only the provider is fake: a stub client
+sleeps for Groq's measured median latency (1.87s, from the provider table below) and returns a
+well-formed, grounded email, so both output gates do real work. The run happens in a throwaway
+SQLite database that is created, migrated, seeded and deleted per invocation — never the dev
+pipeline.
+
+<!-- PLANNER-BENCH-TABLE -->
+| Leads | Concurrency | Wall clock (median) | Provider calls | Speedup |
+|--:|--:|--:|--:|--:|
+| 200 | 1 | 323.4s | 175 | 1.0x |
+| 200 | 8 | 41.1s | 175 | 7.9x |
+<!-- /PLANNER-BENCH-TABLE -->
+
+**Concurrency 1 is the honest "before".** It is a semaphore of one, not a resurrected serial
+planner — the run is provider-bound (175 calls × 1.87s ≈ 327s of provider time; the other 25
+leads classify to no automated pattern and cost no call, mirroring the labelled distribution),
+so the pool is the whole difference and maintaining a second serial code path to make the table
+look rigorous would mean shipping a planner nobody runs.
+
+The stub cannot be reached from the app: `seed_llm_catalog` creates no `LLMProvider` row for
+it (and the Settings UI lists providers from that table), its constructor refuses to build
+unless `OUTREACH_ALLOW_STUB_LLM=1` (set only by the benchmark), and the only thing that asks
+for it by name is `build_client("stub")` inside the benchmark itself. All three barriers are
+pinned by `project/app/tests_stub_provider.py`.
+
+Reproduce with `python evals/bench_planner.py --leads 200 --concurrency 8`, and
+`--concurrency 1` for the before; `--update-readme` rewrites the table above from the
+committed results in `evals/results/`.
+
 ### What the review queue says when there is no copy
 
 The review queue is a *finite* list of things a human has to decide, and its whole value is
