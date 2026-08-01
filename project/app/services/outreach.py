@@ -1638,11 +1638,6 @@ def plan_outreach():
             )
             reviews.append(review)
 
-        run.finish(
-            lead_count=len(work),
-            needs_human_count=sum(1 for review in reviews if review.needs_human),
-        )
-
         # 5. write. The two snapshots are computed FIRST, outside the
         # transaction: `explain()` re-runs the whole rule engine and
         # `build_verification()` walks `lead.events`, so leaving them inline
@@ -1689,6 +1684,15 @@ def plan_outreach():
                     work, reviews, snapshots, strict=True
                 )
             ]
+
+        # After the write, deliberately. A run that rolled back should not be
+        # holding a tidy summary of the rows it did not create -- it escapes
+        # with `error.type` on the run span instead, which is the only honest
+        # report of "planned 200 leads, saved none".
+        run.finish(
+            lead_count=len(work),
+            needs_human_count=sum(1 for review in reviews if review.needs_human),
+        )
 
     planned.sort(key=lambda a: a.priority)
     return planned

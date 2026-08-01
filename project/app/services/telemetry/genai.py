@@ -83,6 +83,10 @@ _SAFE_FINISH_REASON = re.compile(r"\A[A-Za-z0-9_.-]{1,32}\Z")
 AGENT_NAME = "outreach_planner"
 LEAD_SPAN_NAME = "plan_lead"
 
+# Must match OutreachAction.trace_run_id's max_length. A uuid4 string is 36
+# characters, which is where that column's width came from.
+RUN_ID_MAX_LENGTH = 36
+
 # Our configured provider name -> the spec's `gen_ai.provider.name` enum member.
 # Total over the four providers this app ships. A name that is not a key here
 # simply gets no `gen_ai.provider.name`: the attribute is an enum, and inventing
@@ -426,6 +430,13 @@ def _safely(what: str, record: Callable[[], None]) -> None:
 # task inherited is visible to the run that created it, which is exactly the
 # aggregation behaviour wanted. The lock is there because `asyncio.to_thread`
 # and a threaded server can both put two real threads on one recorder.
+#
+# ONE HAZARD, and it is silent. `asyncio.gather` and `asyncio.to_thread` copy
+# the context; `loop.run_in_executor` and a pre-existing ThreadPoolExecutor do
+# NOT. Work dispatched that way sees `None` for both vars, so token totals and
+# attempt counts quietly become zero with nothing failing. If MUS-26 reaches for
+# an executor rather than a semaphore over gather, it has to carry the context
+# across explicitly (`contextvars.copy_context().run(...)`).
 
 _current_run: ContextVar["RunRecorder | None"] = ContextVar("outreach_run", default=None)
 _current_lead: ContextVar["LeadSpan | None"] = ContextVar("outreach_lead", default=None)
@@ -472,7 +483,7 @@ def verify_outcome(
     return sc.VERIFY_PASS
 
 
-@dataclass
+@dataclass(eq=False)
 class RunRecorder:
     """Totals accumulated over one planner run, written to the run span at the end.
 
@@ -490,6 +501,7 @@ class RunRecorder:
     input_tokens: int = 0
     output_tokens: int = 0
     saw_usage: bool = False
+    finished: bool = False
     leads: list["LeadSpan"] = field(default_factory=list, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
@@ -502,7 +514,7 @@ class RunRecorder:
         prompt: str | None = None,
     ) -> "LeadSpan":
         """Open a lead span belonging to this run."""
-        lead = start_lead_span(
+        lead = _start_lead_span(
             run_id=self.run_id,
             lead_id=lead_id,
             action_type=action_type,
@@ -515,11 +527,22 @@ class RunRecorder:
         return lead
 
     def _close_orphans(self, exc: BaseException | None) -> None:
-        """End any lead span the planner did not finish."""
+        """End any lead span the planner did not finish.
+
+        Each is guarded separately. Unguarded, one span failing to end would
+        take the loop with it -- so the remaining leads would *also* never be
+        exported, and the raise would replace the planner's real exception with
+        a telemetry one, demoting the actual cause to ``__context__``. Both are
+        precisely what this class exists to prevent, so neither may be left as
+        a thing to remember.
+        """
         with self._lock:
             leads = list(self.leads)
         for lead in leads:
-            lead.abandon(exc)
+            try:
+                lead.abandon(exc)
+            except Exception:
+                logger.warning("Could not end a lead span", exc_info=True)
 
     def add_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
         """Fold one provider call's usage into the run total."""
@@ -533,6 +556,11 @@ class RunRecorder:
             self.saw_usage = True
 
     def finish(self, *, lead_count: int, needs_human_count: int) -> None:
+        """Write the run's totals. Idempotent, like :meth:`LeadSpan.finish`."""
+        with self._lock:
+            if self.finished:
+                return
+            self.finished = True
         attributes: dict[str, Any] = {
             sc.LEAD_COUNT: lead_count,
             sc.NEEDS_HUMAN_COUNT: needs_human_count,
@@ -567,6 +595,14 @@ def run_span(
     """
     active = tracer if tracer is not None else get_tracer()
     resolved_run_id = run_id or str(uuid.uuid4())
+    if len(resolved_run_id) > RUN_ID_MAX_LENGTH:
+        # Refused here rather than discovered in phase 5: otherwise every span
+        # in the run closes green and the write then dies on Postgres with
+        # `value too long`, several screens from the cause.
+        raise ValueError(
+            f"run_id must be at most {RUN_ID_MAX_LENGTH} characters to fit "
+            f"OutreachAction.trace_run_id; got {len(resolved_run_id)}."
+        )
     with active.start_as_current_span(
         f"{sc.OPERATION_INVOKE_AGENT} {AGENT_NAME}",
         kind=SpanKind.INTERNAL,
@@ -671,8 +707,12 @@ class LeadSpan:
             sc.VERIFY_OUTCOME: outcome,
             sc.VERIFY_VIOLATION_COUNT: violation_count,
             sc.SHAPE_PROBLEM_COUNT: shape_problem_count,
-            sc.LLM_ATTEMPTS: attempts,
         }
+        # Absent, not zero, when no attempt was made -- the same rule the usage
+        # attributes follow. Zero is a measurement ("this lead made no provider
+        # call"); absent is the absence of one, which is what a lead whose
+        # provider path does not report attempts actually means.
+        _set_if(attributes, sc.LLM_ATTEMPTS, attempts or None)
         _set_if(attributes, sc.OUTPUT_REF, output_ref)
         _set_if(attributes, sc.OUTPUT_SHA256, output_sha256)
         if failure is not None:
@@ -704,7 +744,7 @@ class LeadSpan:
         self._span.end()
 
 
-def start_lead_span(
+def _start_lead_span(
     *,
     run_id: str,
     lead_id: str,
@@ -765,7 +805,12 @@ def finish_lead(
         ),
         violation_count=violation_count,
         shape_problem_count=shape_problem_count,
-        output_ref=output_ref(run_id, lead_id) if generated else None,
+        # Emitted for every lead, including skipped and failed ones: a row is
+        # written for each, and those are exactly the rows an operator staring
+        # at a red lead span wants to open. The ref is a pointer; only the
+        # digest is a claim about content, so only the digest is gated on there
+        # being any.
+        output_ref=output_ref(run_id, lead_id),
         output_sha256=sha256_of(output_text),
         failure=failure,
     )
@@ -777,6 +822,13 @@ def output_ref(run_id: str, lead_id: str) -> str:
     Resolvable via ``OutreachAction.objects.get(trace_run_id=..., lead_id=...)``
     and — the point — knowable *before* the row exists, so the lead span can
     close on time instead of waiting for the run's single write.
+
+    **The reference is a promise, not a fact.** It is emitted when the lead's
+    work ends, which is before the run's single ``transaction.atomic()`` write;
+    if that write rolls back, every lead span in the run is already closed and
+    green while no row exists. The run span is the place to check -- it carries
+    ``error.type`` in that case -- and that asymmetry is the price of a lead
+    span that closes on time, which is the whole reason this function exists.
     """
     return f"outreach_action:{run_id}:{lead_id}"
 
@@ -915,6 +967,5 @@ __all__ = [
     "provider_call_scope",
     "run_span",
     "sha256_of",
-    "start_lead_span",
     "verify_outcome",
 ]

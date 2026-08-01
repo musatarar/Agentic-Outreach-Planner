@@ -179,6 +179,23 @@ class OutreachAction(models.Model):  # what the planner decided/did
             models.Index(fields=["status", "priority", "lead"], name="oa_queue_order"),
             models.Index(fields=["status", "-status_changed_at"], name="oa_done_order"),
         ]
+        constraints = [
+            # A trace's `outreach.output.ref` promises that
+            # `.get(trace_run_id=..., lead_id=...)` resolves to one row. It is
+            # true by construction -- one WorkItem per lead per run -- but a
+            # promise a reader relies on should be enforced by the schema
+            # rather than by an invariant several modules away.
+            #
+            # Partial, because every row written before MUS-25 has
+            # trace_run_id="" and they are not unique per lead: an
+            # unconditional constraint would fail to apply on any existing
+            # database.
+            models.UniqueConstraint(
+                fields=["trace_run_id", "lead"],
+                condition=~Q(trace_run_id=""),
+                name="oa_one_row_per_lead_per_run",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.lead_id} - {self.action_type} (p{self.priority})"

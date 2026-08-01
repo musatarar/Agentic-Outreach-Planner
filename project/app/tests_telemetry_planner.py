@@ -29,7 +29,7 @@ from project.app.services import outreach
 from project.app.services.outreach import plan_outreach
 from project.app.services.telemetry import genai, semconv
 
-from .tests_telemetry_support import install_in_memory_tracing, reset_spans, spans_named
+from .tests_telemetry_support import RecordingMixin, spans_named
 
 RUN_SPAN_NAME = "invoke_agent outreach_planner"
 
@@ -60,17 +60,13 @@ UNGROUNDED_COPY = GOOD_COPY.replace("Hi Priya,", "Hi Priya,\n\nCongrats on your 
 MALFORMED_COPY = "Sure! Here is the email you asked me to write for this lead."
 
 
-class _PlannerSpanTestCase(TestCase):
-    """A real ``plan_outreach()`` run over one lead, with spans recorded."""
+class _PlannerSpanTestCase(RecordingMixin, TestCase):
+    """A real ``plan_outreach()`` run over one lead, with spans recorded.
 
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.exporter = install_in_memory_tracing()
-
-    def setUp(self):
-        super().setUp()
-        reset_spans()
+    ``RecordingMixin`` rather than a copy of its two methods: the "clear the
+    shared exporter in setUp" contract is inherited here exactly as it is in
+    the database-free span tests.
+    """
 
     def make_lead(self, **kwargs):
         # demo_completed + no signup -> complete_onboarding, which is
@@ -207,6 +203,16 @@ class RunSpanTests(_PlannerSpanTestCase):
 
         self.assertNotIn(semconv.GEN_AI_USAGE_INPUT_TOKENS, self.run_span().attributes)
 
+    def test_finishing_a_run_twice_is_a_no_op(self):
+        """Symmetric with ``LeadSpan.finish``. One call site today, but an
+        asymmetry between two ``finish`` methods is an invitation to assume the
+        wrong one is safe."""
+        with genai.run_span(verify_level="standard", max_in_flight=1) as run:
+            run.finish(lead_count=7, needs_human_count=1)
+            run.finish(lead_count=99, needs_human_count=99)
+
+        self.assertEqual(self.run_span().attributes[semconv.LEAD_COUNT], 7)
+
     def test_a_failed_run_records_the_error_type(self):
         with self.assertRaises(ValueError):
             with genai.run_span(verify_level="standard", max_in_flight=1):
@@ -272,6 +278,38 @@ class LeadSpanTests(_PlannerSpanTestCase):
         self.assertEqual(span.attributes[semconv.VERIFY_OUTCOME], semconv.VERIFY_NOT_GENERATED)
         self.assertEqual(span.attributes[semconv.FAILURE_KIND], "ValueError")
         self.assertEqual(span.status.status_code, trace.StatusCode.ERROR)
+
+    def test_one_span_failing_to_end_does_not_take_the_others_with_it(self):
+        """Unguarded, the teardown loop would stop at the first failure -- so
+        the remaining leads would *also* never be exported, and the raise would
+        replace the planner's real exception with a telemetry one. Both are
+        exactly what the run owning its lead spans exists to prevent."""
+        real_abandon = genai.LeadSpan.abandon
+        calls = []
+
+        def flaky_abandon(self, exc=None):
+            calls.append(self)
+            if len(calls) == 1:
+                raise RuntimeError("a telemetry fault, not the planner's")
+            real_abandon(self, exc)
+
+        # Patched on the class, not the instance: LeadSpan uses __slots__, so
+        # there is nowhere on an instance to hang a replacement -- which is
+        # itself the point of the slots.
+        with mock.patch.object(genai.LeadSpan, "abandon", flaky_abandon):
+            with self.assertRaises(ValueError) as caught:
+                with genai.run_span(verify_level="standard", max_in_flight=1) as run:
+                    run.start_lead(lead_id="lead_001", action_type="nudge_usage", priority=2)
+                    run.start_lead(lead_id="lead_002", action_type="nudge_usage", priority=2)
+                    raise ValueError("the planner's actual failure")
+
+        self.assertEqual(len(calls), 2, "the loop stopped at the first failure")
+
+        # The planner's exception survives -- not demoted to __context__ behind
+        # a telemetry one.
+        self.assertEqual(str(caught.exception), "the planner's actual failure")
+        # And the sibling span still reached the exporter.
+        self.assertEqual(len(spans_named(genai.LEAD_SPAN_NAME)), 1)
 
     def test_finishing_twice_is_a_no_op(self):
         with genai.run_span(verify_level="standard", max_in_flight=1) as run:
@@ -409,12 +447,47 @@ class ContentReferenceTests(_PlannerSpanTestCase):
         expected = hashlib.sha256(GOOD_COPY.encode("utf-8")).hexdigest()
         self.assertEqual(self.lead_span().attributes[semconv.OUTPUT_SHA256], expected)
 
-    def test_a_lead_with_no_copy_gets_no_output_reference(self):
-        """A reference to a row whose ``suggested_copy`` is empty would point at
-        nothing; absent is the honest answer."""
+    def test_a_lead_with_no_copy_still_gets_an_output_reference(self):
+        """A row IS written for a skipped lead, and it is exactly the row an
+        operator staring at that lead wants to open. The ref is a pointer; only
+        the digest is a claim about content, so only the digest is absent."""
         self.make_lead(id="lead_unknown", stage="active_trial", signed_up_date=None)
         plan_outreach()
-        self.assertNotIn(semconv.OUTPUT_REF, self.lead_span().attributes)
+        attributes = self.lead_span().attributes
+
+        ref = attributes[semconv.OUTPUT_REF]
+        self.assertNotIn(semconv.OUTPUT_SHA256, attributes)
+        run_id, _, lead_id = ref.removeprefix("outreach_action:").partition(":")
+        self.assertTrue(
+            OutreachAction.objects.filter(trace_run_id=run_id, lead_id=lead_id).exists()
+        )
+
+    def test_the_output_reference_is_unique_in_the_schema_not_only_in_practice(self):
+        """``output_ref``'s docstring promises ``.get()`` resolves to one row.
+        A promise a reader relies on should be enforced by the schema rather
+        than by an invariant several modules away."""
+        from django.db import IntegrityError
+
+        self.make_lead()
+        self.plan()
+        row = OutreachAction.objects.get()
+
+        with self.assertRaises(IntegrityError):
+            OutreachAction.objects.create(
+                lead=row.lead,
+                priority=row.priority,
+                action_type=row.action_type,
+                reason=row.reason,
+                trace_run_id=row.trace_run_id,
+            )
+
+    def test_a_run_id_too_long_for_the_column_is_refused_up_front(self):
+        """Otherwise every span in the run closes green and phase 5 then dies on
+        Postgres with `value too long` -- a failure several screens from its
+        cause."""
+        with self.assertRaises(ValueError):
+            with genai.run_span(verify_level="standard", max_in_flight=1, run_id="x" * 37):
+                pass
 
 
 class SpanContentLeakTests(_PlannerSpanTestCase):
@@ -435,56 +508,117 @@ class SpanContentLeakTests(_PlannerSpanTestCase):
     NOTES_CANARY = "CANARY-NOTES-4f21c8-do-not-export"
     COPY_CANARY = "CANARY-COPY-9b07ae-do-not-export"
 
+    # Every free-text field on a lead, each with its own canary. Restricting
+    # the search to `hubspot_notes` would leave a future `outreach.lead.name`
+    # or `outreach.contact` attribute sailing through all of these -- and this
+    # suite is the acceptance evidence for the PII claim, so it has to cover
+    # the class of leak rather than the one instance of it.
+    FIELD_CANARIES = {
+        "hubspot_notes": f"Internal note: {NOTES_CANARY}",
+        "contact_name": "CANARY-NAME-2b81d4",
+        "agency_name": "CANARY-AGENCY-77e0aa",
+        "contact_email": "canary-email-5c3f19@example.com",
+    }
+
     def _copy_with_canary(self):
         return GOOD_COPY.replace("Hi Priya,", f"Hi Priya, {self.COPY_CANARY}")
 
     def _plan_with_canaries(self):
-        self.make_lead(hubspot_notes=f"Internal note: {self.NOTES_CANARY}")
+        self.make_lead(**self.FIELD_CANARIES)
         self.plan(copy=self._copy_with_canary())
 
     def _every_recorded_string(self):
         """Every string a backend would receive, flattened.
 
-        Names, attribute keys AND values, status descriptions, and event
-        attributes -- because a leak that arrived via a span name or an
-        exception event would be exactly as bad as one via an attribute, and
-        checking only attributes is how that gets missed.
+        Names, attribute keys AND values, status descriptions, span links,
+        resource attributes and event attributes -- because a leak that arrived
+        via a span name, a link or the process resource would be exactly as bad
+        as one via a span attribute, and checking only span attributes is how
+        that gets missed.
         """
         strings = []
+
+        def add(value):
+            if isinstance(value, (list, tuple)):
+                strings.extend(str(v) for v in value)
+            else:
+                strings.append(str(value))
+
+        def add_attributes(attributes):
+            for key, value in (attributes or {}).items():
+                strings.append(str(key))
+                add(value)
+
         for span in self.exporter.get_finished_spans():
             strings.append(span.name)
             if span.status.description:
                 strings.append(span.status.description)
-            for key, value in (span.attributes or {}).items():
-                strings.append(str(key))
-                strings.extend(str(v) for v in value) if isinstance(
-                    value, (list, tuple)
-                ) else strings.append(str(value))
+            add_attributes(span.attributes)
+            add_attributes(getattr(span.resource, "attributes", None))
+            for link in span.links or ():
+                add_attributes(link.attributes)
             for event in span.events:
                 strings.append(event.name)
-                strings.extend(str(v) for v in (event.attributes or {}).values())
+                add_attributes(event.attributes)
         return strings
 
     def test_the_canaries_really_are_in_the_run(self):
-        """Guards the guard. If the canary never reached the database, the leak
-        test below would pass by doing nothing -- which is the failure mode
-        every negative test has and the one nobody notices."""
+        """Guards the guard. If a canary never reached the prompt or the row,
+        the leak tests below would pass by doing nothing -- the failure mode
+        every negative test has and the one nobody notices.
+
+        Note it asserts the notes canary reached the **prompt**, not merely the
+        database. If ``_build_untrusted_block`` stopped including
+        ``hubspot_notes``, a database-only guard would still pass while
+        ``test_no_span_carries_the_lead_notes`` became vacuous.
+        """
         self._plan_with_canaries()
 
-        row = OutreachAction.objects.get()
-        self.assertIn(self.COPY_CANARY, row.suggested_copy)
-        self.assertIn(self.NOTES_CANARY, Lead.objects.get().hubspot_notes)
+        lead = Lead.objects.get()
+        prompt = outreach._build_copy_prompt(lead, "complete_onboarding", "why now")
+        for value in self.FIELD_CANARIES.values():
+            self.assertIn(value.split()[-1], prompt, f"{value} never reached the prompt")
+
+        self.assertIn(self.COPY_CANARY, OutreachAction.objects.get().suggested_copy)
         self.assertTrue(self.exporter.get_finished_spans())
 
-    def test_no_span_carries_the_lead_notes(self):
+    def test_no_span_carries_any_free_text_lead_field(self):
         self._plan_with_canaries()
-        for value in self._every_recorded_string():
-            self.assertNotIn(self.NOTES_CANARY, value)
+        recorded = self._every_recorded_string()
+        for field, planted in self.FIELD_CANARIES.items():
+            canary = planted.split()[-1]
+            for value in recorded:
+                self.assertNotIn(canary, value, f"{field} leaked via {value!r}")
 
     def test_no_span_carries_the_generated_copy(self):
         self._plan_with_canaries()
         for value in self._every_recorded_string():
             self.assertNotIn(self.COPY_CANARY, value)
+
+    def test_the_walk_covers_a_provider_call_span_too(self):
+        """The coverage claim, asserted rather than assumed.
+
+        The planner's phase 3 still goes through the synchronous ``complete()``,
+        so a real run produces only run and lead spans -- and the leak tests
+        above would silently be checking two of the three span kinds. This
+        drives ``provider_call_scope`` under a lead span with the canary in the
+        provider's error message, which is the exact text the ``chat`` span's
+        status description is at risk of carrying.
+        """
+        from project.app.services.llm.errors import LLMBadRequestError
+
+        call = genai.ProviderCall(provider="groq", model="m")
+        with genai.run_span(verify_level="standard", max_in_flight=1) as run:
+            lead = run.start_lead(lead_id="lead_007", action_type="nudge_usage", priority=2)
+            with lead.active():
+                with self.assertRaises(LLMBadRequestError), genai.provider_call_scope(call)(0):
+                    raise LLMBadRequestError(f"rejected: {self.NOTES_CANARY}", provider="groq")
+            lead.finish(needs_human=True, outcome=semconv.VERIFY_NOT_GENERATED)
+
+        names = {span.name for span in self.exporter.get_finished_spans()}
+        self.assertIn("chat m", names)
+        for value in self._every_recorded_string():
+            self.assertNotIn(self.NOTES_CANARY, value)
 
     def test_the_openinference_content_carriers_are_absent_by_name(self):
         """Asserted by name as well as by value. ``llm.input_messages`` and
@@ -503,7 +637,7 @@ class SpanContentLeakTests(_PlannerSpanTestCase):
         request back in a 4xx body."""
         from project.app.services.llm.errors import LLMBadRequestError
 
-        self.make_lead(hubspot_notes=f"Internal note: {self.NOTES_CANARY}")
+        self.make_lead(**self.FIELD_CANARIES)
         self.plan(
             side_effect=LLMBadRequestError(f"rejected input: {self.NOTES_CANARY}", provider="groq")
         )
