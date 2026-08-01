@@ -1355,12 +1355,24 @@ def _budget_error(client, per_lead_s, last_error):
         )
     # Same class, so `failure_kind` still reports what the provider was actually
     # doing, with the budget noted alongside.
-    return type(last_error)(
-        f"{last_error} ({note})",
-        provider=last_error.provider,
-        status_code=last_error.status_code,
-        retry_after=last_error.retry_after,
-    )
+    try:
+        return type(last_error)(
+            f"{last_error} ({note})",
+            provider=last_error.provider,
+            status_code=last_error.status_code,
+            retry_after=last_error.retry_after,
+        )
+    except TypeError:
+        # An adapter subclass with its own constructor signature. Fall back to
+        # the same class as the nothing-failed-yet branch above: the budget
+        # genuinely did expire, so "timeouts" stays true (and retryable) even
+        # though the precise provider label is lost.
+        return LLMTimeoutError(
+            f"{last_error} ({note})",
+            provider=last_error.provider,
+            status_code=last_error.status_code,
+            retry_after=last_error.retry_after,
+        )
 
 
 def _prompt_for(lead, action_type, reason, prompt):
@@ -1518,9 +1530,11 @@ class CopyOutcome:
     ``attempts`` and ``elapsed_s`` are what the run *spent* on this lead, and
     they exist so phase 4 can say "gave up after 4 attempts over 31s" rather
     than just "it failed". That clause is the whole difference between a
-    reviewer reading a row as noise and reading it as work. Both are ``0`` when
-    no provider call was made at all (an unmatched lead, an unbuildable prompt),
-    which is honest: zero attempts is exactly what happened.
+    reviewer reading a row as noise and reading it as work. They are only
+    meaningful on a failure -- phase 4 reads them for its failure sentence and
+    nothing else does -- so a success leaves them at ``0`` too, exactly like a
+    lead where no provider call was made at all (an unmatched lead, an
+    unbuildable prompt).
     """
 
     text: str = ""
@@ -1913,14 +1927,21 @@ _SECRET_PATTERN = re.compile(
 DETAIL_MAX_CHARS = 300
 
 
-def _safe_detail(error):
-    """Provider text, fit to be persisted and shown to a human."""
+def _redact_and_bound(error):
+    """``str(error)`` with secrets removed and the length capped, nothing more."""
     text = _SECRET_PATTERN.sub("[redacted]", str(error)).strip()
     if len(text) > DETAIL_MAX_CHARS:
         return text[:DETAIL_MAX_CHARS].rstrip() + "... (truncated)"
+    return text
+
+
+def _safe_detail(error):
+    """Provider text, fit to be persisted and shown to a human."""
+    text = _redact_and_bound(error)
     # A trailing full stop is added here rather than in the templates so the
     # message never ends up with ".." when the provider already punctuated.
-    return text if text.endswith((".", "!", "?")) else text + "."
+    # The truncation marker stays unpunctuated -- it is a note, not a sentence.
+    return text if text.endswith((".", "!", "?", "(truncated)")) else text + "."
 
 
 def failure_kind(error):
@@ -1953,7 +1974,12 @@ def _describe_failure(item, outcome):
     """
     error = outcome.error
     if not isinstance(error, LLMError):
-        return COPY_FAILED_UNEXPECTEDLY.format(error=error, action_type=item.action_type)
+        # Redacted and bounded like the provider branches below, but without
+        # _safe_detail's trailing full stop: this template parenthesises the
+        # error mid-sentence, and its wording is pinned.
+        return COPY_FAILED_UNEXPECTEDLY.format(
+            error=_redact_and_bound(error), action_type=item.action_type
+        )
 
     if error.retryable:
         return COPY_RETRIES_EXHAUSTED.format(
@@ -2187,8 +2213,12 @@ def plan_outreach():
         # so without this a lead that failed on Monday and succeeded on Tuesday
         # would show a real draft and a stale "the provider was down" row side
         # by side in the same finite queue. Deleted rather than marked: a failed
-        # attempt carries no human decision and no draft, so there is nothing in
-        # it worth an audit trail that the run's own log does not already have.
+        # attempt carries no draft, and the one decision it can carry -- a
+        # snooze -- was aimed at the stale failure notice, not at whatever this
+        # run just produced. Un-snoozing here is deliberate: the fresh outcome
+        # goes in front of a reviewer rather than inheriting a "not now" that
+        # answered a different question. Nothing else in the row is worth an
+        # audit trail that the run's own log does not already have.
         OutreachAction.objects.filter(
             dedupe_key__in=[item.dedupe_key for item in work],
             status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
@@ -2221,6 +2251,7 @@ def plan_outreach():
     # rows by it, so a run that returned pk-less objects would serialize
     # `"id": null` into the API response. Asserted explicitly in the tests --
     # this is a guarantee about the *database*, not about our code, which is
-    # precisely why it deserves a test rather than a comment.
+    # precisely why it deserves a test rather than a comment. Deploys CI never
+    # sees are covered at boot by checks.bulk_create_pk_check (app.E003).
     planned.sort(key=lambda a: a.priority)
     return planned

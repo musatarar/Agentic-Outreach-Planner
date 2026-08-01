@@ -81,3 +81,27 @@ def planner_runtime_check(app_configs, **kwargs):
     except ImproperlyConfigured as exc:
         return [Error(str(exc), id="app.E002")]
     return []
+
+
+@register()
+def bulk_create_pk_check(app_configs, **kwargs):
+    """The planner's phase 5 needs ``bulk_create`` to return primary keys.
+
+    Postgres always does (RETURNING); SQLite only from 3.35. On anything older
+    the run would still succeed -- and then the API would serialize
+    ``"id": null`` for every planned row, breaking the triage queue two screens
+    away from the cause. tests_planner_perf asserts pk population on the CI
+    legs, which both qualify; this check covers the deploys CI never sees.
+
+    Feature detection only -- no query, so it is safe before migrations.
+    """
+    if connections["default"].features.can_return_rows_from_bulk_insert:
+        return []
+    return [
+        Error(
+            "This database cannot return primary keys from bulk_create "
+            "(SQLite >= 3.35 or Postgres is required). The planner's batched "
+            "insert would produce rows the API serializes with a null id.",
+            id="app.E003",
+        )
+    ]

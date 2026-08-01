@@ -16,9 +16,10 @@ import math
 from unittest.mock import patch
 
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
+from project.app import checks
 from project.app.models import Event, Lead, OutreachAction
 from project.app.services.outreach import plan_outreach
 
@@ -308,3 +309,23 @@ class BulkCreateTests(TestCase):
 
         self.assertEqual(planned, [])
         self.assertEqual(OutreachAction.objects.count(), 0)
+
+
+class BulkCreatePkBootCheckTests(SimpleTestCase):
+    """The pk-population guarantee above, enforced at boot for the databases
+    CI never sees (test_every_returned_row_has_a_primary_key covers the two
+    CI legs, which both qualify)."""
+
+    def test_a_qualifying_database_reports_nothing(self):
+        self.assertEqual(checks.bulk_create_pk_check(None), [])
+
+    def test_a_database_without_returning_fails_manage_py_check(self):
+        # Patched on the features *class*: on SQLite the flag is a read-only
+        # property, so an instance-level patch would have nothing to set.
+        with patch.object(type(connection.features), "can_return_rows_from_bulk_insert", False):
+            errors = checks.bulk_create_pk_check(None)
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, "app.E003")
+        self.assertIn("bulk_create", errors[0].msg)
+        self.assertIn("3.35", errors[0].msg)
