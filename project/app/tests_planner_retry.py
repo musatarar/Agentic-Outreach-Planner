@@ -29,6 +29,7 @@ from project.app.services.llm import (
     LLMError,
     LLMMalformedResponseError,
     LLMRateLimitError,
+    LLMResult,
     LLMTimeoutError,
     LLMTransientError,
 )
@@ -59,7 +60,7 @@ class _ScriptedClient:
     """A provider that fails on cue and counts how often it was asked.
 
     Duck-typed rather than an ``LLMClient`` subclass: the only surface the retry
-    path touches is ``acomplete``, and a subclass would drag in the abstract
+    path touches is ``agenerate``, and a subclass would drag in the abstract
     ``generate`` for no benefit here.
     """
 
@@ -73,13 +74,13 @@ class _ScriptedClient:
         self.then = then
         self.attempts = 0
 
-    async def acomplete(self, prompt, max_tokens=None, timeout=None):
+    async def agenerate(self, prompt, max_tokens=None, timeout=None):
         self.attempts += 1
         if self.script:
             raise self.script.pop(0)
         if isinstance(self.then, BaseException):
             raise self.then
-        return self.then
+        return LLMResult(text=self.then, provider=self.provider_name, model="scripted-model")
 
     async def aclose(self):
         return None
@@ -101,7 +102,7 @@ class _HangingClient:
     def __init__(self):
         self.attempts = 0
 
-    async def acomplete(self, prompt, max_tokens=None, timeout=None):
+    async def agenerate(self, prompt, max_tokens=None, timeout=None):
         self.attempts += 1
         await asyncio.sleep(self.HANG_S)
 
@@ -388,9 +389,9 @@ class PerLeadBudgetTests(TestCase):
         class _Router:
             provider_name = "groq"
 
-            async def acomplete(self, prompt, max_tokens=None, timeout=None):
+            async def agenerate(self, prompt, max_tokens=None, timeout=None):
                 key = "lead_slow" if "Summit Risk Advisors" in prompt else "lead_fine"
-                return await clients[key].acomplete(prompt, max_tokens, timeout)
+                return await clients[key].agenerate(prompt, max_tokens, timeout)
 
             async def aclose(self):
                 return None
@@ -543,11 +544,11 @@ class AgenerateCopyRetryUnitTests(SimpleTestCase):
         class _Recorder:
             provider_name = "groq"
 
-            async def acomplete(self, prompt, max_tokens=None, timeout=None):
+            async def agenerate(self, prompt, max_tokens=None, timeout=None):
                 seen.append(timeout)
                 if len(seen) < 3:
                     raise rate_limit()
-                return GOOD_COPY
+                return LLMResult(text=GOOD_COPY, provider="groq", model="recorder-model")
 
             async def aclose(self):
                 return None

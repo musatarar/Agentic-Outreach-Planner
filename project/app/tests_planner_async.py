@@ -33,7 +33,7 @@ from django.test import TestCase, override_settings
 
 from project.app.models import Lead, OutreachAction
 from project.app.services import outreach
-from project.app.services.llm import LLMClient
+from project.app.services.llm import LLMClient, LLMResult
 from project.app.services.outreach import plan_outreach
 
 # Pulled out of the prompt to identify which lead a stub was called for. Phase 3
@@ -367,7 +367,7 @@ class _FakeClient(LLMClient):
     """A real ``LLMClient`` whose async path records what it was asked for.
 
     A real subclass rather than a ``Mock``: the thing under test is that the
-    planner reaches ``acomplete`` -- the *async* method -- and a Mock answers
+    planner reaches ``agenerate`` -- the *async* method -- and a Mock answers
     every attribute identically, so it could not tell the two apart.
     """
 
@@ -390,11 +390,13 @@ class _FakeClient(LLMClient):
         self.sync_calls.append(prompt)
         return self.text
 
-    async def acomplete(self, prompt, max_tokens=None, timeout=None):
+    async def agenerate(self, prompt, max_tokens=None, timeout=None):
+        # `acomplete` is inherited (it awaits this and takes `.text`), so one
+        # recording covers whichever async entry point the caller picks.
         self.async_calls.append({"prompt": prompt, "max_tokens": max_tokens})
         if self.error is not None:
             raise self.error
-        return self.text
+        return LLMResult(text=self.text, provider=self.provider_name, model=self.model)
 
     async def aclose(self):
         self.closed += 1
@@ -405,8 +407,8 @@ class AgenerateCopyTests(TestCase):
 
     Every other test in this module patches `agenerate_copy` out, which leaves
     the one genuinely new production function untested. That is not an academic
-    gap: change its body from `await client.acomplete(...)` to
-    `client.complete(...)` and every concurrency test above still passes, while
+    gap: change its body from `await client.agenerate(...)` to
+    `client.generate(...)` and every concurrency test above still passes, while
     the pool silently collapses to a peak of 1 -- the exact regression this
     ticket exists to prevent, sailing straight through the tests written to
     catch it. These are what tie the mock seam to the thing it stands in for.

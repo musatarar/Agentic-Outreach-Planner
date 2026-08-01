@@ -1285,15 +1285,31 @@ async def agenerate_copy(
     if timeouts is None:
         timeouts = llm_runtime.get_timeouts()
 
+    # Imported here for the same reason plan_outreach does it: this module
+    # stays importable with no telemetry configured, and the OTel API hands
+    # back no-ops when nothing is.
+    from project.app.services.telemetry import genai
+
     attempts = 0
     last_error = None
     started = time.monotonic()
+
+    # One description of the call, built once and shared by every attempt for
+    # this lead (MUS-25): hooked into the retry helper's `attempt_scope` seam,
+    # it opens one `chat {model}` CLIENT span per HTTP attempt, so a 429 that
+    # was retried and a success that followed it are siblings under the same
+    # lead rather than one blurred interval.
+    call_scope = genai.provider_call_scope(genai.ProviderCall.from_client(client, MAX_COPY_TOKENS))
 
     async def attempt():
         nonlocal attempts, last_error
         attempts += 1
         try:
-            return await client.acomplete(
+            # `agenerate`, not `acomplete`: the span recorder is handed the
+            # attempt's result while its span is still open, and it needs the
+            # full LLMResult -- usage, served model, finish reason -- not the
+            # text the rest of this function cares about.
+            return await client.agenerate(
                 prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
             )
         except LLMError as exc:
@@ -1316,7 +1332,8 @@ async def agenerate_copy(
         # it caused into a TimeoutError at its own boundary, so a CancelledError
         # from somewhere else still reads as a cancellation.
         async with asyncio.timeout(timeouts.per_lead_s) as budget:
-            return await acall_with_retry(attempt, policy=retry)
+            result = await acall_with_retry(attempt, policy=retry, attempt_scope=call_scope)
+            return result.text
     except LLMError as exc:
         raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
     except TimeoutError as exc:

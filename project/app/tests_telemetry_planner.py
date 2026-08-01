@@ -26,6 +26,7 @@ from opentelemetry import trace
 
 from project.app.models import Lead, OutreachAction
 from project.app.services import outreach
+from project.app.services.llm import LLMClient, LLMResult
 from project.app.services.llm import runtime as llm_runtime
 from project.app.services.outreach import plan_outreach
 from project.app.services.telemetry import genai, semconv
@@ -162,10 +163,10 @@ class RunSpanTests(_PlannerSpanTestCase):
         self.assertEqual(OutreachAction.objects.get().trace_run_id, run_id)
 
     def test_a_run_with_no_provider_usage_reports_no_token_totals(self):
-        """The planner's phase 3 still goes through the text-only ``complete()``
-        path, so no provider reports usage and the run must say nothing rather
-        than claim a confident zero. (MUS-26 moves phase 3 onto the async path,
-        at which point these attributes populate with no change here.)"""
+        """With ``agenerate_copy`` stubbed out no provider call happens, so no
+        usage is ever reported and the run must say nothing rather than claim a
+        confident zero. (The populated case runs the real phase 3 -- see
+        ``PlannerProviderSpanTests``.)"""
         self.make_lead()
         self.plan()
         for key in (semconv.GEN_AI_USAGE_INPUT_TOKENS, semconv.GEN_AI_USAGE_OUTPUT_TOKENS):
@@ -361,6 +362,64 @@ class LeadSpanTests(_PlannerSpanTestCase):
 
         (provider_span,) = spans_named("chat m")
         self.assertEqual(provider_span.parent.span_id, self.lead_span().get_span_context().span_id)
+
+
+class _SpanReportingClient(LLMClient):
+    """The narrowest real client the planner will drive end to end."""
+
+    provider_name = "groq"
+
+    def __init__(self, text=GOOD_COPY):
+        super().__init__(model="span-model", default_max_tokens=500)
+        self.text = text
+
+    def generate(self, prompt, max_tokens=None, timeout=None):
+        raise AssertionError("the planner must not take the blocking path")
+
+    async def agenerate(self, prompt, max_tokens=None, timeout=None):
+        return LLMResult(
+            text=self.text,
+            provider=self.provider_name,
+            model=self.model,
+            input_tokens=910,
+            output_tokens=140,
+        )
+
+
+class PlannerProviderSpanTests(_PlannerSpanTestCase):
+    """``plan_outreach()`` with nothing stubbed between it and the client.
+
+    The regression these pin down: every piece of the chat-span machinery can
+    pass its own unit tests while ``agenerate_copy`` forgets to hook
+    ``provider_call_scope`` into the retry helper's ``attempt_scope`` seam --
+    in which case a real run traces lead spans and *no provider spans at all*,
+    and nothing above notices. Only a run through the genuine phase 3 can.
+    """
+
+    def plan_with_real_phase_3(self):
+        with mock.patch(
+            "project.app.services.outreach.get_llm_client",
+            return_value=_SpanReportingClient(),
+        ):
+            return plan_outreach()
+
+    def test_a_run_produces_a_chat_span_under_the_lead_span(self):
+        self.make_lead()
+        self.plan_with_real_phase_3()
+
+        (chat_span,) = spans_named("chat span-model")
+        self.assertEqual(chat_span.parent.span_id, self.lead_span().get_span_context().span_id)
+        # 1-based on the span, deliberately -- "attempt 0" reads as "no attempt".
+        self.assertEqual(chat_span.attributes[semconv.LLM_ATTEMPT], 1)
+        self.assertEqual(self.lead_span().attributes[semconv.LLM_ATTEMPTS], 1)
+
+    def test_provider_usage_reaches_the_run_span(self):
+        self.make_lead()
+        self.plan_with_real_phase_3()
+
+        attributes = self.run_span().attributes
+        self.assertEqual(attributes[semconv.GEN_AI_USAGE_INPUT_TOKENS], 910)
+        self.assertEqual(attributes[semconv.GEN_AI_USAGE_OUTPUT_TOKENS], 140)
 
 
 class VerifyOutcomeTests(_PlannerSpanTestCase):
