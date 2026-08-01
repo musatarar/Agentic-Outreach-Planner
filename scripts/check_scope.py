@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
-"""Workflow-gate brain (MUS-53): classify PRs and enforce the contract workflow.
+"""Workflow-gate brain (MUS-64): classify PRs and enforce the skeleton -> component flow.
 
-Classifies every PR by its base/head branch names and enforces the
-contract -> skeleton -> mini-PR rules mechanically: file-map scope, shared-file
-and protected-path rejection, AST-based expectedFailure marker accounting, and
-contract lint. All verdict logic lives here, in tested Python — the workflow
-YAML only sequences calls.
+Linear owns the plan (self-contained sub-issues per component); the repo owns the
+proof. A skeleton PR plants red tests per component — BE modules behind
+``@unittest.expectedFailure``, FE node:test files with todo tests — and each
+component PR must take exactly its own artifacts to zero red while every other
+test file's red count stays frozen. Landing requires the feature to carry no more
+red per file than master already had. All verdict logic lives here, in tested
+Python — the workflow YAML only sequences calls.
 
 Modes::
 
-    python scripts/check_scope.py --classify                  # class/feature/component
-    python scripts/check_scope.py --gate                      # full per-class enforcement
-    python scripts/check_scope.py --validate-contract PATH    # contract lint
+    python scripts/check_scope.py --classify   # class/feature/component
+    python scripts/check_scope.py --gate       # full per-class enforcement (default)
 
 Base/head branch names come from --base/--head or GITHUB_BASE_REF/GITHUB_HEAD_REF.
-Local self-check before pushing a mini PR::
+Local self-check before pushing a component PR::
 
-    python scripts/check_scope.py --base origin/feat/x --component scope_engine
+    python scripts/check_scope.py --base origin/feat/<x> --component <component>
 
-Exit codes: 0 pass, 1 gate/lint/classification failure, 2 usage error. Failure
+Test artifacts are addressed by convention and looked up at the BASE ref (a PR
+cannot self-create its own artifact): BE ``project/app/tests_<fslug>_<component>.py``
+and FE ``frontend/tests/<fslug>_<component>.test.ts``, where ``<fslug>`` is the
+feature name lowercased with dashes mapped to underscores.
+
+Exit codes: 0 pass, 1 gate/classification failure, 2 usage error. Failure
 messages name the offending file and the rule broken, so a Claude Code session
 can act on them mid-loop.
 """
@@ -31,57 +37,41 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from pathlib import Path
-
-import yaml
 
 DEFAULT_BRANCH = "master"
-CONTRACTS_DIR = "docs/contracts"
 TEST_MODULE_GLOB = "project/app/tests*.py"
+FE_TEST_GLOB = "frontend/tests/*.test.ts"
 
-# The enforcement layer must be outside the reach of the thing it enforces: a
-# contract's file map may not claim any of these, and every feat/* -flow PR
-# fails if its diff touches one. Changes to them go through meta/** PRs to
-# master only. Hardcoded here, never read from a contract.
+# The enforcement layer must be outside the reach of the thing it enforces:
+# every feat/* -flow PR fails if its diff touches one of these. Changes to them
+# go through meta/** PRs to master only. Hardcoded here, never configurable.
 PROTECTED_PATHS = (
     ".github/workflows/**",
     "scripts/check_scope.py",
     "scripts/red_proof.py",
     "scripts/tests/**",
     "CLAUDE.md",
-    "docs/contracts/TEMPLATE.md",
     "docs/ci.md",
     "docs/rulesets/**",
-    # The landing gate checks the rules-eval baseline; a mini PR that could
+    # The landing gate checks the rules-eval baseline; a component PR that could
     # edit the golden set or baseline could quietly weaken that gate.
     "evals/golden/**",
     "evals/baselines/**",
     "evals/run_rules_eval.py",
 )
 
-# Contract lint checks these section headings exist (presence, not quality —
-# prose being *meaningful* is review-only and documented as such).
-REQUIRED_SECTIONS = ("interfaces", "data shapes", "error contract", "file map")
+# Component slugs name test artifacts, so they are restricted to characters that
+# are valid in a Python module name (and in a filename on every platform).
+COMPONENT_SLUG_RE = re.compile(r"[a-z0-9_]+")
 
 
 class GateError(Exception):
     """A verdict-level failure with a message meant to be read mid-loop."""
 
 
-class FileMapError(GateError):
-    """The contract's file-map block is missing or malformed."""
-
-
-@dataclass
-class FileMap:
-    components: dict
-    shared: list
-    feature: str | None = None
-
-
 @dataclass
 class Classification:
-    pr_class: str  # meta | skeleton | mini | contract | landing | normal
+    pr_class: str  # meta | skeleton | component | landing | normal
     feature: str = ""
     component: str = ""
 
@@ -99,110 +89,6 @@ def is_protected(path):
         elif path == pattern:
             return True
     return False
-
-
-# ---------------------------------------------------------------------------
-# file map parsing + contract lint
-# ---------------------------------------------------------------------------
-
-
-def extract_file_map_block(text):
-    blocks = re.findall(r"```ya?ml[^\n]*\n(.*?)\n```", text, flags=re.DOTALL)
-    maps = [b for b in blocks if b.lstrip().startswith("# file-map")]
-    if not maps:
-        raise FileMapError(
-            "no fenced ```yaml block starting with '# file-map' found in the contract"
-        )
-    if len(maps) > 1:
-        raise FileMapError("multiple '# file-map' blocks found; a contract must have exactly one")
-    return maps[0]
-
-
-def _as_path_list(value, what):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return list(value)
-    raise FileMapError(f"{what} must be a path or a list of paths, got: {value!r}")
-
-
-def parse_file_map(text):
-    block = extract_file_map_block(text)
-    try:
-        data = yaml.safe_load(block)
-    except yaml.YAMLError as exc:
-        mark = getattr(exc, "problem_mark", None)
-        where = f" at line {mark.line + 1} of the file-map block" if mark else ""
-        raise FileMapError(f"file-map YAML failed to parse{where}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise FileMapError("file-map must be a YAML mapping")
-    raw_components = data.get("components")
-    if not isinstance(raw_components, dict) or not raw_components:
-        raise FileMapError("file-map must declare a non-empty 'components' mapping")
-    components = {}
-    for name, spec in raw_components.items():
-        if not isinstance(spec, dict):
-            raise FileMapError(f"component '{name}' must be a mapping with 'files' and 'tests'")
-        components[name] = {
-            "files": _as_path_list(spec.get("files"), f"component '{name}' files"),
-            "tests": _as_path_list(spec.get("tests"), f"component '{name}' tests"),
-        }
-    shared = _as_path_list(data.get("shared"), "'shared'")
-    feature = data.get("feature")
-    return FileMap(components=components, shared=shared, feature=feature)
-
-
-def validate_contract_text(text):
-    """Contract lint. Returns a list of error strings; empty means clean."""
-    errors = []
-    headings = [
-        line.lstrip("#").strip().lower() for line in text.splitlines() if line.startswith("#")
-    ]
-    for section in REQUIRED_SECTIONS:
-        if not any(h.startswith(section) for h in headings):
-            errors.append(f"missing required section: '{section}' (add a '## ...' heading for it)")
-
-    try:
-        fmap = parse_file_map(text)
-    except FileMapError as exc:
-        errors.append(str(exc))
-        return errors
-
-    owner = {}
-    for name, spec in fmap.components.items():
-        if not spec["tests"]:
-            errors.append(f"component '{name}' must declare at least one test module")
-        for test_path in spec["tests"]:
-            if not fnmatchcase(test_path, TEST_MODULE_GLOB):
-                errors.append(
-                    f"component '{name}' tests must be Django test modules matching "
-                    f"{TEST_MODULE_GLOB}, got: {test_path}"
-                )
-        for path in spec["files"] + spec["tests"]:
-            if path in owner and owner[path] != name:
-                errors.append(
-                    f"{path} must belong to exactly one component "
-                    f"(claimed by '{owner[path]}' and '{name}')"
-                )
-            owner[path] = name
-    for path in fmap.shared:
-        if path in owner:
-            errors.append(
-                f"shared file {path} is also owned by component '{owner[path]}' "
-                "(shared and owned must not overlap)"
-            )
-    if "assembly" not in fmap.components:
-        errors.append("an 'assembly' component is required (integration wiring must be owned)")
-    for name, spec in fmap.components.items():
-        for path in spec["files"] + spec["tests"]:
-            if is_protected(path):
-                errors.append(f"protected path claimed by component '{name}': {path}")
-    for path in fmap.shared:
-        if is_protected(path):
-            errors.append(f"protected path in shared: {path}")
-    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +124,7 @@ def classify(base, head):
         if "--" in rest or "/" in rest:
             raise GateError(
                 f"stacked PR rejected: base '{base}' is itself a workflow branch; "
-                "skeleton/mini/contract PRs must target the feature integration branch "
+                "skeleton/component PRs must target the feature integration branch "
                 "'feat/<feature>' directly"
             )
         feature = rest
@@ -247,14 +133,18 @@ def classify(base, head):
         if not segment or "/" in segment:
             raise GateError(
                 f"branch does not follow workflow naming: head '{head}' under base '{base}' "
-                f"must be '{prefix}skeleton', '{prefix}contract*', or '{prefix}<component>' "
-                "where <component> is a file-map component key"
+                f"must be '{prefix}skeleton' or '{prefix}<component>' where <component> "
+                "matches [a-z0-9_]+"
             )
         if segment == "skeleton":
             return Classification("skeleton", feature=feature)
-        if segment.startswith("contract"):
-            return Classification("contract", feature=feature)
-        return Classification("mini", feature=feature, component=segment)
+        if not COMPONENT_SLUG_RE.fullmatch(segment):
+            raise GateError(
+                f"branch does not follow workflow naming: component slug '{segment}' in "
+                f"head '{head}' must match [a-z0-9_]+ (lowercase letters, digits, "
+                "underscores — the slug names the component's test artifacts)"
+            )
+        return Classification("component", feature=feature, component=segment)
     return Classification("normal")
 
 
@@ -295,15 +185,15 @@ def file_at_ref(ref, path, cwd="."):
     return proc.stdout if proc.returncode == 0 else None
 
 
-def tracked_test_modules(ref, cwd="."):
+def tracked_matching(ref, pattern, cwd="."):
     proc = _git("ls-tree", "-r", "--name-only", ref, cwd=cwd)
     if proc.returncode != 0:
         raise GateError(f"git ls-tree {ref} failed: {proc.stderr.strip()}")
-    return {p for p in proc.stdout.splitlines() if fnmatchcase(p, TEST_MODULE_GLOB)}
+    return {p for p in proc.stdout.splitlines() if fnmatchcase(p, pattern)}
 
 
 # ---------------------------------------------------------------------------
-# marker accounting (AST — immune to comments and strings)
+# BE marker accounting (AST — immune to comments and strings)
 # ---------------------------------------------------------------------------
 
 
@@ -335,25 +225,58 @@ def count_markers_at(ref, path, cwd="."):
 
 
 # ---------------------------------------------------------------------------
-# per-class gates
+# FE todo accounting (textual — must work on `git show` blobs, so no JS parser;
+# deliberately over-approximate: a todo-looking token in a comment counts and
+# fails loudly, because undercounting is the dangerous direction)
+# ---------------------------------------------------------------------------
+
+# `todo:` option keys whose value is not the literal `false`, plus `.todo(`
+# call sites (test.todo / it.todo / describe.todo).
+_FE_TODO_OPTION_RE = re.compile(r"\btodo\s*:\s*([^\s,})]*)")
+_FE_TODO_CALL_RE = re.compile(r"\.todo\s*\(")
+
+
+def count_fe_todos_in_source(source):
+    count = sum(1 for m in _FE_TODO_OPTION_RE.finditer(source) if m.group(1) != "false")
+    return count + len(_FE_TODO_CALL_RE.findall(source))
+
+
+def count_fe_todos_at(ref, path, cwd="."):
+    source = file_at_ref(ref, path, cwd)
+    return 0 if source is None else count_fe_todos_in_source(source)
+
+
+# One entry per test stack: (tracked-file glob, per-file counter, red-unit name).
+_STACKS = (
+    (TEST_MODULE_GLOB, count_markers_at, "expectedFailure marker"),
+    (FE_TEST_GLOB, count_fe_todos_at, "FE todo"),
+)
+
+
+# ---------------------------------------------------------------------------
+# test-artifact addressing
 # ---------------------------------------------------------------------------
 
 
-def _contract_path(feature):
-    return f"{CONTRACTS_DIR}/{feature}.md"
+def _feature_slug(feature):
+    slug = feature.lower().replace("-", "_")
+    if not COMPONENT_SLUG_RE.fullmatch(slug):
+        raise GateError(
+            f"feature '{feature}' cannot name test artifacts: '{slug}' must match "
+            "[a-z0-9_]+ after lowercasing and dash->underscore mapping "
+            "(rule: feature-slug)"
+        )
+    return slug
 
 
-def _load_contract(feature, head_ref, cwd):
-    path = _contract_path(feature)
-    text = file_at_ref(head_ref, path, cwd)
-    if text is None:
-        return None, [
-            f"contract missing: {path} does not exist at the PR head (rule: contract-required)"
-        ]
-    errors = validate_contract_text(text)
-    if errors:
-        return None, [f"contract lint [{path}]: {e} (rule: contract-lint)" for e in errors]
-    return parse_file_map(text), []
+def _artifact_paths(feature, component):
+    stem = f"{_feature_slug(feature)}_{component}"
+    return f"project/app/tests_{stem}.py", f"frontend/tests/{stem}.test.ts"
+
+
+# ---------------------------------------------------------------------------
+# per-class gates
+# ---------------------------------------------------------------------------
 
 
 def _protected_failures(diff):
@@ -365,161 +288,130 @@ def _protected_failures(diff):
     ]
 
 
-def _sibling_sweep(own_tests, base_ref, head_ref, cwd, failures):
-    sweep = tracked_test_modules(base_ref, cwd) | tracked_test_modules(head_ref, cwd)
-    for module in sorted(sweep - set(own_tests)):
+def _count_deltas(pattern, counter, exclude, base_ref, head_ref, cwd, failures):
+    """Yield (path, base_count, head_count) over base∪head files matching pattern."""
+    sweep = tracked_matching(base_ref, pattern, cwd) | tracked_matching(head_ref, pattern, cwd)
+    for path in sorted(sweep - exclude):
         try:
-            base_count = count_markers_at(base_ref, module, cwd)
-            head_count = count_markers_at(head_ref, module, cwd)
+            yield path, counter(base_ref, path, cwd), counter(head_ref, path, cwd)
         except GateError as exc:
             failures.append(str(exc))
-            continue
-        if base_count != head_count:
-            failures.append(
-                f"marker count changed in sibling module {module} ({base_count} -> {head_count}) "
-                "— a mini PR may not remove another component's markers or add markers anywhere "
-                "(rule: marker-accounting)"
-            )
+
+
+def _red_total(ref, cwd):
+    total = 0
+    for pattern, counter, _ in _STACKS:
+        for path in tracked_matching(ref, pattern, cwd):
+            total += counter(ref, path, cwd)
+    return total
 
 
 def _gate_skeleton(cls, base_ref, head_ref, diff, cwd):
-    _, failures = _load_contract(cls.feature, head_ref, cwd)
-    failures += _protected_failures(diff)
+    failures = _protected_failures(diff)
+    try:
+        base_total = _red_total(base_ref, cwd)
+        head_total = _red_total(head_ref, cwd)
+    except GateError as exc:
+        failures.append(str(exc))
+        return failures, {}
+    # Delta-based, never absolute: master carries a permanent, deliberate
+    # expectedFailure baseline (tests_redteam.py), so "some markers exist" is
+    # meaningless — what proves a skeleton is that it CHANGES the red total.
+    if base_total == head_total:
+        failures.append(
+            f"skeleton PR changes no red tests: expectedFailure markers + FE todos total "
+            f"{head_total} at both base and head — a skeleton must add (or remove) at least "
+            "one red test; marker-neutral fixes ride a component PR instead "
+            "(rule: skeleton-delta)"
+        )
     return failures, {}
 
 
-def _gate_mini(cls, base_ref, head_ref, diff, cwd):
-    fmap, failures = _load_contract(cls.feature, head_ref, cwd)
-    if failures:
+def _gate_component(cls, base_ref, head_ref, diff, cwd):
+    failures = _protected_failures(diff)
+    try:
+        be_path, fe_path = _artifact_paths(cls.feature, cls.component)
+    except GateError as exc:
+        failures.append(str(exc))
         return failures, {}
-    if cls.component not in fmap.components:
-        return [
-            f"component '{cls.component}' is not declared in the contract file map "
-            f"({_contract_path(cls.feature)}) (rule: component-declared)"
-        ], {}
-    spec = fmap.components[cls.component]
-    own = set(spec["files"]) | set(spec["tests"])
-    shared = set(fmap.shared)
-    for path in diff:
-        if is_protected(path):
-            failures += _protected_failures([path])
-        elif path in shared:
+    # Artifact lookup is at the BASE ref, never head: a component PR cannot
+    # self-create the artifact it is then measured against.
+    be_at_base = file_at_ref(base_ref, be_path, cwd) is not None
+    fe_at_base = file_at_ref(base_ref, fe_path, cwd) is not None
+    if not (be_at_base or fe_at_base):
+        failures.append(
+            f"no test artifact for component '{cls.component}': neither {be_path} nor "
+            f"{fe_path} exists at the base ref — the skeleton PR plants a component's "
+            "red tests before its component PR runs (rule: artifact-exists)"
+        )
+        return failures, {}
+    own = ({be_path} if be_at_base else set()) | ({fe_path} if fe_at_base else set())
+    for path in sorted(own):
+        if file_at_ref(head_ref, path, cwd) is None:
             failures.append(
-                f"shared file touched: {path} — shared files are written in the skeleton and "
-                "owned by no component (rule: no-shared)"
+                f"test artifact {path} is missing at the PR head (renamed or deleted) — a "
+                "component PR must keep its artifact and take its red count to zero "
+                "(rule: artifact-current)"
             )
-        elif path not in own:
-            failures.append(
-                f"diff outside component file map: {path} (component '{cls.component}' owns "
-                "only its declared files and tests) (rule: mini-scope)"
-            )
-    for test_path in spec["tests"]:
-        if file_at_ref(head_ref, test_path, cwd) is None:
-            failures.append(
-                f"file map out of date: test module {test_path} is missing at the PR head "
-                "(renamed or deleted); open a contract-change PR to update the map "
-                "(rule: file-map-current)"
-            )
-            continue
+    if be_at_base:
         try:
-            remaining = count_markers_at(head_ref, test_path, cwd)
+            remaining = count_markers_at(head_ref, be_path, cwd)
         except GateError as exc:
             failures.append(str(exc))
-            continue
+        else:
+            if remaining:
+                failures.append(
+                    f"{remaining} expectedFailure marker(s) remaining in {be_path} — a "
+                    "component PR must take its own markers to zero (rule: markers-zero)"
+                )
+    if fe_at_base:
+        remaining = count_fe_todos_at(head_ref, fe_path, cwd)
         if remaining:
             failures.append(
-                f"{remaining} expectedFailure marker(s) remaining in {test_path} — a mini PR "
-                "must take its component's markers to zero (rule: markers-zero)"
+                f"{remaining} FE todo(s) remaining in {fe_path} — a component PR must take "
+                "its own todo tests to zero (rule: todos-zero)"
             )
-    _sibling_sweep(spec["tests"], base_ref, head_ref, cwd, failures)
+    # Sibling sweep over BOTH stacks: every other test file's red count is
+    # frozen. The own artifact is excluded only if it existed at base — a file
+    # the PR created at the artifact path is swept like any sibling, closing
+    # the self-creation leak.
+    for pattern, counter, what in _STACKS:
+        for path, base_count, head_count in _count_deltas(
+            pattern, counter, own, base_ref, head_ref, cwd, failures
+        ):
+            if base_count != head_count:
+                failures.append(
+                    f"{what} count changed in sibling test file {path} "
+                    f"({base_count} -> {head_count}) — a component PR may not change red "
+                    "counts outside its own artifacts (rule: sibling-frozen)"
+                )
     outputs = {}
-    if not failures:
-        outputs["test_targets"] = " ".join(t[:-3].replace("/", ".") for t in spec["tests"])
+    if not failures and be_at_base:
+        outputs["test_targets"] = be_path[:-3].replace("/", ".")
     return failures, outputs
 
 
-def _gate_contract(cls, base_ref, head_ref, diff, cwd):
-    fmap, failures = _load_contract(cls.feature, head_ref, cwd)
-    if failures:
-        return failures, {}
-    failures = _protected_failures(diff)
-    contract_path = _contract_path(cls.feature)
-    map_tests = {t for spec in fmap.components.values() for t in spec["tests"]}
-    for path in diff:
-        if is_protected(path):
-            continue  # already reported above
-        if path != contract_path and path not in map_tests:
-            failures.append(
-                f"contract-change PR may only touch {contract_path} and the map's test "
-                f"modules; found: {path} (rule: contract-change-shape)"
-            )
-    contract_in_diff = contract_path in diff
-    sweep = tracked_test_modules(base_ref, cwd) | tracked_test_modules(head_ref, cwd)
-    for module in sorted(sweep):
-        try:
-            base_count = count_markers_at(base_ref, module, cwd)
-            head_count = count_markers_at(head_ref, module, cwd)
-        except GateError as exc:
-            failures.append(str(exc))
-            continue
-        if base_count != head_count and not contract_in_diff:
-            failures.append(
-                f"marker count changed in {module} ({base_count} -> {head_count}) without a "
-                "paired contract diff — marker changes must accompany a contract revision "
-                "(rule: markers-with-contract)"
-            )
-    return failures, {}
-
-
 def _gate_landing(cls, base_ref, head_ref, diff, cwd):
-    fmap, failures = _load_contract(cls.feature, head_ref, cwd)
-    if failures:
-        return failures, {}
     failures = _protected_failures(diff)
-    map_tests = sorted({t for spec in fmap.components.values() for t in spec["tests"]})
-    for test_path in map_tests:
-        if file_at_ref(head_ref, test_path, cwd) is None:
-            failures.append(
-                f"file map out of date: test module {test_path} is missing at the PR head "
-                "(rule: file-map-current)"
-            )
-            continue
-        try:
-            remaining = count_markers_at(head_ref, test_path, cwd)
-        except GateError as exc:
-            failures.append(str(exc))
-            continue
-        if remaining:
-            failures.append(
-                f"markers remain across feature test modules: {test_path} ({remaining} "
-                "expectedFailure marker(s)) — every component must land before the feature "
-                "does (rule: landing-markers-zero)"
-            )
-    diff_set = set(diff)
-    others = (tracked_test_modules(base_ref, cwd) | tracked_test_modules(head_ref, cwd)) - set(
-        map_tests
-    )
-    for module in sorted(others):
-        if module not in diff_set:
-            continue
-        try:
-            base_count = count_markers_at(base_ref, module, cwd)
-            head_count = count_markers_at(head_ref, module, cwd)
-        except GateError as exc:
-            failures.append(str(exc))
-            continue
-        if head_count > base_count:
-            failures.append(
-                f"markers added outside the feature's file map: {module} "
-                f"({base_count} -> {head_count}) (rule: no-new-markers)"
-            )
+    # Per-file delta rule (head <= base), never absolute zero: tolerates
+    # master's permanent redteam xfail baseline while still guaranteeing the
+    # feature lands no new red anywhere.
+    for pattern, counter, what in _STACKS:
+        for path, base_count, head_count in _count_deltas(
+            pattern, counter, set(), base_ref, head_ref, cwd, failures
+        ):
+            if head_count > base_count:
+                failures.append(
+                    f"{what} count increased in {path} ({base_count} -> {head_count}) — a "
+                    f"feature may not land carrying more red than {DEFAULT_BRANCH} already "
+                    "has; finish (or re-skeleton) the component first (rule: landing-delta)"
+                )
     return failures, {}
 
 
 _GATES = {
     "skeleton": _gate_skeleton,
-    "mini": _gate_mini,
-    "contract": _gate_contract,
+    "component": _gate_component,
     "landing": _gate_landing,
 }
 
@@ -560,7 +452,6 @@ def main(argv=None):
         "--classify", action="store_true", help="print/emit class, feature, component"
     )
     mode.add_argument("--gate", action="store_true", help="full per-class enforcement (default)")
-    mode.add_argument("--validate-contract", metavar="PATH", help="lint a contract file and exit")
     parser.add_argument(
         "--base",
         default=os.environ.get("GITHUB_BASE_REF", ""),
@@ -574,19 +465,9 @@ def main(argv=None):
     parser.add_argument("--base-ref", help="explicit git ref for the base (default: origin/<base>)")
     parser.add_argument("--head-ref", help="explicit git ref for the head (default: HEAD in CI)")
     parser.add_argument(
-        "--component", help="local self-check: gate HEAD as a mini PR for this component"
+        "--component", help="local self-check: gate HEAD as a component PR for this component"
     )
     args = parser.parse_args(argv)
-
-    if args.validate_contract:
-        errors = validate_contract_text(Path(args.validate_contract).read_text(encoding="utf-8"))
-        if errors:
-            print(f"contract lint: FAIL — {args.validate_contract}")
-            for error in errors:
-                print(f"  - {error}")
-            return 1
-        print(f"contract lint: PASS — {args.validate_contract}")
-        return 0
 
     base, head = args.base, args.head
     if not base:
