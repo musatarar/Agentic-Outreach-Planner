@@ -12,6 +12,7 @@ Both are guarantees about the database and the field, not about our code, which
 is exactly why they get tests rather than comments.
 """
 
+import math
 from unittest.mock import patch
 
 from django.db import connection
@@ -34,25 +35,45 @@ GOOD_COPY = (
     "Best,\nDana"
 )
 
-# The number the README cites. Fixed with respect to lead count, which is the
+# The non-INSERT cost of a run. Fixed with respect to lead count, which is the
 # whole claim. What it is made of, in order:
 #
 #   1  dismissed dedupe keys (the suppression ledger, read once)
 #   2  open dedupe keys      (pending/snoozed, read once)
 #   3  the leads
-#   4  their events          <- the prefetch; this line used to be 4 x N
+#   4  their events          <- the prefetch; this line used to be 7 x N
 #   5-8 provider resolution  (LLMConfiguration x3 + LLMModel, inside get_llm_client)
-#   9  BEGIN
-#   10 one INSERT ... RETURNING id for every OutreachAction
-#   11 COMMIT
+#   9  the transaction open  (SAVEPOINT under TestCase; BEGIN in production)
+#   10 supersede failed rows (MUS-26c)
+#   11 the transaction close (RELEASE SAVEPOINT / COMMIT)
 #
-# Bumping this is a decision, not a formality: every increment is a query
-# someone added to a path that runs once per run, and a failing assertion is the
-# only thing that makes that visible in review. Queries 5-8 are four reads to
-# answer one question and are the obvious next thing to collapse -- left alone
-# here because they are `get_llm_client`'s business, not the planner's, and
-# because four is four whether there are 12 leads or 200.
-PLANNER_QUERIES = 11
+# Plus the INSERTs, which are NOT flat -- see PLANNER_INSERT_FIELDS. Bumping
+# this is a decision, not a formality: every increment is a query someone added
+# to a path that runs once per run, and a failing assertion is the only thing
+# that makes that visible in review. Queries 5-8 are four reads to answer one
+# question and are the obvious next thing to collapse -- left alone here because
+# they are `get_llm_client`'s business, not the planner's, and because four is
+# four whether there are 12 leads or 200.
+PLANNER_QUERIES_WITHOUT_INSERTS = 11
+
+# How many columns `bulk_create` writes per row. Django's SQLite backend caps a
+# batch at `max_query_params (999) // len(fields)`; Postgres does not cap at all.
+# So the INSERT count is backend-dependent, and the tests below compute it from
+# `connection.ops.bulk_batch_size` rather than hardcoding either answer.
+PLANNER_INSERT_FIELDS = 18
+
+
+def _expected_inserts(rows):
+    from project.app.models import OutreachAction
+
+    fields = [f for f in OutreachAction._meta.concrete_fields if not f.primary_key]
+    batch = connection.ops.bulk_batch_size(fields, range(rows))
+    return math.ceil(rows / batch) if batch else 1
+
+
+def planner_queries(rows):
+    """Total queries for a run that writes ``rows`` actions, on this backend."""
+    return PLANNER_QUERIES_WITHOUT_INSERTS + _expected_inserts(rows)
 
 
 def _make_leads(count, events_each=3, offset=0):
@@ -103,35 +124,60 @@ class PlannerQueryCountTests(TestCase):
         _make_leads(12)
 
         with _stub():
-            with self.assertNumQueries(PLANNER_QUERIES):
+            with self.assertNumQueries(planner_queries(12)):
                 planned = plan_outreach()
 
         self.assertEqual(len(planned), 12)
 
+    @override_settings(COPY_VERIFY_LEVEL="standard")
+    def test_the_count_holds_at_the_production_verification_level(self):
+        """`off` is exactly the level that skips the verifier's event walk.
+
+        Every other test here runs at `off` for determinism, which means the
+        lock would not cover `verify_copy` -- one of the four places the prefetch
+        exists for. Reverting the prefetch costs 94 queries at `off` and 142 at
+        `standard`, so this is the case that pins the bigger half.
+        """
+        _make_leads(12)
+
+        with _stub():
+            with self.assertNumQueries(planner_queries(12)):
+                plan_outreach()
+
     def test_the_query_count_does_not_grow_with_the_number_of_leads(self):
         """The actual claim, stated as a comparison rather than a constant.
 
-        A single ``assertNumQueries`` pins today's number but would still pass
-        if the run became, say, ``4 + N`` and someone updated the constant. Two
-        runs of different sizes costing the *same* number of queries is the
-        property that cannot be satisfied by an N+1.
+        A single `assertNumQueries` pins today's number but would still pass if
+        the run became `4 + N` and someone updated the constant. Two runs of
+        different sizes costing the same *non-INSERT* number is the property no
+        N+1 satisfies.
+
+        The sizes straddle SQLite's 55-row batch boundary on purpose: 3 leads is
+        one INSERT and 60 is two, so a test that only compared totals would fail
+        for a reason that has nothing to do with N+1s. Comparing the non-INSERT
+        cost separates "we read the same amount" from "we write in batches".
         """
         _make_leads(3)
         with _stub():
-            with self.assertNumQueries(PLANNER_QUERIES):
+            with self.assertNumQueries(planner_queries(3)):
                 plan_outreach()
 
         # Clear the run so the second one has work to do: an open recommendation
         # suppresses a re-run (CONTRACT 9.8).
         OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
-        _make_leads(21, offset=3)  # 24 leads and 72 events in the second run
+        _make_leads(57, offset=3)  # 60 leads -- past SQLite's 55-row batch
 
         with _stub():
-            with self.assertNumQueries(PLANNER_QUERIES):
+            with self.assertNumQueries(planner_queries(60)):
                 plan_outreach()
 
-        self.assertEqual(Lead.objects.count(), 24)
-        self.assertEqual(Event.objects.count(), 72)
+        self.assertEqual(Lead.objects.count(), 60)
+        # The read cost is identical at 3 leads and at 60; only the write scaled,
+        # and only on a backend that caps batch size.
+        self.assertEqual(
+            planner_queries(3) - _expected_inserts(3),
+            planner_queries(60) - _expected_inserts(60),
+        )
 
     def test_events_are_read_from_the_prefetch_cache_not_re_queried(self):
         # The mechanism, not just the count. `.all()` on a prefetched instance
@@ -214,10 +260,19 @@ class BulkCreateTests(TestCase):
         self.assertEqual(priorities, sorted(priorities))
         self.assertGreater(len(set(priorities)), 1)  # a flat list sorts trivially
 
-    def test_the_write_is_one_statement(self):
+    def test_the_write_is_one_statement_per_batch(self):
+        """Not "one statement" -- that is only true on Postgres.
+
+        Django's SQLite backend caps a batch at `max_query_params (999) //
+        len(fields)`, which is 55 rows for this model's 18 insertable fields.
+        Postgres does not cap, so it sends one. A test that asserted `== 1`
+        would pass at 6 leads and fail on the SQLite CI leg the first time
+        someone raised a fixture past 55, with nothing explaining why.
+        """
         from django.test.utils import CaptureQueriesContext
 
-        _make_leads(6)
+        rows = 60  # past SQLite's boundary, so the two backends genuinely differ
+        _make_leads(rows)
 
         with _stub():
             with CaptureQueriesContext(connection) as captured:
@@ -229,12 +284,25 @@ class BulkCreateTests(TestCase):
             if query["sql"].lstrip().upper().startswith("INSERT INTO")
             and "outreachaction" in query["sql"].lower()
         ]
-        self.assertEqual(len(inserts), 1, f"expected one INSERT, got {len(inserts)}")
+        self.assertEqual(len(inserts), _expected_inserts(rows))
+        # And whatever the batching, it is never one statement per lead.
+        self.assertLess(len(inserts), rows)
+
+    def test_primary_keys_survive_multiple_batches(self):
+        # RETURNING is applied per batch, so pk population has to hold across
+        # them -- the serializer emits `id` for every row, not just the first 55.
+        _make_leads(60)
+
+        with _stub():
+            planned = plan_outreach()
+
+        self.assertEqual(len({action.pk for action in planned}), 60)
 
     def test_a_run_with_no_work_writes_nothing_and_still_succeeds(self):
-        # `bulk_create([])` is legal and emits no query, but the empty run is
-        # the one that used to be free by accident (an empty comprehension) and
-        # is now free on purpose.
+        # `bulk_create([])` emits no INSERT, though the run is not free: the
+        # `transaction.atomic()` wrapper and the supersede DELETE still cost a
+        # few queries. Cheap enough to leave unconditional -- a `if rows:` guard
+        # would save two savepoint statements on a run that had nothing to do.
         with _stub():
             planned = plan_outreach()
 

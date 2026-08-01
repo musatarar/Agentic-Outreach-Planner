@@ -175,16 +175,31 @@ retryable failures has to be given up on rather than waited out.
 
 ### Database cost
 
-A run is **11 queries, flat in lead count**: two dedupe-ledger reads, the leads, their events
-(one prefetch), four to resolve the provider, and `BEGIN` / one `INSERT … RETURNING` / `COMMIT`.
+A run's **read** cost is 11 queries, flat in lead count: two dedupe-ledger reads, the leads,
+their events (one prefetch), four to resolve the provider, and the transaction plus the
+supersede sweep. On top of that come the INSERTs, which are *not* flat and are the backend's
+decision rather than ours — Django's SQLite backend caps a batch at
+`max_query_params (999) ÷ fields`, which is **55 rows** for `OutreachAction`, while Postgres
+sends one statement at any size. So a 200-lead run is 14 queries on the SQLite CI leg and 11 on
+the Postgres one.
 
-Before `prefetch_related("events")` it was `10 + 7N` — every lead's events were re-read by the
-classifier, the prompt builder, the grounding verifier and the trace snapshot in turn. Measured
-by reverting the prefetch and re-running the assertion: **94 queries for 12 leads**, and about
-1,400 for the 200-lead benchmark set. `assertNumQueries(11)` in
-`project/app/tests_planner_perf.py` is the regression lock, alongside a second test that runs
-3 leads and then 24 and asserts the *same* number — a constant on its own could be updated
-past an N+1, two equal counts at different sizes could not.
+Before `prefetch_related("events")` the read cost was `10 + 11N` — every lead's events were
+re-read by the classifier, the prompt builder, the grounding verifier and the trace snapshot in
+turn. Measured by reverting the prefetch and re-running the assertion:
+
+| 12 leads | `COPY_VERIFY_LEVEL=off` | `standard` (the default) |
+|---|--:|--:|
+| Before | 95 | 143 |
+| After | 12 | 12 |
+
+At the 200-lead benchmark size that is roughly 2,200 queries before, 14 after.
+
+`project/app/tests_planner_perf.py` is the regression lock, and it is three assertions rather
+than one: a fixed count at 12 leads, the *same* read cost at 3 leads and at 60 (a constant on
+its own could be updated past a reintroduced N+1; two equal counts at different sizes could
+not), and the INSERT count computed from `connection.ops.bulk_batch_size` so it is right on
+both backends. One case runs at `COPY_VERIFY_LEVEL=standard`, because `off` is exactly the
+level that skips the verifier's event walk — the bigger half of what the prefetch buys.
 
 `_events_list` still accepts a related manager *or* a plain list, because
 `evals/run_rules_eval.py` feeds the classifier `SimpleNamespace` leads and its whole point is
