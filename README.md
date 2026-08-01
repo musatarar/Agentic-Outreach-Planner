@@ -173,6 +173,40 @@ The two timeouts are nested deliberately. The per-lead bound is the one that mat
 concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
 retryable failures has to be given up on rather than waited out.
 
+### Database cost
+
+A run's **read** cost is 11 queries, flat in lead count: two dedupe-ledger reads, the leads,
+their events (one prefetch), four to resolve the provider, and the transaction plus the
+supersede sweep. On top of that come the INSERTs, which are *not* flat and are the backend's
+decision rather than ours — Django's SQLite backend caps a batch at
+`max_query_params (999) ÷ fields`, which is **55 rows** for `OutreachAction`, while Postgres
+sends one statement at any size. So a 200-lead run is 14 queries on the SQLite CI leg and 11 on
+the Postgres one.
+
+Before `prefetch_related("events")` the read cost was `10 + 11N` — every lead's events were
+re-read by the classifier, the prompt builder, the grounding verifier and the trace snapshot in
+turn. Measured by reverting the prefetch and re-running the assertion:
+
+| 12 leads | `COPY_VERIFY_LEVEL=off` | `standard` (the default) |
+|---|--:|--:|
+| Before | 95 | 143 |
+| After | 12 | 12 |
+
+At the 200-lead benchmark size that is roughly 2,200 queries before, 14 after.
+
+`project/app/tests_planner_perf.py` is the regression lock, and it is three assertions rather
+than one: a fixed count at 12 leads, the *same* read cost at 3 leads and at 60 (a constant on
+its own could be updated past a reintroduced N+1; two equal counts at different sizes could
+not), and the INSERT count computed from `connection.ops.bulk_batch_size` so it is right on
+both backends. One case runs at `COPY_VERIFY_LEVEL=standard`, because `off` is exactly the
+level that skips the verifier's event walk — the bigger half of what the prefetch buys.
+
+`_events_list` still accepts a related manager *or* a plain list, because
+`evals/run_rules_eval.py` feeds the classifier `SimpleNamespace` leads and its whole point is
+running without a database. Prefetch is compatible: `.all()` on a prefetched instance is served
+from `_prefetched_objects_cache`. Calling `.filter()` or `.count()` there instead would bypass
+the cache and quietly restore the N+1.
+
 ### What the review queue says when there is no copy
 
 The review queue is a *finite* list of things a human has to decide, and its whole value is
