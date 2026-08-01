@@ -167,12 +167,12 @@ class PlannerErrorSpanTests(_PlannerSpanTestCase):
         # the prompt -- the lead id does not.
         self.make_lead(id="lead_bad", contact_name="Doomed Contact")
 
-        def sometimes(*_args, **kwargs):
+        async def sometimes(*_args, **kwargs):
             if "Doomed Contact" in kwargs.get("prompt", ""):
                 raise errors.LLMTimeoutError("read timeout", provider="groq")
             return GOOD_COPY
 
-        with mock.patch("project.app.services.outreach.generate_copy", side_effect=sometimes):
+        with mock.patch("project.app.services.outreach.agenerate_copy", sometimes):
             plan_outreach()
 
         self.assertEqual(OutreachAction.objects.count(), 2)

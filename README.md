@@ -134,6 +134,162 @@ short server-timed undo window — behind `/api/queue/*`. Three things in it are
   copy — so a re-run neither resurrects the recommendation nor pays for an LLM call to
   rediscover it. Undo inside the window revokes the suppression in the same transaction.
 
+### Planner run
+
+`plan_outreach()` runs as five phases: read the leads → classify them and build their prompts →
+**call the provider** → run the two output gates → write the rows. Only phase 3 is network I/O,
+and only phase 3 is concurrent: every lead is submitted to one `asyncio.gather` behind a
+semaphore, so up to `OUTREACH_MAX_IN_FLIGHT` calls are in flight and the next lead starts the
+instant a slot frees. (A chunked loop would be the obvious way to bound concurrency and the
+wrong one — it waits for the slowest call in each batch, so one 30-second lead idles seven
+workers.)
+
+The function itself stays **synchronous**. Phases 1, 2, 4 and 5 are all ORM work, which cannot
+run inside an event loop; phase 3 gets a loop of its own and hands back plain values. Prompt
+construction is deliberately hoisted into phase 2 for the same reason — it walks `lead.events`,
+and a lazy query inside `gather` raises `SynchronousOnlyOperation`.
+
+How hard a run drives the provider is deployment configuration, not product configuration, so
+it lives in the environment rather than in the DB-backed `LLMConfiguration` that selects the
+provider. All seven are optional; the defaults below are what you get with none of them set.
+
+| Variable | Default | What it bounds |
+|---|--:|---|
+| `OUTREACH_MAX_IN_FLIGHT` | `8` | Provider calls outstanding at once |
+| `OUTREACH_MAX_ATTEMPTS` | `4` | Total attempts per lead (`1` = no retry) |
+| `OUTREACH_INITIAL_BACKOFF_S` | `0.5` | First backoff ceiling |
+| `OUTREACH_MAX_BACKOFF_S` | `30.0` | Backoff ceiling, and the cap on an honoured `Retry-After` |
+| `OUTREACH_BACKOFF_MULTIPLIER` | `2.0` | Growth per attempt (must be ≥ 1) |
+| `OUTREACH_REQUEST_TIMEOUT_S` | `60.0` | One HTTP attempt |
+| `OUTREACH_PER_LEAD_TIMEOUT_S` | `150.0` | The whole retry loop for one lead |
+
+Backoff is AWS **full jitter** — `uniform(0, min(cap, initial × multiplier^n))` — not an
+exponential sequence with a small random nudge. Under concurrency the distinction is the whole
+point: with a fixed schedule, N workers that fail at the same moment retry at the same moment,
+forever, in lockstep. The same argument applies to a provider-supplied `Retry-After`, which is
+why it wins on magnitude but still gets proportional jitter added on top.
+
+The two timeouts are nested deliberately. The per-lead bound is the one that matters under
+concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
+retryable failures has to be given up on rather than waited out.
+
+### Database cost
+
+A run's **read** cost is 11 queries, flat in lead count: two dedupe-ledger reads, the leads,
+their events (one prefetch), four to resolve the provider, and the transaction plus the
+supersede sweep. On top of that come the INSERTs, which are *not* flat and are the backend's
+decision rather than ours — Django's SQLite backend caps a batch at
+`max_query_params (999) ÷ fields`, which is **55 rows** for `OutreachAction`, while Postgres
+sends one statement at any size. So a 200-lead run is 14 queries on the SQLite CI leg and 11 on
+the Postgres one.
+
+Before `prefetch_related("events")` the read cost was `10 + 11N` — every lead's events were
+re-read by the classifier, the prompt builder, the grounding verifier and the trace snapshot in
+turn. Measured by reverting the prefetch and re-running the assertion:
+
+| 12 leads | `COPY_VERIFY_LEVEL=off` | `standard` (the default) |
+|---|--:|--:|
+| Before | 95 | 143 |
+| After | 12 | 12 |
+
+At the 200-lead benchmark size that is roughly 2,200 queries before, 14 after.
+
+`project/app/tests_planner_perf.py` is the regression lock, and it is three assertions rather
+than one: a fixed count at 12 leads, the *same* read cost at 3 leads and at 60 (a constant on
+its own could be updated past a reintroduced N+1; two equal counts at different sizes could
+not), and the INSERT count computed from `connection.ops.bulk_batch_size` so it is right on
+both backends. One case runs at `COPY_VERIFY_LEVEL=standard`, because `off` is exactly the
+level that skips the verifier's event walk — the bigger half of what the prefetch buys.
+
+`_events_list` still accepts a related manager *or* a plain list, because
+`evals/run_rules_eval.py` feeds the classifier `SimpleNamespace` leads and its whole point is
+running without a database. Prefetch is compatible: `.all()` on a prefetched instance is served
+from `_prefetched_objects_cache`. Calling `.filter()` or `.count()` there instead would bypass
+the cache and quietly restore the N+1.
+
+### Wall clock
+
+`evals/bench_planner.py` measures `plan_outreach()` end to end — rules, prompts, semaphore,
+retry loop, both output gates, bulk write — on synthetic leads seeded from the golden dataset
+(`manage.py seed_synthetic_leads`, which re-anchors the golden records' dates on today so each
+lead keeps the classification it was labelled with). Only the provider is fake: a stub client
+sleeps for Groq's measured median latency (1.87s, from the provider table below) and returns a
+well-formed, grounded email, so both output gates do real work. The run happens in a throwaway
+SQLite database that is created, migrated, seeded and deleted per invocation — never the dev
+pipeline.
+
+<!-- PLANNER-BENCH-TABLE -->
+| Leads | Concurrency | Wall clock (median) | Provider calls | Speedup |
+|--:|--:|--:|--:|--:|
+| 200 | 1 | 323.4s | 175 | 1.0x |
+| 200 | 8 | 41.1s | 175 | 7.9x |
+<!-- /PLANNER-BENCH-TABLE -->
+
+**Concurrency 1 is the honest "before".** It is a semaphore of one, not a resurrected serial
+planner — the run is provider-bound (175 calls × 1.87s ≈ 327s of provider time; the other 25
+leads classify to no automated pattern and cost no call, mirroring the labelled distribution),
+so the pool is the whole difference and maintaining a second serial code path to make the table
+look rigorous would mean shipping a planner nobody runs.
+
+The stub cannot be reached from the app: `seed_llm_catalog` creates no `LLMProvider` row for
+it (and the Settings UI lists providers from that table), its constructor refuses to build
+unless `OUTREACH_ALLOW_STUB_LLM=1` (set only by the benchmark), and the only thing that asks
+for it by name is `build_client("stub")` inside the benchmark itself. All three barriers are
+pinned by `project/app/tests_stub_provider.py`.
+
+Reproduce with `python evals/bench_planner.py --leads 200 --concurrency 8`, and
+`--concurrency 1` for the before; `--update-readme` rewrites the table above from the
+committed results in `evals/results/`.
+
+### What the review queue says when there is no copy
+
+The review queue is a *finite* list of things a human has to decide, and its whole value is
+that everything in it is work. A 429 from a free tier used to land there looking exactly like
+"no automated outreach pattern matched" — same `needs_human`, same shape of sentence about the
+lead. A reviewer with no way to tell a provider's bad thirty seconds from a real judgement call
+learns to skim the queue, which costs far more than the rate limit did.
+
+So a rate limit is now **retried rather than escalated**, and when retries genuinely run out
+the row says whose problem it is:
+
+| Situation | What the row says |
+|---|---|
+| No rule matched | *BD review needed … no automated outreach pattern matched.* Real work: read the notes, decide. |
+| Retryable error, budget spent | *Gave up after 4 attempt(s) over 31.2s — the groq API kept returning rate limits (HTTP 429). **This is a transient provider failure, not a problem with this lead.*** Re-run later. |
+| Non-retryable error | *Failed and was not retryable (an authentication failure: …) — a configuration or provider-contract problem an engineer should look at.* |
+| Anything else | The pre-existing catch-all, for a prompt that wouldn't build or a client that wouldn't resolve. |
+
+There is deliberately **no `failure_kind` column**. The ticket asks for the distinction in
+`further_action`, the frontend renders that field as prose, and an enum column would mean a
+migration, a serializer field and a frontend change for something nobody queries.
+
+A failed row does not hold the recommendation's dedupe slot, which is what makes *"re-run the
+planner"* an instruction that works. Without that, the "an open item wins" rule would skip
+exactly the lead the message named, and the row would sit in a finite queue for ever — clearable
+only by dismissing the recommendation permanently or approving an empty draft. The next
+successful run supersedes it. Unmatched-classification rows *do* keep their slot: those are real
+decisions, and raising them twice a day is the duplicate-inbox bug the rule exists to prevent.
+
+**A run has no overall deadline, and that is a known bound rather than an oversight.** Worst case
+is `ceil(leads / OUTREACH_MAX_IN_FLIGHT) × OUTREACH_PER_LEAD_TIMEOUT_S` — with the defaults and
+200 leads, about 62 minutes inside one synchronous `POST /api/outreach/run/`, and because phase 5
+is a single transaction at the end, a proxy timing out at minute 30 writes nothing. Size
+`OUTREACH_PER_LEAD_TIMEOUT_S` against your own proxy's limit and lead count. A run-level deadline
+that preserves partial results needs per-task bookkeeping (the outer timeout would otherwise
+cancel the gather and discard completed leads), which is more than this ticket should carry.
+
+Bad values are rejected **at boot**, by a Django system check, with the offending environment
+variable named in the message — `OUTREACH_BACKOFF_MULTIPLIER must be at least 1, got 0.5.`
+rather than a `ValueError` about a dataclass field an operator has never heard of, and long
+before it becomes a 500 for whoever clicked "Run Outreach Plan". `manage.py check`, and
+therefore every `manage.py` command, catches it. The check calls the same accessor the planner
+does, so the two can never disagree about what is valid.
+
+Two relations are enforced as well as the individual ranges: `OUTREACH_PER_LEAD_TIMEOUT_S` must
+be at least `OUTREACH_REQUEST_TIMEOUT_S` (two individually-plausible numbers the wrong way
+round give a 100% failure rate), and `OUTREACH_MAX_IN_FLIGHT` has a ceiling of 256 — a typo
+guard, not a capacity limit.
+
 The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
 (`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`
 alone runs the whole app — **no Node required** to demo or review.
@@ -154,6 +310,26 @@ coverage run manage.py test project.app && coverage report
 
 CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR, across the
 supported Python versions and against both SQLite and a Postgres service container.
+
+## Merge enforcement
+
+The contract → skeleton → mini-PR workflow in [`CLAUDE.md`](CLAUDE.md) is not advisory:
+GitHub rulesets on `master` and `feat/*` require two status checks — `ci-ok` (the whole
+CI matrix under one name) and `workflow-gate` (classify → scope check → red-proof) — with
+**zero bypass actors**. Setup, activation, and the lockout recovery path are documented in
+[`docs/ci.md`](docs/ci.md); the ruleset JSON is committed under
+[`docs/rulesets/`](docs/rulesets/).
+
+Verified live on 2026-07-31 (API evidence, since a dead merge button doesn't screenshot):
+
+- an out-of-scope mini PR ([#60](https://github.com/musatarar/Agentic-Outreach-Planner/pull/60))
+  sat `BLOCKED`; plain merge was refused, and admin merge (`gh pr merge --admin`) was
+  refused with *"Repository rule violations found … 2 of 2 required status checks are
+  failing"* — no bypass includes the repository admin;
+- direct pushes to `master` and `feat/demo` were rejected with `GH013: Changes must be
+  made through a pull request`;
+- a conforming landing PR ([#57](https://github.com/musatarar/Agentic-Outreach-Planner/pull/57))
+  merged through the same gates.
 
 ## Evals
 

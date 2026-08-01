@@ -182,7 +182,7 @@ class PlanOutreachGroundingTests(TestCase):
     def test_contradicted_copy_is_flagged_and_draft_kept(self):
         self._make_lead(deals_closed=4)
         bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Locked In team"
-        with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 1)
@@ -208,7 +208,7 @@ class PlanOutreachGroundingTests(TestCase):
             "this week to wrap up onboarding?\n\n"
             "Best,\nThe Locked In team"
         )
-        with patch("project.app.services.outreach.generate_copy", return_value=good_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=good_copy):
             plan_outreach()
 
         action = OutreachAction.objects.get()
@@ -234,7 +234,7 @@ class PlanOutreachGroundingTests(TestCase):
             "week to talk through what is ahead?\n\n"
             "Best,\nThe Locked In team"
         )
-        with patch("project.app.services.outreach.generate_copy", return_value=bad_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
             plan_outreach()
 
         action = OutreachAction.objects.get()
@@ -287,7 +287,7 @@ class PlanOutreachFailurePathTests(TestCase):
 
     def test_unclassified_lead_skips_generation_and_asks_for_bd_review(self):
         self._unclassifiable_lead()
-        with patch("project.app.services.outreach.generate_copy") as generate:
+        with patch("project.app.services.outreach.agenerate_copy") as generate:
             planned = plan_outreach()
 
         generate.assert_not_called()  # no provider call for an unmatched lead
@@ -301,7 +301,7 @@ class PlanOutreachFailurePathTests(TestCase):
         self._classifiable_lead()
         self._unclassifiable_lead()
         with patch(
-            "project.app.services.outreach.generate_copy",
+            "project.app.services.outreach.agenerate_copy",
             side_effect=RuntimeError("provider exploded"),
         ):
             planned = plan_outreach()
@@ -311,7 +311,11 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")  # nothing to keep
-        self.assertIn("Copy generation failed (provider exploded)", failed.further_action)
+        # Wrapped as LLMUnexpectedError on the way out of phase 3 (MUS-58), so
+        # the review message names it a non-retryable engineer problem rather
+        # than flattening it into an anonymous "failed".
+        self.assertIn("Copy generation failed and was not retryable", failed.further_action)
+        self.assertIn("provider exploded", failed.further_action)
         self.assertIn("complete_onboarding", failed.further_action)
 
     def test_a_prompt_that_cannot_be_built_also_costs_only_one_lead(self):
@@ -350,9 +354,10 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
-        self.assertIn(
-            "Copy generation failed (Unknown LLM provider 'bogus'.)", failed.further_action
-        )
+        # `_resolve_client` wraps the ValueError (MUS-58), so the message calls
+        # out a configuration-shaped failure instead of echoing it bare.
+        self.assertIn("Copy generation failed and was not retryable", failed.further_action)
+        self.assertIn("Unknown LLM provider 'bogus'.", failed.further_action)
         # The unmatched lead is untouched by a provider problem it never needed.
         unmatched = OutreachAction.objects.get(lead_id="lead_unknown")
         self.assertIn("no automated outreach pattern matched", unmatched.further_action)

@@ -42,12 +42,24 @@ from .errors import (
     wrap_unexpected,
 )
 from .groq import GroqClient
+from .stub import StubClient
 
 _REGISTRY = {
     "claude": ClaudeClient,
     "chatgpt": ChatGPTClient,
     "deepseek": DeepSeekClient,
     "groq": GroqClient,
+    # Benchmarking only, and unreachable from the app -- see stub.py's module
+    # docstring for the three independent reasons why. Registered here rather
+    # than constructed directly by the benchmark so it goes through the same
+    # factory as every real adapter and cannot drift away from their interface.
+    # The only consumer of this entry is `build_client("stub")`.
+    #
+    # Safe to sit in the same dict as the real four because the one place that
+    # reads this registry by name (`views.py`, the "test connection" endpoint)
+    # keys it on an `LLMProvider` *database row*, and `seed_llm_catalog` never
+    # creates one for "stub".
+    "stub": StubClient,
 }
 
 
