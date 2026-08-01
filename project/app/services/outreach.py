@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from project.app.services import actions, sanitize, verify
-from project.app.services.llm import get_llm_client
+from project.app.services.llm import LLMError, get_llm_client, wrap_unexpected
 
 MAX_COPY_TOKENS = 500
 
@@ -1422,8 +1422,18 @@ def _resolve_client(work):
         return None, None
     try:
         return get_llm_client(), None
-    except Exception as exc:
+    except LLMError as exc:
+        # An unset key raises LLMAuthError from the adapter's constructor, and
+        # that is genuinely a configuration fault -- so it arrives already
+        # classified and reaches the span as `configuration` rather than
+        # `unknown`.
         return None, exc
+    except Exception as exc:
+        # Everything else here is our bug (a bad provider name, a decryption
+        # failure), not a provider's. Wrapped rather than passed through so
+        # phase 4 has exactly one exception type to reason about, and named
+        # rather than flattened so it is still legible as the bug it is.
+        return None, wrap_unexpected(exc)
 
 
 def _generate_for(item, client, client_error=None):
@@ -1439,6 +1449,18 @@ def _generate_for(item, client, client_error=None):
     locally instead of emitting a lazy query that only misbehaves later, inside
     an event loop, in someone else's branch. ``client`` is passed in for the
     same reason — see :func:`_resolve_client`.
+
+    **Two except clauses, not one blanket one (MUS-25).** A bare
+    ``except Exception`` caught a 429 and a ``ZeroDivisionError`` in our own
+    prompt handling identically, so both were reported as "copy generation
+    failed" and both landed on a dashboard as the same undifferentiated bar.
+    Naming ``LLMError`` first means a real provider failure keeps the class the
+    adapter assigned it — and with it the ``retryable`` and ``fault_domain`` a
+    reader actually wants. The residual clause stays, because one lead's bug
+    still must not sink a 200-lead run, but it *wraps* rather than passes
+    through: the caller gets one exception type to reason about, and
+    ``LLMUnexpectedError.failure_kind`` still names what really happened, so
+    nothing escapes untyped and nothing is silently mis-typed either.
     """
     from project.app.services import queue_copy
 
@@ -1455,8 +1477,12 @@ def _generate_for(item, client, client_error=None):
         text = queue_copy.normalize_copy(
             generate_copy(None, item.action_type, item.reason, prompt=item.prompt, client=client)
         )
-    except Exception as exc:  # don't let one API failure sink the run
+    except LLMError as exc:
+        # Already classified by the adapter. Passed through untouched -- the
+        # whole value of the taxonomy is that this class survives to the span.
         return CopyOutcome(error=exc)
+    except Exception as exc:  # don't let one lead's bug sink the run
+        return CopyOutcome(error=wrap_unexpected(exc))
     return CopyOutcome(text=text)
 
 
