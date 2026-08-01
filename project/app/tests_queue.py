@@ -311,7 +311,7 @@ class PlanOutreachDedupeTests(TestCase):
         return make_lead(lead_id, stage="demo_completed", signed_up_date=None)
 
     def _plan(self, copy=GOOD_COPY):
-        with patch("project.app.services.outreach.generate_copy", return_value=copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=copy):
             return plan_outreach()
 
     def test_persists_the_dedupe_key_and_snapshots(self):
@@ -378,7 +378,7 @@ class PlanOutreachDedupeTests(TestCase):
         )
 
         with patch(
-            "project.app.services.outreach.generate_copy", return_value=GOOD_COPY
+            "project.app.services.outreach.agenerate_copy", return_value=GOOD_COPY
         ) as generate:
             plan_outreach()
         generate.assert_not_called()
@@ -1078,7 +1078,7 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         recommendation again.
         """
         lead = make_lead("lead_undo", stage="demo_completed", signed_up_date=None)
-        with patch("project.app.services.outreach.generate_copy", return_value=GOOD_COPY):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=GOOD_COPY):
             plan_outreach()
         action = OutreachAction.objects.get(lead=lead)
 
@@ -1093,7 +1093,7 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         # undone row is itself "open", so leaving it pending would satisfy
         # "an action exists" even with the suppression still in force.
         self._post("queue-approve", action=action)
-        with patch("project.app.services.outreach.generate_copy", return_value=GOOD_COPY):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=GOOD_COPY):
             plan_outreach()
         self.assertTrue(
             OutreachAction.objects.filter(
@@ -1483,7 +1483,7 @@ class QueuePayloadIsWiredToTheServicesTests(AuthenticatedAPITestCase):
     def setUp(self):
         super().setUp()
         self.lead = make_grounded_lead()
-        with patch("project.app.services.outreach.generate_copy", return_value=GROUNDED_COPY):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=GROUNDED_COPY):
             plan_outreach()
         self.action = OutreachAction.objects.get()
 

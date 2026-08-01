@@ -55,3 +55,53 @@ def llm_key_encryption_check(app_configs, **kwargs):
             id="app.E001",
         )
     ]
+
+
+@register()
+def planner_runtime_check(app_configs, **kwargs):
+    """Range-check the MUS-26 planner knobs at boot, not at first run.
+
+    ``OUTREACH_MAX_ATTEMPTS=0`` or ``OUTREACH_BACKOFF_MULTIPLIER=0.5`` parse
+    perfectly well in ``settings.py``; nothing rejects them until the planner
+    resolves its configuration. Without this check a bad deploy passes CI, passes
+    ``manage.py check``, boots clean, and then hands an ``ImproperlyConfigured``
+    500 to whoever clicked "Run Outreach Plan" -- which is the exact failure
+    mode this module exists to prevent (see the module docstring).
+
+    No new validation lives here: it calls the accessor the planner calls, so
+    the check and the run can never disagree about what is valid, and the
+    message an operator reads is the same one either way.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from project.app.services.llm import runtime
+
+    try:
+        runtime.get_planner_runtime()
+    except ImproperlyConfigured as exc:
+        return [Error(str(exc), id="app.E002")]
+    return []
+
+
+@register()
+def bulk_create_pk_check(app_configs, **kwargs):
+    """The planner's phase 5 needs ``bulk_create`` to return primary keys.
+
+    Postgres always does (RETURNING); SQLite only from 3.35. On anything older
+    the run would still succeed -- and then the API would serialize
+    ``"id": null`` for every planned row, breaking the triage queue two screens
+    away from the cause. tests_planner_perf asserts pk population on the CI
+    legs, which both qualify; this check covers the deploys CI never sees.
+
+    Feature detection only -- no query, so it is safe before migrations.
+    """
+    if connections["default"].features.can_return_rows_from_bulk_insert:
+        return []
+    return [
+        Error(
+            "This database cannot return primary keys from bulk_create "
+            "(SQLite >= 3.35 or Postgres is required). The planner's batched "
+            "insert would produce rows the API serializes with a null id.",
+            id="app.E003",
+        )
+    ]

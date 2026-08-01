@@ -59,6 +59,19 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       # LLM configuration endpoints (MUS-32) -- see .env.example.
       LLM_KEY_ENCRYPTION_KEY: ${LLM_KEY_ENCRYPTION_KEY:-}
+      # Planner concurrency, retries and timeouts (MUS-26) -- see .env.example
+      # for what each one bounds. Passed through blank rather than defaulted
+      # here: settings.py already owns the defaults, and restating them would
+      # make this a fifth copy that nothing pins. A blank value reads as "unset"
+      # (see project/settings.py::_env_number), so an operator who never sets
+      # these gets exactly the documented defaults.
+      OUTREACH_MAX_IN_FLIGHT: ${OUTREACH_MAX_IN_FLIGHT:-}
+      OUTREACH_MAX_ATTEMPTS: ${OUTREACH_MAX_ATTEMPTS:-}
+      OUTREACH_INITIAL_BACKOFF_S: ${OUTREACH_INITIAL_BACKOFF_S:-}
+      OUTREACH_MAX_BACKOFF_S: ${OUTREACH_MAX_BACKOFF_S:-}
+      OUTREACH_BACKOFF_MULTIPLIER: ${OUTREACH_BACKOFF_MULTIPLIER:-}
+      OUTREACH_REQUEST_TIMEOUT_S: ${OUTREACH_REQUEST_TIMEOUT_S:-}
+      OUTREACH_PER_LEAD_TIMEOUT_S: ${OUTREACH_PER_LEAD_TIMEOUT_S:-}
       # Magic-link sign-in (MUS-37). The API is authenticated, so set
       # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
       # -- there is no signup flow, the allowlist is the whole gate. Delivery

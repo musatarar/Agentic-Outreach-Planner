@@ -7,21 +7,29 @@ can be unit-tested without Django or a database. Django models are only
 imported inside `plan_outreach()`.
 """
 
+import asyncio
 import datetime
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from project.app.services import actions, sanitize, verify
-from project.app.services.llm import LLMError, get_llm_client, wrap_unexpected
+from project.app.services.llm import (
+    LLMAuthError,
+    LLMBadRequestError,
+    LLMError,
+    LLMMalformedResponseError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    LLMTransientError,
+    get_llm_client,
+    wrap_unexpected,
+)
+from project.app.services.llm import runtime as llm_runtime
+from project.app.services.llm.retry import acall_with_retry
 
 MAX_COPY_TOKENS = 500
-
-# How many provider calls a run has in flight at once. One, because phase 3 is
-# still a serial loop; MUS-26 makes it an asyncio.gather and raises this. Named
-# rather than inlined because the run span records it (`outreach.concurrency.
-# max_in_flight`), and a per-lead latency reading is uninterpretable without it.
-MAX_IN_FLIGHT = 1
 
 # Schema version of the trace envelope produced by `explain()`
 # (CONTRACT-MUS-35.md §3.4). Bump only with a coordinated FE change.
@@ -86,7 +94,20 @@ ACTION_RULES = (
 
 
 def _events_list(lead):
-    """Return lead events as a list, accepting a manager (.all()) or a list."""
+    """Return lead events as a list, accepting a manager (.all()) or a list.
+
+    The duck-typing is load-bearing, not defensive. ``determine_priority`` and
+    ``determine_action`` are the actual product, and they are exercised without
+    Django at all -- ``evals/run_rules_eval.py`` feeds them ``SimpleNamespace``
+    leads whose ``events`` is a plain list, and ``tests_logic.py`` does the same.
+    Narrowing this to ``lead.events.all()`` would make the rules eval require a
+    database, which is the one thing it is designed not to need.
+
+    Compatible with the ``prefetch_related("events")`` phase 1 does: ``.all()``
+    on a prefetched instance is served from ``_prefetched_objects_cache`` and
+    emits no query. Calling anything else here -- ``.filter()``, ``.count()`` --
+    would silently bypass that cache and restore the N+1 this exists beside.
+    """
     events = getattr(lead, "events", None)
     if events is None:
         return []
@@ -1190,15 +1211,203 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     planner's phase 3 must not touch the ORM. Omitted, this resolves its own —
     the single-lead path, where one extra read is the correct trade.
     """
-    if prompt is None:
-        if lead is None:
-            raise ValueError(
-                "generate_copy needs either a lead to build a prompt from, or a prompt."
-            )
-        prompt = _build_copy_prompt(lead, action_type, reason)
+    prompt = _prompt_for(lead, action_type, reason, prompt)
     if client is None:
         client = get_llm_client()
     return client.complete(prompt, max_tokens=MAX_COPY_TOKENS)
+
+
+class CopyGenerationGaveUp(RuntimeError):
+    """The provider call failed for good, plus what the attempt cost.
+
+    An ``LLMError`` says *what* went wrong. The review-queue message also needs
+    *how hard we tried* — "gave up after 4 attempts over 31s" is the clause that
+    tells a reviewer this is noise rather than work — and neither number exists
+    on the underlying error.
+
+    Carried in a wrapper rather than stapled onto the ``LLMError``: the taxonomy
+    describes a provider's behaviour and has no business growing fields about
+    our retry loop.
+    """
+
+    def __init__(self, error, attempts, elapsed_s):
+        super().__init__(str(error))
+        self.error = error
+        self.attempts = attempts
+        self.elapsed_s = elapsed_s
+
+
+async def agenerate_copy(
+    lead, action_type, reason, *, prompt=None, client=None, retry=None, timeouts=None
+):
+    """Async twin of :func:`generate_copy`, and the planner's path.
+
+    Same arguments and same return value. Two differences: it awaits the
+    provider instead of blocking on it (which is what lets the planner have
+    ``OUTREACH_MAX_IN_FLIGHT`` of these outstanding at once), and **it retries**.
+
+    The two are kept as separate functions rather than one with a flag because
+    they have genuinely different callers. ``generate_copy`` is the documented
+    single-lead path: the red-team suite and the copy tests drive it, and both
+    are synchronous. Collapsing them would force those callers into an event
+    loop for no reason, and would leave the planner's mock seam and the
+    single-lead mock seam sharing one name — so a test could patch the sync
+    entry point, watch the planner sail past it, and assert nothing.
+
+    **Only this path retries**, which is a decision rather than an oversight.
+    The shared helper in :mod:`project.app.services.llm.retry` is async-only by
+    design, and a sync twin would be a second copy of the backoff schedule to
+    keep in step. It costs nothing today: ``generate_copy`` has no production
+    caller at all — the red-team suite and the copy tests are the whole of its
+    traffic — so there is no path on which a reviewer meets an unretried 429.
+    Should one appear, this is the decision to revisit.
+
+    **Pass ``client``.** Unlike the sync twin, where resolving one is "the
+    single-lead path, where one extra read is the correct trade", the fallback
+    here is an ORM read (``LLMConfiguration`` plus a key decryption) and inside
+    a running loop that is a ``SynchronousOnlyOperation``, not a trade. It is
+    kept only so the two functions have the same signature; the planner always
+    passes a client resolved in phase 2 (see :func:`_resolve_client`), and any
+    other async caller should too.
+
+    ``retry`` and ``timeouts`` default to the configured policy. The planner
+    passes them explicitly, resolved once per run, so two hundred leads do not
+    each re-read Django settings — and so a test can shrink the schedule without
+    touching global configuration.
+
+    Raises :class:`CopyGenerationGaveUp` when the call fails for good, carrying
+    the attempt count and elapsed time the review message needs.
+    """
+    prompt = _prompt_for(lead, action_type, reason, prompt)
+    if client is None:
+        client = get_llm_client()
+    if retry is None:
+        retry = llm_runtime.get_retry_policy()
+    if timeouts is None:
+        timeouts = llm_runtime.get_timeouts()
+
+    # Imported here for the same reason plan_outreach does it: this module
+    # stays importable with no telemetry configured, and the OTel API hands
+    # back no-ops when nothing is.
+    from project.app.services.telemetry import genai
+
+    attempts = 0
+    last_error = None
+    started = time.monotonic()
+
+    # One description of the call, built once and shared by every attempt for
+    # this lead (MUS-25): hooked into the retry helper's `attempt_scope` seam,
+    # it opens one `chat {model}` CLIENT span per HTTP attempt, so a 429 that
+    # was retried and a success that followed it are siblings under the same
+    # lead rather than one blurred interval.
+    call_scope = genai.provider_call_scope(genai.ProviderCall.from_client(client, MAX_COPY_TOKENS))
+
+    async def attempt():
+        nonlocal attempts, last_error
+        attempts += 1
+        try:
+            # `agenerate`, not `acomplete`: the span recorder is handed the
+            # attempt's result while its span is still open, and it needs the
+            # full LLMResult -- usage, served model, finish reason -- not the
+            # text the rest of this function cares about.
+            return await client.agenerate(
+                prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
+            )
+        except LLMError as exc:
+            # Remembered because the per-lead budget expiring *discards* the
+            # exception in flight, and the reviewer's message is then built from
+            # nothing. A run of 429s that runs out of time is the single most
+            # likely production path here, and reporting it as "kept returning
+            # timeouts" would send an engineer looking at the wrong thing.
+            last_error = exc
+            raise
+
+    try:
+        # Two nested deadlines. `timeouts.request_s` rides on each HTTP attempt;
+        # this one bounds the whole loop, backoff sleeps included. Without it, a
+        # lead that keeps drawing 429s with generous Retry-After headers holds
+        # one of OUTREACH_MAX_IN_FLIGHT slots -- 1/N of the run's throughput --
+        # for as long as the provider cares to keep saying "later".
+        #
+        # `asyncio.timeout` rather than `wait_for`: it converts the cancellation
+        # it caused into a TimeoutError at its own boundary, so a CancelledError
+        # from somewhere else still reads as a cancellation.
+        async with asyncio.timeout(timeouts.per_lead_s) as budget:
+            result = await acall_with_retry(attempt, policy=retry, attempt_scope=call_scope)
+            return result.text
+    except LLMError as exc:
+        raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
+    except TimeoutError as exc:
+        if not budget.expired():
+            # Someone else's TimeoutError -- a client raising the builtin
+            # directly rather than the taxonomy's, say. Relabelling it as our
+            # per-lead budget would name a knob that had nothing to do with it,
+            # and an engineer would raise OUTREACH_PER_LEAD_TIMEOUT_S and watch
+            # nothing change. Let it fall through to the catch-all, which at
+            # least reports the error's own words.
+            raise
+        raise CopyGenerationGaveUp(
+            _budget_error(client, timeouts.per_lead_s, last_error),
+            attempts,
+            time.monotonic() - started,
+        ) from exc
+
+
+def _budget_error(client, per_lead_s, last_error):
+    """The error to report when the per-lead budget expires.
+
+    ``asyncio.timeout`` cancels whatever was in flight, so the exception the
+    provider was raising is gone by the time we get here. Rebuilding it from
+    ``last_error`` matters because that is the *diagnosis*: "kept returning rate
+    limits, and ran out of time doing it" is actionable, while "kept returning
+    timeouts" points an engineer at a network problem that does not exist.
+
+    Falls back to a plain timeout when nothing failed yet -- a first attempt
+    that simply never came back.
+    """
+    note = f"gave up after {per_lead_s:g}s (OUTREACH_PER_LEAD_TIMEOUT_S)"
+    if last_error is None:
+        return LLMTimeoutError(
+            f"The provider did not answer; {note}",
+            provider=getattr(client, "provider_name", None),
+        )
+    # Same class, so `failure_kind` still reports what the provider was actually
+    # doing, with the budget noted alongside.
+    try:
+        return type(last_error)(
+            f"{last_error} ({note})",
+            provider=last_error.provider,
+            status_code=last_error.status_code,
+            retry_after=last_error.retry_after,
+        )
+    except TypeError:
+        # An adapter subclass with its own constructor signature. Fall back to
+        # the same class as the nothing-failed-yet branch above: the budget
+        # genuinely did expire, so "timeouts" stays true (and retryable) even
+        # though the precise provider label is lost.
+        return LLMTimeoutError(
+            f"{last_error} ({note})",
+            provider=last_error.provider,
+            status_code=last_error.status_code,
+            retry_after=last_error.retry_after,
+        )
+
+
+def _prompt_for(lead, action_type, reason, prompt):
+    """The shared ``prompt``/``lead`` argument contract of the two entry points.
+
+    Extracted so the sync and async paths cannot drift on the one rule that is
+    easy to get wrong: a caller passing neither must fail loudly, because every
+    lead attribute has a ``getattr`` default and a ``None`` lead would otherwise
+    produce a perfectly well-formed prompt full of blanks.
+    """
+    if prompt is not None:
+        return prompt
+    if lead is None:
+        raise ValueError(
+            "generate_copy/agenerate_copy need either a lead to build a prompt from, or a prompt."
+        )
+    return _build_copy_prompt(lead, action_type, reason)
 
 
 def validate_copy(email):
@@ -1261,28 +1470,32 @@ def format_shape_problems(problems):
 # planner
 # --------------------------------------------------------------------------
 #
-# `plan_outreach` runs as five explicit phases. It is still serial, still sync,
-# and still writes one row per surviving lead -- the split changes the shape,
-# not the behaviour. The shape is what matters:
+# `plan_outreach` runs as five explicit phases:
 #
 #   1. read the leads
 #   2. classify each one, apply the two skip rules, AND build its prompt
 #                                                   -> WorkItem
-#   3. call the provider                            -> CopyOutcome
+#   3. call the provider, CONCURRENTLY              -> CopyOutcome
 #   4. run the two output gates                     -> ReviewOutcome
 #   5. write the rows
+#
+# The function itself stays synchronous. Phases 1, 2, 4 and 5 are all ORM work,
+# which cannot run inside an event loop; only phase 3 is network I/O, so only
+# phase 3 gets a loop (see `_run_coroutine`). The view calls `plan_outreach()`
+# bare and the API tests patch it with a plain return value -- an `async def`
+# here would break both for the sake of a keyword.
 #
 # **Phase 2 builds the prompt, and that is the point of the split.** Prompt
 # construction reaches the ORM -- `_build_copy_prompt` -> `_build_untrusted_block`
 # -> `_format_events_for_prompt` -> `_events_list` all touch `lead.events`. Doing
 # it here leaves phase 3 holding nothing but network I/O, so making phase 3
-# concurrent cannot accidentally drag a lazy query into an event loop. It also
+# concurrent could not accidentally drag a lazy query into an event loop. It also
 # means a provider-call span will time the provider, not our f-strings.
 #
 # That guarantee is enforced, not merely intended: phase 3 is handed the prompt
-# and is NOT handed the lead (see `_generate_for`). Code added there later that
+# and is NOT handed the lead (see `_agenerate_for`). Code added there later that
 # reaches for a lead attribute fails immediately and locally, rather than
-# emitting a lazy query that only misbehaves once phase 3 is concurrent.
+# emitting Django's `SynchronousOnlyOperation` from inside a gather.
 #
 # The provider client is resolved the same way, and for the same reason.
 # `get_llm_client()` reads the LLMConfiguration row, so calling it per lead --
@@ -1331,13 +1544,24 @@ class CopyOutcome:
     The exception is carried rather than raised so one lead's dead API call
     cannot sink the run -- the same guarantee the old inline ``try`` gave, now
     expressed as a value that phase 4 can read.
+
+    ``attempts`` and ``elapsed_s`` are what the run *spent* on this lead, and
+    they exist so phase 4 can say "gave up after 4 attempts over 31s" rather
+    than just "it failed". That clause is the whole difference between a
+    reviewer reading a row as noise and reading it as work. They are only
+    meaningful on a failure -- phase 4 reads them for its failure sentence and
+    nothing else does -- so a success leaves them at ``0`` too, exactly like a
+    lead where no provider call was made at all (an unmatched lead, an
+    unbuildable prompt).
     """
 
     text: str = ""
-    # Narrower than BaseException on purpose: _generate_for catches Exception,
+    # Narrower than BaseException on purpose: _agenerate_for catches Exception,
     # so a KeyboardInterrupt or SystemExit can never land here -- it aborts the
     # run, which is what those mean.
     error: Exception | None = None
+    attempts: int = 0
+    elapsed_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1436,54 +1660,431 @@ def _resolve_client(work):
         return None, wrap_unexpected(exc)
 
 
-def _generate_for(item, client, client_error=None):
-    """Phase 3 for one lead: the provider call, and nothing else.
+def _outcome_without_calling(item, client_error):
+    """The :class:`CopyOutcome` for a lead that never reaches the provider, or
+    ``None`` when it does.
 
-    Goes through the module-level ``generate_copy`` rather than reaching for the
-    client directly, so the single-lead path and the planner's path stay the
-    same function.
-
-    ``lead`` is deliberately passed as ``None``. Phase 3 must hold no handle on
-    the ORM, and the cheapest way to guarantee that is to not give it one:
-    anything added here that reaches for a lead attribute fails loudly and
-    locally instead of emitting a lazy query that only misbehaves later, inside
-    an event loop, in someone else's branch. ``client`` is passed in for the
-    same reason — see :func:`_resolve_client`.
-
-    **Two except clauses, not one blanket one (MUS-25).** A bare
-    ``except Exception`` caught a 429 and a ``ZeroDivisionError`` in our own
-    prompt handling identically, so both were reported as "copy generation
-    failed" and both landed on a dashboard as the same undifferentiated bar.
-    Naming ``LLMError`` first means a real provider failure keeps the class the
-    adapter assigned it — and with it the ``retryable`` and ``fault_domain`` a
-    reader actually wants. The residual clause stays, because one lead's bug
-    still must not sink a 200-lead run, but it *wraps* rather than passes
-    through: the caller gets one exception type to reason about, and
-    ``LLMUnexpectedError.failure_kind`` still names what really happened, so
-    nothing escapes untyped and nothing is silently mis-typed either.
+    Three ways a lead skips the call: its classification produced no prompt
+    (``UNKNOWN`` — straight to a human), building its prompt failed, or the
+    provider client could not be resolved at all. Decided *before* the semaphore
+    is acquired, so a run of unmatched leads doesn't queue behind a pool it has
+    no use for.
     """
-    from project.app.services import queue_copy
-
     if item.prompt_error is not None:
         return CopyOutcome(error=item.prompt_error)
     if item.prompt is None:
         return CopyOutcome()
     if client_error is not None:
         return CopyOutcome(error=client_error)
+    return None
+
+
+async def _agenerate_for(item, client, runtime, client_error=None):
+    """Phase 3 for one lead: the provider call, and nothing else.
+
+    Goes through the module-level ``agenerate_copy`` rather than reaching for
+    the client directly, so the single-lead path and the planner's path stay the
+    same pair of functions and the planner keeps one mock seam.
+
+    ``lead`` is deliberately passed as ``None``. Phase 3 must hold no handle on
+    the ORM, and the cheapest way to guarantee that is to not give it one:
+    anything added here that reaches for a lead attribute fails loudly and
+    locally instead of emitting a lazy query that only misbehaves inside an
+    event loop. That was a review-time convention when this phase was serial;
+    now that it runs inside ``asyncio.gather`` it is load-bearing — a lazy query
+    here raises Django's ``SynchronousOnlyOperation``, and only sometimes.
+    ``client`` is passed in for the same reason — see :func:`_resolve_client`.
+    """
+    from project.app.services import queue_copy
+
+    # Re-checked so this function is correct called standalone. `bounded` checks
+    # the same thing first, ahead of the semaphore, so a skipped lead never
+    # queues for a slot it has no use for -- this is the redundant one.
+    outcome = _outcome_without_calling(item, client_error)
+    if outcome is not None:
+        return outcome
     try:
         # Normalized on the way out of the provider, inside the same guard the
         # call is under: `suggested_copy` is immutable after this point, and
         # every span offset computed later indexes it.
         text = queue_copy.normalize_copy(
-            generate_copy(None, item.action_type, item.reason, prompt=item.prompt, client=client)
+            await agenerate_copy(
+                None,
+                item.action_type,
+                item.reason,
+                prompt=item.prompt,
+                client=client,
+                retry=runtime.retry,
+                timeouts=runtime.timeouts,
+            )
         )
+    except CopyGenerationGaveUp as exc:
+        # Unwrapped here rather than carried whole: phase 4 branches on the
+        # provider error's own `retryable` flag, and it should not have to know
+        # that phase 3 wraps things.
+        return CopyOutcome(error=exc.error, attempts=exc.attempts, elapsed_s=exc.elapsed_s)
     except LLMError as exc:
         # Already classified by the adapter. Passed through untouched -- the
         # whole value of the taxonomy is that this class survives to the span.
         return CopyOutcome(error=exc)
     except Exception as exc:  # don't let one lead's bug sink the run
+        # Wrapped rather than passed through (MUS-58): the caller gets one
+        # exception family to reason about, and
+        # ``LLMUnexpectedError.failure_kind`` still names what really
+        # happened, so nothing escapes untyped and nothing is mis-typed.
         return CopyOutcome(error=wrap_unexpected(exc))
     return CopyOutcome(text=text)
+
+
+async def _agenerate_all(work, lead_spans, client, client_error, runtime):
+    """Phase 3 for the whole run: every lead at once, at most
+    ``runtime.max_in_flight`` of them actually talking to the provider.
+
+    ``lead_spans`` rides along zipped with ``work`` (MUS-25): each lead's
+    provider call runs with its own span active, so the ``chat`` span each HTTP
+    attempt opens parents to that lead rather than to whichever sibling
+    happened to be current. Activation is per *task* — ``use_span`` is
+    contextvar-backed and every gather task carries its own context copy — so
+    eight in-flight leads cannot leak spans into each other.
+
+    A semaphore rather than a chunked loop. Chunking is the obvious way to bound
+    concurrency and the wrong one: it waits for the slowest call in each batch
+    before starting the next, so one 30-second lead idles seven workers. A
+    semaphore starts the next lead the instant a slot frees.
+
+    ``return_exceptions=True`` is not optional here. Without it the first
+    exception cancels the gather and abandons every sibling *and their results*,
+    which would make one dead lead cost the run -- the exact failure mode the
+    per-lead ``try`` in :func:`_agenerate_for` exists to prevent. With it, one
+    lead's failure is one lead's failure.
+
+    ``gather`` preserves argument order in its result list regardless of
+    completion order, which is what lets phase 4 keep zipping outcomes against
+    ``work`` positionally.
+
+    The client is closed on the way out. ``asyncio.run`` closes its loop but not
+    the transports on it, and :class:`LoopBoundAsyncClient` keeps a hard
+    reference to both -- so without this, every run strands a live connection
+    pool on a dead loop until the next run overwrites the cache, and every
+    configuration change in the Settings UI (which mints a new adapter through
+    an unbounded ``lru_cache``) strands one forever. ``LLMClient.aclose`` says
+    exactly this: *callers that own the event loop should await this in a
+    finally*. This run owns the loop. Nothing is forfeited by closing -- the
+    client is loop-bound and gets rebuilt next run regardless.
+    """
+    semaphore = asyncio.Semaphore(runtime.max_in_flight)
+
+    async def bounded(item, lead_span):
+        # The skip cases never take a slot: an unmatched lead has no provider
+        # call to make, so making it queue for permission to make one would be
+        # pure latency.
+        outcome = _outcome_without_calling(item, client_error)
+        if outcome is not None:
+            return outcome
+        async with semaphore:
+            with lead_span.active():
+                return await _agenerate_for(item, client, runtime, client_error)
+
+    try:
+        results = await asyncio.gather(
+            *(bounded(item, span) for item, span in zip(work, lead_spans, strict=True)),
+            return_exceptions=True,
+        )
+    finally:
+        await _aclose_quietly(client)
+    return [_as_outcome(result) for result in results]
+
+
+async def _aclose_quietly(client):
+    """Release the client's async resources, never at the cost of the run.
+
+    ``aclose`` is a no-op for adapters holding no async state, and
+    :meth:`LoopBoundAsyncClient.aclose` already declines to touch a client
+    belonging to another live loop. The guard here is for the remaining case: a
+    client that is a test double, or an adapter whose transport objects to being
+    closed. Phase 3's results are already computed by this point, and losing 200
+    leads' copy to a failed socket teardown would be an absurd trade.
+    """
+    if client is None:
+        return
+    try:
+        await client.aclose()
+    except Exception:  # pragma: no cover - defensive; no adapter does this today
+        pass
+
+
+def _as_outcome(result):
+    """Normalize one ``gather(return_exceptions=True)`` slot into a
+    :class:`CopyOutcome`.
+
+    ``_agenerate_for`` already catches ``Exception``, so nothing should arrive
+    here as a throwable at all. The branches are defensive, and the split
+    matters for the one case that is genuinely reachable: ``CancelledError``.
+
+    ``KeyboardInterrupt`` and ``SystemExit`` deliberately do *not* appear in
+    that sentence, despite being the obvious things to name. ``Task.__step``
+    special-cases both -- it re-raises rather than storing them -- so they
+    escape ``asyncio.run`` directly and never occupy a result slot.
+    ``CancelledError`` is the only ``BaseException`` that can land in one, which
+    it does when an individual lead's task is cancelled while the gather
+    survives. Turning that into a lead's ``further_action`` would report a
+    cancelled run as 200 leads' worth of provider trouble, so it is re-raised.
+    """
+    if isinstance(result, CopyOutcome):
+        return result
+    if isinstance(result, Exception):
+        return CopyOutcome(error=result)
+    if isinstance(result, BaseException):
+        raise result
+    # Not reachable from `bounded`, which returns only CopyOutcome. Named
+    # explicitly because `raise result` on a non-exception gives "exceptions
+    # must derive from BaseException" -- a message about the raise statement,
+    # which tells you nothing about the value that caused it.
+    raise TypeError(f"phase 3 produced {result!r}, expected a CopyOutcome.")
+
+
+def _run_coroutine(coro):
+    """Run ``coro`` to completion on its own event loop, from sync code.
+
+    ``plan_outreach()`` is and stays synchronous: the view calls it bare, the
+    API tests patch it with a plain ``return_value``, and phases 1, 2, 4 and 5
+    are all ORM work that cannot run inside a loop anyway. Only phase 3 is
+    concurrent, so only phase 3 needs a loop, and this is where it gets one.
+
+    Called from inside a running loop, it **raises**, and the tempting
+    alternative is to spawn a thread with its own loop and block on it. That
+    would be a fix in the wrong place: it would rescue phase 3 while phases 1,
+    2, 4 and 5 stayed on the caller's async thread and failed anyway. There is
+    no correct way to call ``plan_outreach()`` from inside a loop, so any
+    accommodation here only relocates the failure and makes it harder to read.
+
+    In practice a caller inside a loop never gets this far -- phase 1 is an ORM
+    read, so Django raises ``SynchronousOnlyOperation`` several lines earlier.
+    This guard is for the day someone reaches for ``_run_coroutine`` from
+    somewhere that isn't ``plan_outreach()``.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        inside_a_loop = False
+    else:
+        inside_a_loop = True
+
+    # `asyncio.run` is called OUTSIDE the except block on purpose. Inside it,
+    # `sys.exc_info()` is still live, so every exception escaping phase 3 would
+    # be chained onto this probe's own "no running event loop" -- a two-frame
+    # preamble on every future traceback, pointing at a non-problem.
+    if not inside_a_loop:
+        return asyncio.run(coro)
+
+    # Closed explicitly: a coroutine object that is never awaited emits a
+    # RuntimeWarning at collection time, which would arrive detached from this
+    # raise and read like a second, unrelated bug.
+    coro.close()
+    raise RuntimeError(
+        "plan_outreach() runs its own event loop and cannot be called from "
+        "inside one. Its ORM phases are synchronous, so there is no async "
+        "variant to await -- call it from a thread (e.g. asyncio.to_thread) or "
+        "from synchronous code."
+    )
+
+
+# --------------------------------------------------------------------------
+# what a reviewer reads when there is no copy (MUS-26c)
+# --------------------------------------------------------------------------
+#
+# The review queue is a *finite* list of things a human has to decide. Its whole
+# value is that everything in it is work. Before this, a 429 from a free tier
+# and "no automated outreach pattern matched" arrived in that queue looking
+# identical: both `needs_human = True`, both a sentence about this lead. One is
+# real BD judgement; the other is the provider having a bad thirty seconds. A
+# reviewer who cannot tell them apart learns to skim the whole queue, which
+# costs far more than the rate limit did.
+#
+# So the messages below say three different things, and each says plainly whose
+# problem it is:
+#
+#   * unmatched classification -> yours, and here is what to look at
+#   * retries exhausted        -> nobody's; re-run it later
+#   * not retryable            -> an engineer's; the config or the contract broke
+#
+# They are module constants because tests assert against them by name. A test
+# asserting a string literal is a test that passes while the wording drifts back
+# together, which is exactly the failure this component exists to prevent.
+
+CLASSIFICATION_UNMATCHED = (
+    "BD review needed for {contact_name} ({agency_name}): no automated outreach "
+    "pattern matched. Review HubSpot notes and recent activity, then decide "
+    "whether to contact, hold, or disqualify."
+)
+
+COPY_RETRIES_EXHAUSTED = (
+    "Copy generation gave up after {attempts} attempt(s) over {elapsed}s -- the "
+    "{provider} API returned {kind}. Last error: {detail} This is a transient "
+    "provider failure, not a problem with this lead: the {action_type} "
+    "classification and the reason above still stand. Re-run the planner once "
+    "the provider recovers -- this row will be replaced by a real draft."
+)
+
+COPY_FAILED_PERMANENTLY = (
+    "Copy generation failed and was not retryable ({kind}: {detail}) The "
+    "{action_type} classification and the reason above still stand -- this is a "
+    "configuration or provider-contract problem an engineer should look at, not "
+    "something to fix from the review queue."
+)
+
+# Everything that is not a provider failure at all: a prompt that could not be
+# built, a provider client that could not be resolved. Wording unchanged from
+# before this component, deliberately -- it is the pre-existing catch-all, and
+# the tests that pin it are pinning a real behaviour, not this refactor.
+COPY_FAILED_UNEXPECTEDLY = (
+    "Copy generation failed ({error}). AE should draft the {action_type} email "
+    "manually using the reason above."
+)
+
+# Error class -> the words a reviewer reads. Table rather than `type(exc).__name__`
+# so the prose stays prose ("rate limits (HTTP 429)", not "LLMRateLimitError"),
+# and so renaming a class cannot silently rewrite what two hundred rows say.
+# Insertion order is irrelevant -- `failure_kind` walks the exception's own MRO,
+# so a subclass added to the taxonomy tomorrow inherits its parent's label
+# rather than falling through to "unclassified".
+FAILURE_KINDS = {
+    LLMRateLimitError: "rate limits (HTTP 429)",
+    LLMTimeoutError: "timeouts",
+    LLMTransientError: "server errors (HTTP 5xx)",
+    LLMAuthError: "an authentication failure",
+    LLMBadRequestError: "a rejected request",
+    LLMMalformedResponseError: "an unreadable response",
+    LLMError: "an unclassified provider failure",
+}
+
+FAILURE_KIND_UNKNOWN = "an unclassified provider failure"
+
+# Provider error text goes into `further_action`, which is persisted and
+# rendered to a reviewer. Two problems with passing it through raw, and the
+# second is the one that will actually happen:
+#
+#   * the Anthropic SDK builds its message as f"Error code: {status} - {body}"
+#     with the *whole* response body, falling back to the raw text when it isn't
+#     JSON. A proxy or WAF answering with a 200KB HTML error page would put that
+#     page into a TextField, once per lead, and destroy the queue UI.
+#   * `base_url` is a class attribute today, so credentials ride in a header and
+#     not in any URL a message could echo. errors.py already anticipates an
+#     operator-configurable base_url, and providers that take the key as a query
+#     parameter exist -- the day that lands, this field would start persisting
+#     keys in front of reviewers with nobody having changed a line here.
+#
+# Redacting and truncating now costs three lines and makes the "provider text is
+# untrusted" posture uniform with how `suggested_copy` is already treated.
+_SECRET_PATTERN = re.compile(
+    r"(?i)(sk-[A-Za-z0-9_\-]{8,}|(?:api[-_]?key|access[-_]?token|token|key)=[^\s&\"']+"
+    r"|Bearer\s+\S+)"
+)
+DETAIL_MAX_CHARS = 300
+
+
+def _redact_and_bound(error):
+    """``str(error)`` with secrets removed and the length capped, nothing more."""
+    text = _SECRET_PATTERN.sub("[redacted]", str(error)).strip()
+    if len(text) > DETAIL_MAX_CHARS:
+        return text[:DETAIL_MAX_CHARS].rstrip() + "... (truncated)"
+    return text
+
+
+def _safe_detail(error):
+    """Provider text, fit to be persisted and shown to a human."""
+    text = _redact_and_bound(error)
+    # A trailing full stop is added here rather than in the templates so the
+    # message never ends up with ".." when the provider already punctuated.
+    # The truncation marker stays unpunctuated -- it is a note, not a sentence.
+    return text if text.endswith((".", "!", "?", "(truncated)")) else text + "."
+
+
+def failure_kind(error):
+    """The human label for ``error``'s class, walking the MRO.
+
+    A table lookup keyed on the exact type would give the fallback label to any
+    subclass a provider adapter invents, so a future ``LLMQuotaError(LLMRateLimitError)``
+    would be described as "unclassified" while being the single most classifiable
+    thing that can happen to a free tier.
+    """
+    for cls in type(error).__mro__:
+        label = FAILURE_KINDS.get(cls)
+        if label is not None:
+            return label
+    return FAILURE_KIND_UNKNOWN
+
+
+def _describe_failure(item, outcome):
+    """Turn one lead's failure into the sentence a reviewer reads.
+
+    Three branches, and the split is the point of this component:
+
+    * a **retryable** error that used up the budget -- the run tried and the
+      provider kept refusing. Nobody needs to do anything except re-run.
+    * a **non-retryable** error -- retrying was pointless, so we didn't. A bad
+      key, a prompt the provider rejects, a response we can't parse: all
+      engineering, none of it review-queue work.
+    * anything that is not an ``LLMError`` at all -- a prompt that wouldn't
+      build, a client that wouldn't resolve. The pre-existing catch-all.
+    """
+    error = outcome.error
+    if not isinstance(error, LLMError):
+        # Redacted and bounded like the provider branches below, but without
+        # _safe_detail's trailing full stop: this template parenthesises the
+        # error mid-sentence, and its wording is pinned.
+        return COPY_FAILED_UNEXPECTEDLY.format(
+            error=_redact_and_bound(error), action_type=item.action_type
+        )
+
+    if error.retryable:
+        return COPY_RETRIES_EXHAUSTED.format(
+            attempts=outcome.attempts,
+            # One decimal: enough to distinguish "failed instantly" from "spent
+            # the whole budget", which is the only distinction this number is
+            # asked to support.
+            elapsed=f"{outcome.elapsed_s:.1f}",
+            provider=error.provider or "LLM",
+            kind=failure_kind(error),
+            # The last error's own words, redacted and bounded. Carries the
+            # provider's message on a genuine exhaustion, and -- for the
+            # per-lead budget -- names OUTREACH_PER_LEAD_TIMEOUT_S, which is the
+            # knob whoever reads this would actually reach for.
+            detail=_safe_detail(error),
+            action_type=item.action_type,
+        )
+
+    return COPY_FAILED_PERMANENTLY.format(
+        kind=failure_kind(error),
+        detail=_safe_detail(error),
+        action_type=item.action_type,
+    )
+
+
+def failed_generation_filter():
+    """Rows that record a *failed attempt* rather than a recommendation.
+
+    A row with a real action type, no copy, and ``needs_human`` is one where we
+    classified the lead, tried to write the email, and got nothing back. Those
+    three fields identify it exactly, and no new column is needed:
+
+    * an unmatched lead has ``action_type == UNKNOWN`` (real BD work, and it
+      must keep suppressing re-plans -- nobody wants it raised twice a day);
+    * a *successful* generation always keeps its draft, even when a gate flags
+      it, so ``suggested_copy`` is non-empty whenever the provider answered.
+
+    This exists because of the sentence :data:`COPY_RETRIES_EXHAUSTED` puts in
+    front of a reviewer: *"Re-run the planner once the provider recovers."*
+    Without this exclusion that instruction is a no-op. The failed row is
+    ``pending``, so the "an open item wins" rule skips exactly the lead the
+    message told you to re-run, and it sits in the finite queue for ever --
+    dismissable only by suppressing the recommendation permanently, or
+    approvable only as an empty draft. The row would be a lie about a queue
+    whose whole value is that everything in it is work.
+    """
+    from django.db.models import Q
+
+    return Q(needs_human=True, suggested_copy="") & ~Q(action_type=actions.UNKNOWN)
 
 
 def _review(item, outcome, level, today):
@@ -1492,10 +2093,9 @@ def _review(item, outcome, level, today):
         return ReviewOutcome(
             suggested_copy="",
             needs_human=True,
-            further_action=(
-                f"BD review needed for {item.lead.contact_name} ({item.lead.agency_name}): "
-                f"no automated outreach pattern matched. Review HubSpot notes and "
-                f"recent activity, then decide whether to contact, hold, or disqualify."
+            further_action=CLASSIFICATION_UNMATCHED.format(
+                contact_name=item.lead.contact_name,
+                agency_name=item.lead.agency_name,
             ),
         )
 
@@ -1503,10 +2103,7 @@ def _review(item, outcome, level, today):
         return ReviewOutcome(
             suggested_copy="",
             needs_human=True,
-            further_action=(
-                f"Copy generation failed ({outcome.error}). AE should draft the "
-                f"{item.action_type} email manually using the reason above."
-            ),
+            further_action=_describe_failure(item, outcome),
         )
 
     # Two independent output gates, both fail-closed:
@@ -1591,6 +2188,11 @@ def plan_outreach():
             status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED)
         )
         .exclude(dedupe_key="")
+        # A row recording a failed generation is not a recommendation anybody
+        # can act on, so it must not hold the dedupe slot -- see
+        # failed_generation_filter() for why that is load-bearing rather than
+        # tidy. It is superseded by this run's row in phase 5.
+        .exclude(failed_generation_filter())
         .values_list("dedupe_key", flat=True)
     )
 
@@ -1603,9 +2205,21 @@ def plan_outreach():
     # contradiction the snapshot exists to prevent.
     today = datetime.date.today()
 
-    with genai.run_span(verify_level=level, max_in_flight=MAX_IN_FLIGHT) as run:
-        # 1. read
-        leads = list(Lead.objects.all())
+    # The knobs are resolved once, ahead of the run span rather than inside
+    # phase 3: they describe this run (the span records `max_in_flight`, and a
+    # per-lead latency reading is uninterpretable without it), and 200 leads
+    # each re-reading Django settings would be 200 chances for a mid-run
+    # configuration change to make half a run behave differently from the
+    # other half.
+    runtime = llm_runtime.get_planner_runtime()
+
+    with genai.run_span(verify_level=level, max_in_flight=runtime.max_in_flight) as run:
+        # 1. read. `prefetch_related` is the whole N+1 fix: every lead's events
+        # are walked at least three times in a run -- `_notes_blob` in phase 2,
+        # `_format_events_for_prompt` while building the prompt, `verify_copy`
+        # in phase 4 and `explain` in phase 5 -- and without it each of those
+        # is a query per lead. Two queries total instead of 1 + 4N.
+        leads = list(Lead.objects.prefetch_related("events"))
 
         # 2. classify, apply the skip rules, and build prompts (the last phase
         #    before the provider call)
@@ -1635,17 +2249,14 @@ def plan_outreach():
             for item in work
         ]
 
-        # 3. call the provider -- no ORM beyond this point until phase 4
+        # 3. call the provider, concurrently -- no ORM in this phase, at all.
         client, client_error = _resolve_client(work)
-        outcomes = []
-        for item, lead_span in zip(work, lead_spans, strict=True):
-            with lead_span.active():
-                outcomes.append(_generate_for(item, client, client_error))
+        outcomes = _run_coroutine(_agenerate_all(work, lead_spans, client, client_error, runtime))
 
         # 4. run the output gates
         # strict=True on every zip: these lists cannot diverge today, but phase 3
-        # becomes an asyncio.gather downstream, and a silently truncated zip
-        # there would drop leads from the run without a trace.
+        # is an asyncio.gather, and a silently truncated zip here would drop
+        # leads from the run without a trace.
         reviews = []
         for item, outcome, lead_span in zip(work, outcomes, lead_spans, strict=True):
             with lead_span.active():
@@ -1688,28 +2299,76 @@ def plan_outreach():
             )
             for item, review in zip(work, reviews, strict=True)
         ]
+        rows = [
+            OutreachAction(
+                lead=item.lead,
+                priority=item.priority,
+                action_type=item.action_type,
+                reason=item.reason,
+                suggested_copy=review.suggested_copy,
+                needs_human=review.needs_human,
+                further_action=review.further_action,
+                dedupe_key=item.dedupe_key,
+                # Stamped so each row can be traced back to the run that
+                # produced it -- and, in the other direction, so a lead span
+                # can name the row it will produce before that row exists.
+                trace_run_id=run.run_id,
+                rule_trace=rule_trace,
+                verification=verification,
+            )
+            for item, review, (rule_trace, verification) in zip(
+                work, reviews, snapshots, strict=True
+            )
+        ]
         with transaction.atomic():
-            planned = [
-                OutreachAction.objects.create(
-                    lead=item.lead,
-                    priority=item.priority,
-                    action_type=item.action_type,
-                    reason=item.reason,
-                    suggested_copy=review.suggested_copy,
-                    needs_human=review.needs_human,
-                    further_action=review.further_action,
-                    dedupe_key=item.dedupe_key,
-                    # Stamped so each row can be traced back to the run that
-                    # produced it -- and, in the other direction, so a lead span
-                    # can name the row it will produce before that row exists.
-                    trace_run_id=run.run_id,
-                    rule_trace=rule_trace,
-                    verification=verification,
-                )
-                for item, review, (rule_trace, verification) in zip(
-                    work, reviews, snapshots, strict=True
-                )
-            ]
+            # Supersede the failed-attempt rows this run is replacing. They were
+            # let through the open-item rule on purpose (see
+            # failed_generation_filter), so without this a lead that failed on
+            # Monday and succeeded on Tuesday would show a real draft and a
+            # stale "the provider was down" row side by side in the same finite
+            # queue. Deleted rather than marked: a failed attempt carries no
+            # draft, and the one decision it can carry -- a snooze -- was aimed
+            # at the stale failure notice, not at whatever this run just
+            # produced. Un-snoozing here is deliberate: the fresh outcome goes
+            # in front of a reviewer rather than inheriting a "not now" that
+            # answered a different question. Nothing else in the row is worth an
+            # audit trail that the run's own log does not already have.
+            OutreachAction.objects.filter(
+                dedupe_key__in=[item.dedupe_key for item in work],
+                status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
+            ).filter(failed_generation_filter()).delete()
+
+            # One statement per batch instead of one per lead. `bulk_create`
+            # skips `save()` and the pre/post-save signals; neither is used by
+            # this model, and `auto_now_add` on `created_at` is applied by the
+            # field itself (`pre_save`), not by `save()`, so the timestamps
+            # survive. Both are asserted in tests_planner_perf rather than
+            # assumed -- "bulk_create skips things" is exactly the kind of
+            # half-remembered fact that turns into a null column in production.
+            #
+            # Batching is the backend's decision, not ours. Django's SQLite
+            # backend caps a batch at `max_query_params (999) // len(fields)`,
+            # which for this model's 18 insertable fields is 55 rows; Postgres
+            # does not cap at all and sends one statement. So a 200-lead run is
+            # 4 INSERTs on the SQLite CI leg and 1 on the Postgres one -- see
+            # tests_planner_perf, which computes the expectation from
+            # `connection.ops.bulk_batch_size` rather than hardcoding either.
+            #
+            # One thing worth knowing when a write fails: an IntegrityError from
+            # a per-row `create()` named one object, and from here it names a
+            # batch. Bisect the batch rather than trusting the message to point
+            # at a row.
+            #
+            # `bulk_create` returns the objects with primary keys populated on
+            # Postgres (RETURNING) and on SQLite >= 3.35 (also RETURNING); both
+            # CI legs qualify. It matters because the serializer emits `id` and
+            # the triage queue addresses rows by it, so a run that returned
+            # pk-less objects would serialize `"id": null` into the API
+            # response. Asserted explicitly in the tests -- this is a guarantee
+            # about the *database*, not about our code, which is precisely why
+            # it deserves a test rather than a comment. Deploys CI never sees
+            # are covered at boot by checks.bulk_create_pk_check (app.E003).
+            planned = OutreachAction.objects.bulk_create(rows)
 
         # After the write, deliberately. A run that rolled back should not be
         # holding a tidy summary of the rows it did not create -- it escapes
