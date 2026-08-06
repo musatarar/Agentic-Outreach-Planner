@@ -241,6 +241,9 @@ class ProtectedPathTests(unittest.TestCase):
             "evals/golden/cases.json",
             "evals/baselines/rules.json",
             "evals/run_rules_eval.py",
+            ".claude/skills/checkpointing-work/SKILL.md",
+            ".claude/skills/resuming-from-checkpoint/SKILL.md",
+            ".claude/skills/some-future-skill/references/detail.md",
         ):
             with self.subTest(path):
                 self.assertTrue(cs.is_protected(path))
@@ -256,6 +259,9 @@ class ProtectedPathTests(unittest.TestCase):
             "scripts/populate_demo_data.py",
             "evals/run_copy_eval.py",
             "requirements-dev.txt",
+            # Only the skills are protected under .claude/, not the whole
+            # directory — local settings stay editable outside a meta PR.
+            ".claude/settings.json",
         ):
             with self.subTest(path):
                 self.assertFalse(cs.is_protected(path))
@@ -270,6 +276,7 @@ class ProtectedPathTests(unittest.TestCase):
         self.assertTrue(cs.is_protected("docs/rulesets/feat.json"))
         self.assertFalse(cs.is_protected("docs/rulesets_notes.md"))
         self.assertFalse(cs.is_protected("scripts/tests_helper.py"))
+        self.assertFalse(cs.is_protected(".claude/skills_notes.md"))
 
     def test_exact_patterns_match_exactly(self):
         self.assertFalse(cs.is_protected("CLAUDE.md.bak"))
@@ -947,6 +954,18 @@ def _job_check_name(jobs, job_id):
 
 
 class ConsistencyTests(unittest.TestCase):
+    def test_checkpoint_skills_named_by_claude_md_exist_in_the_repo(self):
+        # CLAUDE.md points at these two skills by name as the checkpoint and
+        # resume mechanism. They live in the repo precisely so that reference
+        # is never dangling for an agent working from a clean clone.
+        claude_md = (REPO_ROOT / "CLAUDE.md").read_text()
+        for slug in ("checkpointing-work", "resuming-from-checkpoint"):
+            with self.subTest(slug):
+                skill = REPO_ROOT / ".claude" / "skills" / slug / "SKILL.md"
+                self.assertTrue(skill.is_file(), f"{skill} is missing")
+                self.assertIn(f"name: {slug}", skill.read_text())
+                self.assertIn(slug, claude_md)
+
     def test_workflow_yamls_parse(self):
         for rel in (".github/workflows/ci.yml", ".github/workflows/workflow-gate.yml"):
             with self.subTest(rel):

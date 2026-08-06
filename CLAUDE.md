@@ -63,6 +63,23 @@ pushes to protected branches are rejected. `docs/ci.md` documents the enforcemen
   the commit ids, and the exact next step, self-contained enough to resume from with zero
   chat context. A checkpoint that exists only in chat is not a checkpoint.
 
+The two halves of that last rule are skills committed to this repo, so a clean clone
+carries them and neither side of the loop depends on a personal setup:
+
+| Skill | Use it when |
+|---|---|
+| [`.claude/skills/checkpointing-work`](.claude/skills/checkpointing-work/SKILL.md) | **Writing** a checkpoint — a step finished, you are stopping for review or a merge, context is about to compact, or something was deliberately left undone. It pins the six required slots (headline + SHA, what changed, evidence with real numbers, deliberate leftovers, repo coordinates, exact next step) and the Linear WAF workarounds. |
+| [`.claude/skills/resuming-from-checkpoint`](.claude/skills/resuming-from-checkpoint/SKILL.md) | **Reading** one — picking up tracked work with no chat context: a bare ticket id or URL, "continue", "restart from step N", or the first turn after a compaction. Ticket, then newest checkpoint **ordered by `createdAt`, not `updatedAt`**, then verify against the repo before touching anything. |
+
+Invoke the skill rather than working from memory of it. The failure they exist to prevent
+is asymmetric: a missing checkpoint costs the next agent a full re-exploration, and a
+checkpoint read in the wrong order resumes from the wrong step.
+
+This closes the loop across the phases below. Every **STOP** marker means the same two
+things in order: post the checkpoint, then wait — do not open the next phase's PR, and do
+not merge. Every "continue" that arrives without chat context starts the other way round:
+resume from the checkpoint first, verify the coordinates against the repo, *then* work.
+
 ### Branch naming (manual — never let Linear auto-name these)
 
 | Branch | Role |
@@ -176,9 +193,12 @@ may need "Update branch" before the delta reads true. **Musa merges the feature 
   checks on `master` and `feat/*`; there are no bypass actors.
 - Protected paths (hardcoded in `scripts/check_scope.py`): `.github/workflows/**`,
   `scripts/check_scope.py`, `scripts/red_proof.py`, `scripts/tests/**`, `CLAUDE.md`,
-  `docs/ci.md`, `docs/rulesets/**`, `evals/golden/**`, `evals/baselines/**`,
-  `evals/run_rules_eval.py`. They change only via `meta/**` → `master` PRs (normal CI
-  still applies to those).
+  `docs/ci.md`, `docs/rulesets/**`, `.claude/skills/**`, `evals/golden/**`,
+  `evals/baselines/**`, `evals/run_rules_eval.py`. They change only via `meta/**` →
+  `master` PRs (normal CI still applies to those). The skills are in that list for the
+  same reason `CLAUDE.md` is — they encode the workflow's own stop-and-resume protocol, so
+  a component PR must not be able to rewrite the rules it is being held to. Note the scope:
+  `.claude/skills/**`, not `.claude/**`, so `.claude/settings.json` stays freely editable.
 - Marker detection is AST-based (both `@unittest.expectedFailure` and bare
   `@expectedFailure`), immune to comments and strings. FE todo counting is textual (it
   must work on `git show` blobs) and deliberately over-approximate — a todo-looking token

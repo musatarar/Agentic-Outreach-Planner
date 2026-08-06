@@ -116,7 +116,11 @@ deliberately out of scope here (MUS-54).
   `CLAUDE.md`). They include `evals/golden/**`, `evals/baselines/**`, and
   `evals/run_rules_eval.py`, so a component PR cannot edit the very baseline the landing
   gate checks; the cost is that a deliberate baseline update rides a `meta/**` PR, separate
-  from the product change that motivated it.
+  from the product change that motivated it. `.claude/skills/**` is protected on the same
+  logic as `CLAUDE.md`: the checkpoint and resume skills encode the workflow's own
+  stop-and-resume protocol, so the branch class being gated must not be able to edit them.
+  The pattern is deliberately narrower than `.claude/**` — `.claude/settings.json` is local
+  tooling config and stays editable from any branch.
 - **No FE scoped-test step, on purpose.** The gate runs the scoped *backend* suite for a
   component PR (`manage.py test project.app.<module>`) but nothing equivalent for the
   frontend: `npm test` under `ci-ok` already runs every `frontend/tests/*.test.ts` on

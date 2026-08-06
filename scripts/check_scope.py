@@ -53,6 +53,9 @@ PROTECTED_PATHS = (
     "CLAUDE.md",
     "docs/ci.md",
     "docs/rulesets/**",
+    # The checkpoint skills encode the workflow's own stop-and-resume protocol,
+    # so they get the same treatment as CLAUDE.md: they change via meta PRs only.
+    ".claude/skills/**",
     # The landing gate checks the rules-eval baseline; a component PR that could
     # edit the golden set or baseline could quietly weaken that gate.
     "evals/golden/**",
