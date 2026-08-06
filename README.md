@@ -313,16 +313,17 @@ supported Python versions and against both SQLite and a Postgres service contain
 
 ## Merge enforcement
 
-The contract → skeleton → mini-PR workflow in [`CLAUDE.md`](CLAUDE.md) is not advisory:
-GitHub rulesets on `master` and `feat/*` require two status checks — `ci-ok` (the whole
-CI matrix under one name) and `workflow-gate` (classify → scope check → red-proof) — with
-**zero bypass actors**. Setup, activation, and the lockout recovery path are documented in
-[`docs/ci.md`](docs/ci.md); the ruleset JSON is committed under
+The Linear-driven skeleton → component-PR workflow in [`CLAUDE.md`](CLAUDE.md) is not
+advisory: GitHub rulesets on `master` and `feat/*` require two status checks — `ci-ok` (the
+whole CI matrix under one name) and `workflow-gate` (classify → scope check → red-proof) —
+with **zero bypass actors**. Setup, activation, and the lockout recovery path are
+documented in [`docs/ci.md`](docs/ci.md); the ruleset JSON is committed under
 [`docs/rulesets/`](docs/rulesets/).
 
-Verified live on 2026-07-31 (API evidence, since a dead merge button doesn't screenshot):
+Verified live on 2026-07-31, under the earlier contract-based revision of the same gate
+(API evidence, since a dead merge button doesn't screenshot):
 
-- an out-of-scope mini PR ([#60](https://github.com/musatarar/Agentic-Outreach-Planner/pull/60))
+- a scope-violating PR ([#60](https://github.com/musatarar/Agentic-Outreach-Planner/pull/60))
   sat `BLOCKED`; plain merge was refused, and admin merge (`gh pr merge --admin`) was
   refused with *"Repository rule violations found … 2 of 2 required status checks are
   failing"* — no bypass includes the repository admin;
