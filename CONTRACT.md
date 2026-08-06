@@ -1,12 +1,5 @@
 # CONTRACT.md — Locked In Agentic Outreach Planner
 
-> **What this file is:** a frozen *product* interface spec, still cited by name and section
-> from live source (`services/actions.py`, `services/outreach.py`, `services/verify.py`,
-> `frontend/src/api/types.ts`). It is **not** a workflow contract — the
-> contract → skeleton → mini-PR machinery it predates was removed when the workflow moved
-> to Linear-driven decomposition (see `CLAUDE.md`). Kept because the citations point at
-> semantics that must stay frozen, not because the old workflow still exists.
-
 All agents build against this spec exactly. Do not deviate from names, shapes, or paths.
 
 ## Goal

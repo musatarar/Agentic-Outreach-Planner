@@ -1,12 +1,5 @@
 # FROZEN INTERFACE CONTRACT — MUS-35 (tickets MUS-36 … MUS-42)
 
-> **What this file is:** a frozen *product* interface spec, still cited by section number
-> from live source (`services/outreach.py` §3.3/§3.4/§9.16, `services/verify.py`
-> §4.3/§9.1(c), `fixtures/reason_parity.json` §3.6) and from test-module docstrings. It is
-> **not** a workflow contract — the contract → skeleton → mini-PR machinery it was written
-> under was removed when the workflow moved to Linear-driven decomposition (see
-> `CLAUDE.md`). Kept because those citations pin semantics that must stay frozen.
-
 **Base commit:** `origin/master` @ `9c35079` (after PR #15). Every branch is cut from
 `feature/mus-35-product-ui`, which is that commit plus this file.
 
