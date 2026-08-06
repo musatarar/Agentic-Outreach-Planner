@@ -333,7 +333,7 @@ class RepeatedRunTests(TestCase):
 
         with _stub(probe):
             first = plan_outreach()
-            # An open recommendation suppresses a re-run (CONTRACT 9.8), so
+            # An open recommendation suppresses a re-run, so
             # without this the second run would find nothing to do and the
             # dead-loop bug would sail past untested.
             OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)

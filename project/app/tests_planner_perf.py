@@ -164,7 +164,7 @@ class PlannerQueryCountTests(TestCase):
                 plan_outreach()
 
         # Clear the run so the second one has work to do: an open recommendation
-        # suppresses a re-run (CONTRACT 9.8).
+        # suppresses a re-run.
         OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
         _make_leads(57, offset=3)  # 60 leads -- past SQLite's 55-row batch
 

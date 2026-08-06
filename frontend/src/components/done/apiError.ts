@@ -1,8 +1,8 @@
 /**
- * Reading `ApiErrorBody.code` off a thrown error (CONTRACT §5.3).
+ * Reading `ApiErrorBody.code` off a thrown error.
  *
- * `ApiError` grows a `code` field in MUS-38's pinned `client.ts` diff
- * (CONTRACT §6.3), and MUS-38 is this ticket's sole owner of that file — so
+ * `ApiError` grows a `code` field in MUS-38's pinned `client.ts` diff, and
+ * MUS-38 is this ticket's sole owner of that file — so
  * MUS-41 cannot add the field itself and cannot wait for it either. Reading it
  * structurally compiles against the current `client.ts` and starts returning
  * real codes the moment MUS-38 merges, with no edit here.

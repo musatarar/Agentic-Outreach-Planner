@@ -16,8 +16,8 @@ interface Segment {
 }
 
 /**
- * `summary.queue_cleared === true`. **A server flag, never inferred** — §5.2
- * defines it as `counts.remaining === 0 && summary.total > 0`, and the FE has
+ * `summary.queue_cleared === true`. **A server flag, never inferred** — the
+ * server defines it as `counts.remaining === 0 && summary.total > 0`, and the FE has
  * no honest way to know `remaining`. Deriving it from `items.length` would
  * light this screen up while leads were still waiting.
  *
@@ -29,7 +29,7 @@ interface Segment {
  * palette permits, without spending the accent or inventing a colour.
  *
  * Every figure is mono. They are counts, money and durations: machine output,
- * and the type discipline in §7.1 is the most distinctive thing in this design.
+ * and that type discipline is the most distinctive thing in this design.
  */
 export function QueueCleared({ data }: QueueClearedProps) {
   const { summary, timezone } = data;
@@ -101,7 +101,7 @@ export function QueueCleared({ data }: QueueClearedProps) {
             {formatUsdCompact(summary.pipeline_value_usd)}
           </span>
           <span className="done-hero__label">pipeline touched</span>
-          {/* §5.2 sums estimated_book_size_usd over approved items only.
+          {/* The server sums estimated_book_size_usd over approved items only.
               Saying so is the difference between a real number and a boast. */}
           <span className="done-hero__sub">approved book size</span>
         </div>

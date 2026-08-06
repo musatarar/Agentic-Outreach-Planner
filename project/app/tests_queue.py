@@ -1,7 +1,7 @@
 """Tests for the triage queue state model and API (MUS-39).
 
-Kept in its own module: MUS-39 never edits ``tests_api.py`` (CONTRACT MUS-35
-section 8.2), so the two suites can be reviewed and merged independently.
+Kept in its own module: MUS-39 never edits ``tests_api.py``, so the two suites
+can be reviewed and merged independently.
 """
 
 import json
@@ -88,13 +88,13 @@ def make_action(lead=None, **overrides):
 
 
 class OutreachActionStateModelTests(TestCase):
-    """The lifecycle fields and the transition table (CONTRACT section 2.3)."""
+    """The lifecycle fields and the transition table."""
 
     def test_new_action_defaults_to_pending_and_unedited(self):
         action = make_action()
         self.assertEqual(action.status, OutreachAction.STATUS_PENDING)
         self.assertIsNone(action.status_changed_at)
-        # "" not None -- CONTRACT section 9.11.
+        # "" not None.
         self.assertEqual(action.edited_copy, "")
         self.assertEqual(action.snooze_trigger, "")
         self.assertIsNone(action.snooze_until)
@@ -204,7 +204,7 @@ class OutreachEditTests(TestCase):
 
 
 class DedupeKeyTests(TestCase):
-    """CONTRACT section 2.6 -- the documented dedupe key definition."""
+    """the documented dedupe key definition."""
 
     def test_key_is_stable_for_the_same_lead_and_action_type(self):
         self.assertEqual(
@@ -240,7 +240,7 @@ class DedupeKeyTests(TestCase):
 
 
 class NormalizeCopyTests(TestCase):
-    """CONTRACT section 9.1c -- line endings are normalized before storage."""
+    """line endings are normalized before storage."""
 
     def test_crlf_and_cr_become_lf(self):
         self.assertEqual(queue_copy.normalize_copy("a\r\nb\rc\nd"), "a\nb\nc\nd")
@@ -303,7 +303,7 @@ class DiffEditTests(TestCase):
 
 
 class PlanOutreachDedupeTests(TestCase):
-    """CONTRACT sections 2.6, 9.8 and 9.9 -- what a re-run may and may not do."""
+    """what a re-run may and may not do."""
 
     def _lead(self, lead_id="lead_001"):
         # demo_completed + no signup -> complete_onboarding, which is
@@ -428,7 +428,7 @@ def make_event(lead, **overrides):
 
 
 class QueueListViewTests(AuthenticatedAPITestCase):
-    """GET /api/queue/ -- CONTRACT section 5.2."""
+    """GET /api/queue/."""
 
     def test_anonymous_gets_401_not_403(self):
         """Section 9.4 -- the assertion MUS-38's route guard depends on.
@@ -670,7 +670,7 @@ class QueueDoneViewTests(AuthenticatedAPITestCase):
 
 
 class QueueEditViewTests(AuthenticatedAPITestCase):
-    """POST /api/queue/{id}/edit/ -- CONTRACT section 5.2."""
+    """POST /api/queue/{id}/edit/."""
 
     def setUp(self):
         super().setUp()
@@ -1261,7 +1261,7 @@ class QueueLifecycleTests(AuthenticatedAPITestCase):
 
 
 class UnsnoozeDueCommandTests(TestCase):
-    """`manage.py unsnooze_due` -- CONTRACT section 5.2, safe to run every minute."""
+    """`manage.py unsnooze_due` -- safe to run every minute."""
 
     def _snoozed(self, lead_id, **overrides):
         defaults = dict(

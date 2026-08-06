@@ -23,7 +23,7 @@ interface DayBucket {
  *
  * Grouping on the browser's calendar day would split one evening triage
  * session across two headings for anyone west of UTC — the same class of bug
- * CONTRACT §9.5 pins for the page date.
+ * for the page date.
  */
 function groupByDay(items: QueueItem[], timeZone: string): DayBucket[] {
   const buckets: DayBucket[] = [];

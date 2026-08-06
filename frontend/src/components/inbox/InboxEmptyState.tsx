@@ -42,7 +42,7 @@ export interface InboxEmptyStateProps {
  * trace, which is what makes them read as *measured* rather than congratulatory.
  *
  * `queue_cleared` and `total` come from the server and select the state
- * directly (§5.2). Array lengths are never consulted: a reviewer who cleared
+ * directly. Array lengths are never consulted: a reviewer who cleared
  * the queue in another tab must still see the celebration here.
  */
 export function InboxEmptyState({ summary, error }: InboxEmptyStateProps) {

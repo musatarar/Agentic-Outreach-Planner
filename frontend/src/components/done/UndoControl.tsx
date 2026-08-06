@@ -7,8 +7,7 @@ import { formatCountdown } from './format';
  * Milliseconds left on the server's undo window, re-read once a second.
  *
  * This is the only clock this page reads, and it reads it to *display* an
- * absolute server timestamp — never to decide whether a request is allowed
- * (CONTRACT §9.6).
+ * absolute server timestamp — never to decide whether a request is allowed.
  */
 function useUndoCountdown(expiresAt: string | null): number | null {
   const target = useMemo(
@@ -59,7 +58,7 @@ export function UndoControl({ item, onUndo, sending, expired }: UndoControlProps
   const remaining = useUndoCountdown(item.undo.expires_at);
   const lapsed = remaining !== null && remaining <= 0;
   // Keyed off status, never off `snooze.until` being non-null: approve and
-  // dismiss leave the snooze fields in place (CONTRACT §5.2 clears them for
+  // dismiss leave the snooze fields in place (the server clears them for
   // undo only), so a formerly-snoozed approved row still carries them.
   const label = item.status === 'snoozed' ? 'Un-snooze' : 'Undo';
 
@@ -82,7 +81,7 @@ export function UndoControl({ item, onUndo, sending, expired }: UndoControlProps
         <span
           className={`done-undo__countdown${urgent ? ' done-undo__countdown--urgent' : ''}`}
           // Urgency is weight, not colour: red and amber belong to the
-          // priority ramp and nothing else may borrow them (CONTRACT §7.1).
+          // priority ramp and nothing else may borrow them.
           title={`Undo closes at ${item.undo.expires_at}`}
         >
           {formatCountdown(remaining)}

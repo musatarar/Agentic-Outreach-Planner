@@ -8,7 +8,7 @@ a service must not import from the API layer.
    ``\\r\\n``; Python counts ``\\r\\n`` as two characters. Every span offset in
    a verification report would then be off by one per preceding line break.
    The server normalizes *before* storing copy and *before* computing any
-   offset (CONTRACT MUS-35 section 9.1c).
+   offset.
 
 2. **Verification envelopes.** One place that calls ``verify.verify_spans()``
    and one place that decides whether a report permits approval, so the queue
@@ -40,7 +40,7 @@ def is_astral_safe(text: str) -> bool:
 
     False as soon as the copy contains an astral character (an emoji echoed
     out of a HubSpot note), at which point the frontend must slice via
-    ``Array.from()`` -- see CONTRACT section 9.1a.
+    ``Array.from()``.
     """
     return len(text) == len(text.encode("utf-16-le")) // 2
 
@@ -61,9 +61,9 @@ def build_verification(
 ) -> dict:
     """Return the v1 verification report for ``copy``, normalized first.
 
-    ``verification`` on an OutreachAction always describes ``effective_copy``
-    (CONTRACT section 9.2), so this is called on every write that changes the
-    copy in play -- planning, editing, reverting -- and never appended to.
+    ``verification`` on an OutreachAction always describes ``effective_copy``,
+    so this is called on every write that changes the copy in play -- planning,
+    editing, reverting -- and never appended to.
     """
     normalized = normalize_copy(copy)
     report = verify.verify_spans(

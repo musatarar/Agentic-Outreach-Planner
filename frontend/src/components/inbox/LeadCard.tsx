@@ -22,10 +22,10 @@ export interface LeadCardProps {
   item: QueueItem;
   /**
    * The report backing the underlines. Normally `item.verification`; during
-   * live editing it is the `/verify/` response instead (CONTRACT §9.2).
+   * live editing it is the `/verify/` response instead.
    */
   report: VerificationReport;
-  /** `QueueResponse.date`, for the stale-trace note (§9.9). */
+  /** `QueueResponse.date`, for the stale-trace note. */
   queueDate: string;
   /** Position in the queue, for the region label — `Lead 3 of 14`. */
   position: number;

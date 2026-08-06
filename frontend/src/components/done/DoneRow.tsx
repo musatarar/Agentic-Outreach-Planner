@@ -61,7 +61,7 @@ export function DoneRow({ item, timeZone, onUndo, undoState }: DoneRowProps) {
           {/* Clipboard contents get lost constantly. Re-copying an approved
               draft should not mean finding the lead again. `effective_copy` is
               the server's answer to "edited or suggested?" — the FE never
-              branches on edited_copy (CONTRACT §5.2, §9.11). */}
+              branches on edited_copy. */}
           {item.status === 'approved' && (
             <CopyButton text={item.effective_copy} label="Copy again" />
           )}

@@ -59,7 +59,7 @@ export function DraftEditor({
     node.setSelectionRange(node.value.length, node.value.length);
   }, [autoFocus]);
 
-  // These two are the pair that CONTRACT §9.13 allow-lists through the global
+  // These two are the pair that `useHotkeys` allow-lists through the global
   // hotkey guard precisely so this editor can hear them from inside a textarea.
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {

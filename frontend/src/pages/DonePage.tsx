@@ -16,7 +16,7 @@ function SummaryStrip({ data }: { data: DoneResponse }) {
   const { summary } = data;
   return (
     <div className="done-summary">
-      {/* CONTRACT §9.5: the day comes from the server, computed in
+      {/* The day comes from the server, computed in
           TRIAGE_TIMEZONE. Nothing on this page asks the browser what day it
           is — a reviewer in UTC-7 clearing the queue at 6pm local would
           otherwise be told they had done nothing. */}
@@ -52,8 +52,8 @@ interface UndoneNotice {
  * reversible record is what lets someone move fast. It is also the only route
  * back from a dismiss, which is otherwise permanent by design.
  *
- * No keyboard shortcuts are bound here. CONTRACT §9.13 requires any keyboard
- * handling to go through MUS-40's `hooks/useHotkeys.ts` rather than a local
+ * No keyboard shortcuts are bound here. All keyboard
+ * handling goes through MUS-40's `hooks/useHotkeys.ts` rather than a local
  * `keydown` listener, and that hook does not exist on this branch. An undo
  * hotkey is a one-line addition to this page once MUS-40 has merged.
  */
@@ -85,7 +85,7 @@ export function DonePage() {
       const verb = item.status === 'snoozed' ? 'Un-snoozed' : 'Undone';
       setUndoState((prev) => ({ ...prev, [item.id]: { phase: 'sending' } }));
       try {
-        // Sent unconditionally. CONTRACT §9.6: the undo window is the server's
+        // Sent unconditionally: the undo window is the server's
         // call, so the request is never gated on the browser's clock.
         await undoQueueItem(item.id);
         setUndone({ verb, contact: item.lead.contact_name });
@@ -95,9 +95,9 @@ export function DonePage() {
           return next;
         });
         // Refetch rather than splice. `summary.queue_cleared` and the counts
-        // are server-computed and must not be inferred from array lengths
-        // (CONTRACT §5.2) — an undo puts an item back in the queue, which has
-        // to switch the cleared-queue state back off.
+        // are server-computed and must not be inferred from array lengths —
+        // an undo puts an item back in the queue, which has to switch the
+        // cleared-queue state back off.
         await load(true);
       } catch (caught) {
         // The row stays on /done either way; only the control goes away.
@@ -160,8 +160,8 @@ export function DonePage() {
           </div>
         )}
 
-        {/* The two empty states are selected by the server, never inferred
-            (CONTRACT §5.2): `summary.total === 0` is "the day has not started";
+        {/* The two empty states are selected by the server, never inferred:
+            `summary.total === 0` is "the day has not started";
             `summary.queue_cleared` is "there is nothing left in the queue".
             They are not opposites of one list being empty — an undo can flip
             queue_cleared back off while the list stays full, which is why the

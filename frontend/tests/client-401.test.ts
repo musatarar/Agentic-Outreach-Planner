@@ -1,5 +1,5 @@
 /**
- * CONTRACT §9.4 — the 401 handler must fire on a *real* 401, not a mocked one.
+ * the 401 handler must fire on a *real* 401, not a mocked one.
  *
  * The failure this exists to catch: DRF answers 403, not 401, for an anonymous
  * request when the first authenticator's `authenticate_header()` returns None,
@@ -121,7 +121,7 @@ test('a real 401 from /api/auth/me/ does NOT call the handler', async () => {
 });
 
 test('a real 403 does NOT call the handler', async () => {
-  // This is the §9.4 canary. If the backend regresses to plain
+  // This is the canary. If the backend regresses to plain
   // SessionAuthentication, anonymous requests arrive as 403 and this handler
   // stays silent — which is the bug, and the first test above is what fails.
   let calls = 0;

@@ -1,4 +1,4 @@
-"""Action type constants for the outreach planner (per CONTRACT.md)."""
+"""Action type constants for the outreach planner."""
 
 POWER_USER_REWARD = "power_user_reward"
 FOLLOW_UP_AFTER_HOLD = "follow_up_after_hold"
