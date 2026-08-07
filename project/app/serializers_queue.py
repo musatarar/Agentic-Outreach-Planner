@@ -2,7 +2,7 @@
 
 A separate module from ``serializers.py`` on purpose: MUS-37 and MUS-39 build
 in parallel, and new view/serializer modules are the whole conflict-avoidance
-strategy for this feature branch (CONTRACT MUS-35 section 8.1).
+strategy for this feature branch.
 
 Everything a reviewer needs to judge one recommendation is in ``QueueItem``:
 the lead, the structured rule trace, the verification spans and the copy.

@@ -17,7 +17,7 @@ const OPTIONS: MenuOption<SnoozeTrigger>[] = [
 ];
 
 export interface SnoozePopoverProps {
-  /** `QueueResponse.date` — the floor for the date picker (§9.5). */
+  /** `QueueResponse.date` — the floor for the date picker. */
   queueDate: string;
   onSnooze: (input: SnoozeInput) => void;
   onClose: () => void;
@@ -33,7 +33,7 @@ export interface SnoozePopoverProps {
  * jargon label.
  *
  * The server converts every trigger into a concrete timestamp, including a
- * 14-day backstop on `on_activity` (§9.17), so a lead that never does anything
+ * 14-day backstop on `on_activity`, so a lead that never does anything
  * still resurfaces rather than quietly becoming a dismissal nobody chose.
  */
 export function SnoozePopover({ queueDate, onSnooze, onClose }: SnoozePopoverProps) {
@@ -62,11 +62,11 @@ export function SnoozePopover({ queueDate, onSnooze, onClose }: SnoozePopoverPro
 
       {picking ? (
         <div className="popover__form">
-          {/* The Input primitive takes no `min` and may not be forked (§7.4),
+          {/* The Input primitive takes no `min` and may not be forked,
               so the floor is stated rather than enforced client-side. The
               server rejects a past date with 400 `invalid_snooze` and is the
               authority either way. The date shown is the queue's, never the
-              browser's clock (§9.5). */}
+              browser's clock. */}
           <Input
             label={`Date (after ${queueDate})`}
             id="snooze-date"

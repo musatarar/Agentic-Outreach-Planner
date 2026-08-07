@@ -6,7 +6,7 @@ export type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 /**
  * Asks the server whether this browser has a session.
  *
- * `GET /api/auth/me/` is `AllowAny` and returns 401 itself (CONTRACT §5.1), and
+ * `GET /api/auth/me/` is `AllowAny` and returns 401 itself, and
  * `client.ts` exempts the `/api/auth/` namespace from the global 401 handler —
  * so asking the question cannot trigger the redirect it is about to decide on.
  *

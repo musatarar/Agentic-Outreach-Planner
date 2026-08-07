@@ -33,7 +33,7 @@ export function NothingDoneYet({ date, timeZone }: NothingDoneYetProps) {
         </p>
         <div className="done-blank__actions">
           {/* The one accent fill on this page. /done spends no accent
-              anywhere else (CONTRACT §7.1). */}
+              anywhere else. */}
           <Button variant="primary" onClick={() => navigate('/inbox')}>
             Open the inbox
           </Button>

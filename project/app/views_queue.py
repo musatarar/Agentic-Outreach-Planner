@@ -4,7 +4,7 @@ Plain ``APIView`` throughout, matching the rest of this API: no routers, no
 ViewSets, no pagination. `GET /api/queue/` returns the whole queue in one call
 because it is tens of items, not thousands, and because the inbox owes a
 sub-120ms row advance with no spinner -- which is only achievable if advancing
-a row performs zero network requests (CONTRACT MUS-35 section 9.14).
+a row performs zero network requests.
 
 Errors use the contract's uniform envelope, ``{"code", "detail"}``, emitted
 directly by these views rather than left to MUS-37's exception handler: the
@@ -132,7 +132,7 @@ def snooze_target(trigger, until_raw, now):
     ``on_activity``, which gets a backstop of
     ``TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS``. "Come back when they actually
     do something" for a lead that never does anything is indistinguishable from
-    a dismiss nobody chose (CONTRACT MUS-35 section 9.17), and a non-NULL
+    a dismiss nobody chose, and a non-NULL
     column means neither the unsnooze sweep nor the frontend ordering needs a
     NULL branch.
     """

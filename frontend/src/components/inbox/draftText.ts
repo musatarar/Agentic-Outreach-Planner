@@ -7,8 +7,7 @@
  * copy that does not start with a subject line is simply left whole.
  *
  * The prefix is pure ASCII, so its length is identical in code points and in
- * UTF-16 code units; this offset is safe to use against either indexing scheme
- * (see CONTRACT §9.1a).
+ * UTF-16 code units; this offset is safe to use against either indexing scheme.
  */
 export const SUBJECT_PREFIX = 'Subject:';
 

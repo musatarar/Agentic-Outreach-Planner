@@ -27,8 +27,7 @@ class Command(BaseCommand):
         dry_run = options["dry_run"]
 
         # 1. Time-based. This also catches the on_activity backstop, which is
-        #    the point: a lead that never does anything still comes back
-        #    (CONTRACT MUS-35 section 9.17).
+        #    the point: a lead that never does anything still comes back.
         due = OutreachAction.objects.filter(
             status=OutreachAction.STATUS_SNOOZED, snooze_until__lte=now
         )

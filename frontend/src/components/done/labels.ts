@@ -40,11 +40,11 @@ export function snoozeTriggerLabel(trigger: SnoozeTrigger | ''): string {
  * want this row back.
  *
  * `on_activity` means "when they do something", not a date. It still carries a
- * `snooze.until`, but that is the 14-day backstop from CONTRACT §9.17, not a
+ * `snooze.until`, but that is the 14-day backstop, not a
  * schedule, and labelling it as one would be a lie the user acts on.
  *
  * **This switches on `status` and reads `snooze.*` only inside the `snoozed`
- * branch, deliberately.** CONTRACT §5.2 clears the snooze fields on `undo`
+ * branch, deliberately.** The server clears the snooze fields on `undo`
  * alone, so an item that was snoozed and later approved arrives here with
  * `status: "approved"` and a stale non-null `snooze.until`. Branching on the
  * field's presence would print "returns Tuesday" under something the user has

@@ -30,7 +30,7 @@ function systemTheme(): Theme {
 
 /**
  * Resolve the theme the same way the boot script did, in the same precedence
- * order (CONTRACT §7.3): explicit localStorage > prefers-color-scheme > light.
+ * order: explicit localStorage > prefers-color-scheme > light.
  *
  * The attribute is read first so React starts from whatever is already painted
  * — that is what keeps the first render flash-free.

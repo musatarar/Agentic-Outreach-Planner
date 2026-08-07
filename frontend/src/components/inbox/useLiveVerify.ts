@@ -3,7 +3,7 @@ import { errorMessage } from '../../api/client';
 import { verifyQueueCopy } from '../../api/endpoints';
 import type { VerificationReport } from '../../api/types';
 
-/** CONTRACT §5.2 pins the debounce; the endpoint is throttled at 120/min. */
+/** the debounce; the endpoint is throttled at 120/min. */
 const DEBOUNCE_MS = 250;
 
 export interface LiveVerifyResult {
@@ -22,7 +22,7 @@ export interface LiveVerifyResult {
  * underline red immediately — that feedback is the whole reason inline editing
  * is worth building rather than shipping a plain textarea.
  *
- * Two edges from CONTRACT §9.2 are load-bearing:
+ * Two edges.2 are load-bearing:
  *
  *  - `POST /verify/` is a dry run; nothing is persisted. Only `/edit/` commits.
  *  - The response **echoes the exact copy it verified**. If that no longer
@@ -74,7 +74,7 @@ export function useLiveVerify(
       verifyQueueCopy(itemId, { copy: draft })
         .then((response) => {
           if (token !== latestRequest.current) return;
-          if (response.copy !== draftRef.current) return; // stale (§9.2)
+          if (response.copy !== draftRef.current) return; // stale
           setLiveReport(response);
           setError(null);
         })

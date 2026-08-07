@@ -16,7 +16,7 @@ type State = 'enter' | 'sent' | 'expired';
 
 export interface SignInPageProps {
   initialState?: 'enter' | 'expired';
-  /** `expired_token` or `invalid_token` from CONTRACT §5.3. */
+  /** `expired_token` or `invalid_token`. */
   expiredCode?: string;
 }
 
@@ -53,7 +53,7 @@ function EnterState({
 }) {
   const formRef = useRef<HTMLFormElement>(null);
 
-  // The Input primitive's props are frozen by CONTRACT §7.4 and carry no
+  // The Input primitive's props are frozen.4 and carry no
   // `autoComplete`/`name`, and forking the primitive is not allowed. The
   // ticket requires autocomplete="email", so set it on the DOM node instead —
   // which is where the browser reads it from anyway.
@@ -184,7 +184,7 @@ function SentState({
 /** 03 — Expired. Explains the two rules, then puts you back at state 01. */
 function ExpiredState({ code, onRestart }: { code: string; onRestart: () => void }) {
   // `expired_token` and `invalid_token` are the only two the backend
-  // distinguishes (CONTRACT §5.1); a used link is reported as invalid.
+  // distinguishes; a used link is reported as invalid.
   const lede =
     code === 'expired_token'
       ? 'Sign-in links last 15 minutes, and this one is past that.'

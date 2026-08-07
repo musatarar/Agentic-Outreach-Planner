@@ -142,7 +142,7 @@ class OutreachAction(models.Model):  # what the planner decided/did
     verification = models.JSONField(default=dict, blank=True)
 
     # The state machine, in one place. Anything not listed here is a 409
-    # `invalid_transition` (CONTRACT MUS-35 section 5.3) -- never a silent
+    # `invalid_transition` -- never a silent
     # no-op, so "approve a dismissed action" is an error the caller sees.
     #   pending    -> approved | snoozed | dismissed   (triage decisions)
     #   snoozed    -> approved | snoozed | dismissed   (re-snooze is allowed)
@@ -170,7 +170,7 @@ class OutreachAction(models.Model):  # what the planner decided/did
         """The copy that would actually be sent: the edit if there is one.
 
         Computed server-side and serialized as its own field so no client ever
-        has to write ``edited_copy or suggested_copy`` (CONTRACT section 9.11).
+        has to write ``edited_copy or suggested_copy``.
         """
         return self.edited_copy or self.suggested_copy
 

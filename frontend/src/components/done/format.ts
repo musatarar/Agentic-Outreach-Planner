@@ -1,10 +1,10 @@
 /**
  * Display formatting for /done (MUS-41).
  *
- * CONTRACT §9.5: the frontend never calls `new Date()` to decide what "today"
+ * the frontend never calls `new Date()` to decide what "today"
  * is. Everything here takes an already-server-decided ISO string plus the
  * server's `timezone` from the response envelope, and only renders it. The one
- * place a clock is read at all is the undo countdown (CONTRACT §9.6), which is
+ * place a clock is read at all is the undo countdown, which is
  * a display of an absolute server timestamp and never gates a request.
  *
  * Every formatter is timezone-explicit for the same reason: rendering

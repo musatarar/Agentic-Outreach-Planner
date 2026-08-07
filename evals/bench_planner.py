@@ -114,9 +114,9 @@ def run_once(concurrency, request_timeout_s, per_lead_timeout_s, stub_kwargs):
     for name, value in stub_kwargs.items():
         setattr(client, name, value)
 
-    # A previous run leaves `pending` rows, which suppress a re-plan (CONTRACT
-    # 9.8). Cleared rather than worked around, so every measured run does the
-    # same amount of work.
+    # A previous run leaves `pending` rows, which suppress a re-plan. Cleared
+    # rather than worked around, so every measured run does the same amount of
+    # work.
     OutreachAction.objects.all().delete()
 
     with override_settings(

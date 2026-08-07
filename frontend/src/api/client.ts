@@ -74,7 +74,7 @@ async function ensureCsrfToken(): Promise<string | null> {
 /**
  * Prefer DRF's `detail`, then the first field error, then a bare status.
  *
- * `code` is the machine slug from CONTRACT §5.3 and is what callers branch on;
+ * `code` is the machine slug.3 and is what callers branch on;
  * `detail` is only ever shown to a human. Pre-MUS-37 endpoints have no `code`,
  * hence the '' default rather than a required field.
  */
@@ -120,7 +120,7 @@ export async function postJson<T>(url: string, body: unknown): Promise<T> {
     notifyIfUnauthorized(url, response.status);
     throw await toError(response);
   }
-  // POST /api/auth/logout/ answers 204 with no body (CONTRACT §5.1), and
+  // POST /api/auth/logout/ answers 204 with no body, and
   // response.json() on an empty body throws. Every other POST returns JSON.
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

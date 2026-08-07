@@ -66,7 +66,7 @@ export function InboxHeader({ counts, date }: InboxHeaderProps) {
         </span>
       </div>
 
-      {/* The server decides which day this is (CONTRACT §9.5); it is printed,
+      {/* The server decides which day this is; it is printed,
           never recomputed. */}
       <span className="inbox-header__hint" title="Queue date, server timezone">
         {date}

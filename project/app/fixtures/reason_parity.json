@@ -1,5 +1,5 @@
 {
-  "_comment": "Frozen parity fixture for MUS-42 (CONTRACT-MUS-35 §3.6 item 3). Captured from determine_action/determine_priority BEFORE the _cond() trace transform, over all golden records in evals/golden/leads.jsonl at today=2026-06-12. The prose `reason` is displayed AND fed into generate_copy's prompt, so it must stay byte-identical.",
+  "_comment": "Frozen parity fixture for MUS-42. Captured from determine_action/determine_priority BEFORE the _cond() trace transform, over all golden records in evals/golden/leads.jsonl at today=2026-06-12. The prose `reason` is displayed AND fed into generate_copy's prompt, so it must stay byte-identical.",
   "today": "2026-06-12",
   "records": [
     {

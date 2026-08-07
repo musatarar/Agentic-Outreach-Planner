@@ -38,15 +38,15 @@ class FrontendTestCase(TestCase):
 class AuthShellTests(TestCase):
     """The four SPA shells MUS-38 adds.
 
-    These views are deliberately public (CONTRACT §5.1.4): they render an empty
+    These views are deliberately public: they render an empty
     #root and hold no data, and access control is the client-side route guard in
     RequireAuth.tsx. Adding @login_required here would give an unauthenticated
     user a Django 302 to /accounts/login/ instead of the designed sign-in screen,
     and would break these tests.
 
     Each also has to set the csrftoken cookie, because /signin and /auth/consume
-    POST before any other page has run — see CONTRACT §9.12, where login()
-    rotates the token and a stale one 403s.
+    POST before any other page has run, and login() rotates the token so a
+    stale one 403s.
     """
 
     def test_signin_shell_renders(self):
