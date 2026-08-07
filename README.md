@@ -313,12 +313,13 @@ supported Python versions and against both SQLite and a Postgres service contain
 
 ## Merge enforcement
 
-The contract → skeleton → mini-PR workflow in [`CLAUDE.md`](CLAUDE.md) is not advisory:
-GitHub rulesets on `master` and `feat/*` require two status checks — `ci-ok` (the whole
-CI matrix under one name) and `workflow-gate` (classify → scope check → red-proof) — with
-**zero bypass actors**. Setup, activation, and the lockout recovery path are documented in
-[`docs/ci.md`](docs/ci.md); the ruleset JSON is committed under
-[`docs/rulesets/`](docs/rulesets/).
+GitHub rulesets on `master` and `feat/*` require `ci-ok` — the whole CI matrix under one
+name — with **zero bypass actors**, so a red branch cannot be merged and direct pushes to
+protected branches are rejected.
+
+The branch-workflow gate that ran alongside it is being reworked and currently lives only
+in its own pull request; the evidence below is from that earlier revision and is kept as a
+record of what the enforcement actually did.
 
 Verified live on 2026-07-31 (API evidence, since a dead merge button doesn't screenshot):
 
