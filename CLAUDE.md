@@ -30,9 +30,15 @@ python manage.py migrate
 python scripts/populate_demo_data.py  # single source of demo state
 python manage.py test project.app     # full backend suite
 python manage.py test project.app.tests_logic.SomeCase.test_name  # single test
+<<<<<<< HEAD
+ruff check . && ruff format --check . # lint + format check
+mypy project/app/services/            # type check (CI runs exactly this target)
+python evals/run_rules_eval.py        # rules regression eval vs committed baseline
+=======
 ruff check . && ruff format --check .
 mypy project/app/services/            # CI runs exactly this target
 python evals/run_rules_eval.py        # rules regression vs committed baseline
+>>>>>>> master
 ```
 
 Frontend source lives in `frontend/`; the built bundle is committed to
@@ -40,6 +46,8 @@ Frontend source lives in `frontend/`; the built bundle is committed to
 bundle (CI fails if it goes stale). SQLite by default; `DATABASE_URL` switches to
 Postgres; `docker compose up` runs the full stack.
 
+<<<<<<< HEAD
+=======
 ## Workflow
 
 An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]**
@@ -58,6 +66,7 @@ An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]*
 5. **Squash merge only** [gate — repo setting]. One PR = one commit on `master`;
    `git revert` is the undo path.
 
+>>>>>>> master
 ## Testing & database
 
 - **Fixtures, not live edits**: tests use `setUpTestData()`/fixtures. Never modify

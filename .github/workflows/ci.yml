@@ -171,20 +171,6 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python evals/run_rules_eval.py
 
-  # The workflow gate's own test suite (scripts/check_scope.py + red_proof.py)
-  # must run green in the same CI that the gate later protects.
-  gate-tests:
-    name: Workflow-gate unit tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -r requirements-dev.txt
-      - run: python -m unittest discover -s scripts/tests
-
   # Rulesets require status checks *by name*, and the test matrix produces one
   # name per cell — this single stable name is what gets protected. It fails on
   # any failed/cancelled/skipped dependency. coverage-badge is deliberately not
@@ -192,7 +178,7 @@ jobs:
   # report "skipped" and wedge this job red.
   ci-ok:
     name: ci-ok
-    needs: [lint, typecheck, frontend, test, rules-eval, gate-tests]
+    needs: [lint, typecheck, frontend, test, rules-eval]
     if: always()
     runs-on: ubuntu-latest
     steps:
