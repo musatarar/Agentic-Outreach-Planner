@@ -19,5 +19,7 @@ coverage==7.10.7
 # repo's own provider-agnostic layer.
 inspect-ai==0.3.249
 
-# Workflow gate (MUS-53): scripts/check_scope.py parses contract file maps.
+# Workflow gate: scripts/tests/test_check_scope.py::ConsistencyTests parses the
+# workflow YAMLs to pin job names against the committed rulesets. (check_scope.py
+# itself no longer reads YAML -- contract file maps went away in MUS-64.)
 pyyaml==6.0.3

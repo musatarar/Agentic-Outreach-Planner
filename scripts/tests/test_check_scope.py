@@ -1,9 +1,19 @@
-"""Tier-1 unit suite for scripts/check_scope.py (MUS-53).
+"""Tier-1 unit suite for scripts/check_scope.py (MUS-64).
 
 Every gate verdict is proven here against throwaway git repositories built in
-tmpdirs — no GitHub, no network. The ConsistencyTests at the bottom pull the
-cross-file couplings (workflow job names <-> ruleset required-check names,
-TEMPLATE.md <-> contract lint) into CI facts.
+tmpdirs — no GitHub, no network. Two properties of the real repo are baked into
+the fixtures deliberately, because the gate's semantics only make sense against
+them:
+
+* master carries a **permanent** expectedFailure baseline (the real one lives in
+  project/app/tests_redteam.py, a documented KNOWN GAP). Every red count here is
+  therefore delta-based; a fixture module named tests_baseline.py stands in for
+  it, so an absolute-zero rule sneaking back in fails these tests loudly.
+* red lives in **two stacks** — BE expectedFailure markers and FE node:test
+  todos — so the sweeps are exercised over both.
+
+The ConsistencyTests at the bottom pull the cross-file couplings (workflow job
+names <-> ruleset required-check names) into CI facts.
 """
 
 import os
@@ -98,7 +108,7 @@ def tests_module_src(component, marked=1, form="unittest.expectedFailure", plain
     for i in range(marked):
         lines += [
             f"    @{form}",
-            f"    def test_{component}_contract_{i}(self):",
+            f"    def test_{component}_expectation_{i}(self):",
             f"        self.assertEqual('{component}-ok', 'not-implemented-{i}')",
             "",
         ]
@@ -117,57 +127,62 @@ def tests_module_src(component, marked=1, form="unittest.expectedFailure", plain
     return "\n".join(lines) + "\n"
 
 
-def demo_components():
-    return {
-        "alpha": {
-            "files": ["project/app/services/demo_alpha.py"],
-            "tests": ["project/app/tests_demo_alpha.py"],
-        },
-        "beta": {
-            "files": ["project/app/services/demo_beta.py"],
-            "tests": ["project/app/tests_demo_beta.py"],
-        },
-        "assembly": {
-            "files": ["project/app/services/demo_assembly.py"],
-            "tests": ["project/app/tests_demo_assembly.py"],
-        },
-    }
-
-
-def contract_md(components=None, shared=(), include_sections=True, feature="demo"):
-    data = {"feature": feature, "components": components or demo_components()}
-    data["shared"] = list(shared)
-    ymap = yaml.safe_dump(data, sort_keys=False).rstrip()
-    parts = [f"# Contract — {feature}", ""]
-    if include_sections:
-        parts += [
-            "## Interfaces",
-            "Each component exposes the functions named in its stub file.",
-            "",
-            "## Data shapes",
-            "Plain dicts as described per interface.",
-            "",
-            "## Error contract",
-            "Unimplemented stubs raise NotImplementedError.",
+def fe_test_src(component, todos=1, plain_tests=0, style="option"):
+    """A node:test file carrying `todos` todo tests (option-object or .todo style)."""
+    lines = ["import test from 'node:test';", "import assert from 'node:assert/strict';", ""]
+    for i in range(todos):
+        if style == "call":
+            lines += [f"test.todo('{component} expectation {i}');", ""]
+        else:
+            lines += [
+                f"test('{component} expectation {i}', {{ todo: true }}, () => {{",
+                f"  assert.equal('{component}-ok', 'not-implemented-{i}');",
+                "});",
+                "",
+            ]
+    for i in range(plain_tests):
+        lines += [
+            f"test('{component} works {i}', () => {{",
+            f"  assert.equal('{component}-ok', '{component}-ok');",
+            "});",
             "",
         ]
-    parts += ["## File map", "", "```yaml", "# file-map", ymap, "```", ""]
-    return "\n".join(parts)
+    if todos == 0 and plain_tests == 0:
+        lines += [f"test('{component} done', () => {{", "  assert.ok(true);", "});", ""]
+    return "\n".join(lines)
 
 
-def make_feature_repo(root: Path, contract=None) -> Repo:
-    """master + feat/demo carrying a contract and a marked skeleton."""
+def make_base_repo(root: Path) -> Repo:
+    """master (carrying the permanent-baseline marker) plus an empty feat/demo."""
     repo = Repo(root)
     repo.write("README.md", "demo repo\n")
     repo.write("CLAUDE.md", "workflow doc\n")
-    repo.write("project/app/tests.py", "# base app tests\n")
+    repo.write("project/app/tests.py", "# base app tests, no markers\n")
+    # Stands in for the real tests_redteam.py KNOWN GAP xfail: permanent red on
+    # master that no gate may ever demand be removed.
+    repo.write("project/app/tests_baseline.py", tests_module_src("baseline", marked=1))
     repo.commit_all("base")
     repo.branch("feat/demo", "master")
-    repo.write("docs/contracts/demo.md", contract if contract is not None else contract_md())
-    for comp in ("alpha", "beta", "assembly"):
-        repo.write(f"project/app/services/demo_{comp}.py", service_stub(comp))
-        n = 2 if comp == "alpha" else 1
-        repo.write(f"project/app/tests_demo_{comp}.py", tests_module_src(comp, marked=n))
+    repo.commit_all("feature branch start")
+    return repo
+
+
+def make_feature_repo(root: Path) -> Repo:
+    """make_base_repo + a landed skeleton on feat/demo: three components, both stacks.
+
+    alpha is BE-only (2 markers), beta spans both stacks (1 marker + 1 todo),
+    gamma is FE-only (2 todos). No contract file — Linear owns the plan now, and
+    artifact paths are pure convention: tests_demo_<component>.py and
+    frontend/tests/demo_<component>.test.ts.
+    """
+    repo = make_base_repo(root)
+    repo.write("project/app/services/demo_alpha.py", service_stub("alpha"))
+    repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=2))
+    repo.write("project/app/services/demo_beta.py", service_stub("beta"))
+    repo.write("project/app/tests_demo_beta.py", tests_module_src("beta", marked=1))
+    repo.write("frontend/tests/demo_beta.test.ts", fe_test_src("beta", todos=1))
+    repo.write("frontend/src/demo_gamma.ts", "export const gammaValue = () => 'pending';\n")
+    repo.write("frontend/tests/demo_gamma.test.ts", fe_test_src("gamma", todos=2))
     repo.commit_all("skeleton")
     return repo
 
@@ -190,273 +205,91 @@ class GateRepoTestCase(unittest.TestCase):
             self.assertIn(fragment, out)
 
     def implement_alpha(self):
-        """Correct mini-PR state: alpha implemented, its markers at zero."""
+        """Correct component-PR state: alpha implemented, its markers at zero."""
         self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
         self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=0))
 
-
-# ---------------------------------------------------------------------------
-# file-map parsing
-# ---------------------------------------------------------------------------
-
-
-class FileMapParsingTests(unittest.TestCase):
-    def test_parse_file_map_happy_path(self):
-        fmap = cs.parse_file_map(contract_md())
-        self.assertEqual(set(fmap.components), {"alpha", "beta", "assembly"})
-        self.assertEqual(fmap.components["alpha"]["files"], ["project/app/services/demo_alpha.py"])
-        self.assertEqual(fmap.components["alpha"]["tests"], ["project/app/tests_demo_alpha.py"])
-        self.assertEqual(fmap.shared, [])
-
-    def test_parse_file_map_normalizes_scalar_tests(self):
-        md = contract_md(
-            components={
-                "engine": {
-                    "files": ["project/app/services/e.py"],
-                    "tests": "project/app/tests_e.py",
-                },
-                "assembly": {"files": [], "tests": "project/app/tests_asm.py"},
-            }
-        )
-        fmap = cs.parse_file_map(md)
-        self.assertEqual(fmap.components["engine"]["tests"], ["project/app/tests_e.py"])
-
-    def test_parse_missing_file_map_block(self):
-        with self.assertRaises(cs.FileMapError) as ctx:
-            cs.parse_file_map("# Contract\n\nno fenced map here\n")
-        self.assertIn("file-map", str(ctx.exception))
-
-    def test_parse_invalid_yaml_names_line(self):
-        bad = "# Contract\n\n```yaml\n# file-map\ncomponents:\n  alpha: [unclosed\n```\n"
-        with self.assertRaises(cs.FileMapError) as ctx:
-            cs.parse_file_map(bad)
-        self.assertIn("line", str(ctx.exception).lower())
-
-
-# ---------------------------------------------------------------------------
-# contract lint (--validate-contract)
-# ---------------------------------------------------------------------------
-
-
-class ContractLintTests(unittest.TestCase):
-    def test_lint_valid_contract_passes(self):
-        self.assertEqual(cs.validate_contract_text(contract_md()), [])
-
-    def test_lint_template_example_passes(self):
-        # C1<->C2 coupling lock: the committed TEMPLATE's example map must lint
-        # clean forever, else doc/format drift breaks CI.
-        proc = run_cli(REPO_ROOT, "--validate-contract", "docs/contracts/TEMPLATE.md")
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-
-    def test_lint_file_owned_by_two_components_rejected(self):
-        comps = demo_components()
-        comps["beta"]["files"].append("project/app/services/demo_alpha.py")
-        errors = "\n".join(cs.validate_contract_text(contract_md(comps)))
-        self.assertIn("exactly one component", errors)
-        self.assertIn("project/app/services/demo_alpha.py", errors)
-
-    def test_lint_shared_overlaps_owned_rejected(self):
-        errors = "\n".join(
-            cs.validate_contract_text(contract_md(shared=["project/app/services/demo_alpha.py"]))
-        )
-        self.assertIn("shared", errors)
-        self.assertIn("project/app/services/demo_alpha.py", errors)
-
-    def test_lint_missing_assembly_component_rejected(self):
-        comps = demo_components()
-        del comps["assembly"]
-        errors = "\n".join(cs.validate_contract_text(contract_md(comps)))
-        self.assertIn("assembly", errors)
-
-    def test_lint_missing_required_section_rejected(self):
-        errors = "\n".join(cs.validate_contract_text(contract_md(include_sections=False)))
-        self.assertIn("section", errors.lower())
-
-    def test_lint_protected_path_claimed_by_component_rejected(self):
-        comps = demo_components()
-        comps["alpha"]["files"].append("scripts/check_scope.py")
-        errors = "\n".join(cs.validate_contract_text(contract_md(comps)))
-        self.assertIn("protected", errors)
-        self.assertIn("scripts/check_scope.py", errors)
-
-    def test_lint_protected_path_in_shared_rejected(self):
-        errors = "\n".join(cs.validate_contract_text(contract_md(shared=["docs/ci.md"])))
-        self.assertIn("protected", errors)
-        self.assertIn("docs/ci.md", errors)
-
-
-# ---------------------------------------------------------------------------
-# classification
-# ---------------------------------------------------------------------------
-
-
-class ClassificationTests(unittest.TestCase):
-    def test_classify_skeleton_pr(self):
-        c = cs.classify("feat/demo", "feat/demo--skeleton")
-        self.assertEqual((c.pr_class, c.feature), ("skeleton", "demo"))
-
-    def test_classify_mini_pr_extracts_component(self):
-        c = cs.classify("feat/demo", "feat/demo--scope_engine")
-        self.assertEqual((c.pr_class, c.feature, c.component), ("mini", "demo", "scope_engine"))
-
-    def test_classify_contract_change_pr(self):
-        c = cs.classify("feat/demo", "feat/demo--contract-v2")
-        self.assertEqual((c.pr_class, c.feature), ("contract", "demo"))
-
-    def test_classify_feature_landing(self):
-        c = cs.classify("master", "feat/demo")
-        self.assertEqual((c.pr_class, c.feature), ("landing", "demo"))
-
-    def test_classify_meta_pr(self):
-        self.assertEqual(cs.classify("master", "meta/mus-53-bootstrap").pr_class, "meta")
-
-    def test_classify_normal_pr_noop(self):
-        self.assertEqual(cs.classify("master", "musansht/mus-99-bugfix").pr_class, "normal")
-        self.assertEqual(cs.classify("master", "revert-12-something").pr_class, "normal")
-
-    def test_classify_malformed_head_under_feat_base_fails(self):
-        for head in ("fix-typo", "feat/other--alpha", "feat/demo-alpha", "feat/demo--"):
-            with self.assertRaises(cs.GateError, msg=head) as ctx:
-                cs.classify("feat/demo", head)
-            self.assertIn("workflow naming", str(ctx.exception))
-
-    def test_classify_stacked_base_rejected(self):
-        with self.assertRaises(cs.GateError) as ctx:
-            cs.classify("feat/demo--alpha", "feat/demo--alpha-fix")
-        self.assertIn("stacked", str(ctx.exception).lower())
-
-    def test_classify_cli_writes_github_output(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = make_feature_repo(Path(tmp))
-            out_file = Path(tmp) / "github_output"
-            proc = run_cli(
-                repo.root,
-                "--classify",
-                env_extra={
-                    "GITHUB_BASE_REF": "feat/demo",
-                    "GITHUB_HEAD_REF": "feat/demo--alpha",
-                    "GITHUB_OUTPUT": str(out_file),
-                },
-            )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            written = out_file.read_text()
-            self.assertIn("class=mini", written)
-            self.assertIn("feature=demo", written)
-            self.assertIn("component=alpha", written)
-
-    def test_classify_cli_malformed_exits_nonzero(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = make_feature_repo(Path(tmp))
-            proc = run_cli(
-                repo.root, "--classify", "--base", "feat/demo", "--head", "renamed-wrong"
-            )
-            self.assertEqual(proc.returncode, 1)
-            self.assertIn("workflow naming", proc.stdout + proc.stderr)
-
-
-# ---------------------------------------------------------------------------
-# mini-PR enforcement
-# ---------------------------------------------------------------------------
-
-
-class MiniPrGateTests(GateRepoTestCase):
-    def test_mini_diff_within_map_passes(self):
-        self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.implement_alpha()
-        self.repo.commit_all("implement alpha")
-        self.assert_gate(self.gate("feat/demo", "feat/demo--alpha"), 0, "PASS")
-
-    def test_mini_diff_outside_map_rejected_names_file(self):
-        self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.implement_alpha()
+    def implement_beta(self, be_marked=0, fe_todos=0):
         self.repo.write("project/app/services/demo_beta.py", service_stub("beta", True))
-        self.repo.commit_all("alpha + stray beta edit")
-        self.assert_gate(
-            self.gate("feat/demo", "feat/demo--alpha"),
-            1,
-            "diff outside component file map: project/app/services/demo_beta.py",
+        self.repo.write(
+            "project/app/tests_demo_beta.py", tests_module_src("beta", marked=be_marked)
         )
+        self.repo.write("frontend/tests/demo_beta.test.ts", fe_test_src("beta", todos=fe_todos))
 
-    def test_mini_touches_shared_file_rejected(self):
-        repo = make_feature_repo(
-            Path(tempfile.mkdtemp()), contract=contract_md(shared=["project/app/urls_demo.py"])
-        )
-        repo.branch("feat/demo--alpha", "feat/demo")
-        repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
-        repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=0))
-        repo.write("project/app/urls_demo.py", "urlpatterns = []\n")
-        repo.commit_all("alpha + shared edit")
-        proc = run_cli(repo.root, "--gate", "--base", "feat/demo", "--head", "feat/demo--alpha")
-        out = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 1, out)
-        self.assertIn("shared file", out)
-        self.assertIn("project/app/urls_demo.py", out)
-
-    def test_mini_touches_protected_path_rejected(self):
-        self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.implement_alpha()
-        self.repo.write("CLAUDE.md", "rewritten by a compliant-looking mini PR\n")
-        self.repo.commit_all("alpha + protected edit")
-        self.assert_gate(
-            self.gate("feat/demo", "feat/demo--alpha"), 1, "protected path", "CLAUDE.md"
-        )
-
-    def test_mini_component_not_declared_rejected(self):
-        self.repo.branch("feat/demo--gamma", "feat/demo")
-        self.repo.write("project/app/services/demo_gamma.py", service_stub("gamma", True))
-        self.repo.commit_all("undeclared component")
-        self.assert_gate(
-            self.gate("feat/demo", "feat/demo--gamma"), 1, "not declared in the contract file map"
-        )
-
-    def test_mini_contract_missing_rejected(self):
-        repo = Repo(Path(tempfile.mkdtemp()))
-        repo.write("README.md", "x\n")
-        repo.commit_all("base")
-        repo.branch("feat/nodemo", "master")
-        repo.write("project/app/services/x.py", "VALUE = 1\n")
-        repo.commit_all("feature without contract")
-        repo.branch("feat/nodemo--alpha", "feat/nodemo")
-        repo.write("project/app/services/x.py", "VALUE = 2\n")
-        repo.commit_all("mini without contract")
-        proc = run_cli(repo.root, "--gate", "--base", "feat/nodemo", "--head", "feat/nodemo--alpha")
-        out = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 1, out)
-        self.assertIn("contract missing: docs/contracts/nodemo.md", out)
-
-    def test_mini_test_module_rename_rejected_file_map_out_of_date(self):
-        self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
-        self.repo.move("project/app/tests_demo_alpha.py", "project/app/tests_demo_alpha2.py")
-        self.repo.write("project/app/tests_demo_alpha2.py", tests_module_src("alpha", marked=0))
-        self.repo.commit_all("rename test module")
-        self.assert_gate(
-            self.gate("feat/demo", "feat/demo--alpha"),
-            1,
-            "file map out of date",
-            "project/app/tests_demo_alpha.py",
-            "contract-change",
-        )
-
-    def test_mini_test_module_delete_rejected_file_map_out_of_date(self):
-        self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.implement_alpha()
-        self.repo.delete("project/app/tests_demo_alpha.py")
-        self.repo.commit_all("delete test module")
-        self.assert_gate(
-            self.gate("feat/demo", "feat/demo--alpha"),
-            1,
-            "file map out of date",
-            "project/app/tests_demo_alpha.py",
-        )
+    def implement_gamma(self, fe_todos=0):
+        self.repo.write("frontend/src/demo_gamma.ts", "export const gammaValue = () => 'ok';\n")
+        self.repo.write("frontend/tests/demo_gamma.test.ts", fe_test_src("gamma", todos=fe_todos))
 
 
 # ---------------------------------------------------------------------------
-# marker accounting (AST)
+# protected paths
 # ---------------------------------------------------------------------------
 
 
-class MarkerAccountingTests(GateRepoTestCase):
+class ProtectedPathTests(unittest.TestCase):
+    def test_gate_infrastructure_paths_are_protected(self):
+        for path in (
+            ".github/workflows/ci.yml",
+            ".github/workflows/workflow-gate.yml",
+            "scripts/check_scope.py",
+            "scripts/red_proof.py",
+            "scripts/tests/test_check_scope.py",
+            "scripts/tests/nested/deep.py",
+            "CLAUDE.md",
+            "docs/ci.md",
+            "docs/rulesets/master.json",
+            "evals/golden/cases.json",
+            "evals/baselines/rules.json",
+            "evals/run_rules_eval.py",
+            ".claude/skills/checkpointing-work/SKILL.md",
+            ".claude/skills/resuming-from-checkpoint/SKILL.md",
+            ".claude/skills/some-future-skill/references/detail.md",
+        ):
+            with self.subTest(path):
+                self.assertTrue(cs.is_protected(path))
+
+    def test_product_and_doc_paths_are_not_protected(self):
+        for path in (
+            "project/app/services/outreach.py",
+            "project/app/tests_demo_alpha.py",
+            "frontend/tests/demo_beta.test.ts",
+            "README.md",
+            "SECURITY.md",
+            "docs/plans/whatever.md",
+            "scripts/populate_demo_data.py",
+            "evals/run_copy_eval.py",
+            "requirements-dev.txt",
+            # Only the skills are protected under .claude/, not the whole
+            # directory — local settings stay editable outside a meta PR.
+            ".claude/settings.json",
+        ):
+            with self.subTest(path):
+                self.assertFalse(cs.is_protected(path))
+
+    def test_contracts_template_is_no_longer_protected(self):
+        # The contract machinery is gone; the template went with it, so the path
+        # must not linger in PROTECTED_PATHS as an unexplained tripwire.
+        self.assertFalse(cs.is_protected("docs/contracts/TEMPLATE.md"))
+        self.assertNotIn("docs/contracts/TEMPLATE.md", cs.PROTECTED_PATHS)
+
+    def test_directory_glob_requires_the_separator(self):
+        self.assertTrue(cs.is_protected("docs/rulesets/feat.json"))
+        self.assertFalse(cs.is_protected("docs/rulesets_notes.md"))
+        self.assertFalse(cs.is_protected("scripts/tests_helper.py"))
+        self.assertFalse(cs.is_protected(".claude/skills_notes.md"))
+
+    def test_exact_patterns_match_exactly(self):
+        self.assertFalse(cs.is_protected("CLAUDE.md.bak"))
+        self.assertFalse(cs.is_protected("docs/ci.md.orig"))
+        self.assertFalse(cs.is_protected("frontend/CLAUDE.md"))
+
+
+# ---------------------------------------------------------------------------
+# BE marker accounting (AST) + FE todo accounting (textual)
+# ---------------------------------------------------------------------------
+
+
+class MarkerAccountingTests(unittest.TestCase):
     def test_marker_count_qualified_decorator(self):
         self.assertEqual(cs.count_markers_in_source(tests_module_src("a", marked=2)), 2)
 
@@ -477,15 +310,243 @@ class MarkerAccountingTests(GateRepoTestCase):
         )
         self.assertEqual(cs.count_markers_in_source(src), 1)
 
-    def test_mini_own_module_zero_after_passes(self):
+    def test_marker_count_counts_class_level_marker(self):
+        src = (
+            "import unittest\n\n\n"
+            "@unittest.expectedFailure\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_a(self):\n"
+            "        self.assertEqual(1, 2)\n"
+        )
+        self.assertEqual(cs.count_markers_in_source(src), 1)
+
+    def test_marker_count_at_ref_missing_file_is_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_feature_repo(Path(tmp))
+            # The feature's modules do not exist on master — absent means zero
+            # red, which is what makes the landing delta rule work.
+            self.assertEqual(
+                cs.count_markers_at("master", "project/app/tests_demo_alpha.py", cwd=repo.root), 0
+            )
+            self.assertEqual(
+                cs.count_markers_at("feat/demo", "project/app/tests_demo_alpha.py", cwd=repo.root),
+                2,
+            )
+
+    def test_marker_count_at_ref_unparseable_raises_named_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_base_repo(Path(tmp))
+            repo.checkout("feat/demo")
+            repo.write("project/app/tests_broken.py", "class T(:\n")
+            repo.commit_all("syntactically broken test module")
+            with self.assertRaises(cs.GateError) as ctx:
+                cs.count_markers_at("feat/demo", "project/app/tests_broken.py", cwd=repo.root)
+            self.assertIn("marker-accounting", str(ctx.exception))
+
+
+class FeTodoCountingTests(unittest.TestCase):
+    def test_option_key_true_counts(self):
+        src = "test('x', { todo: true }, () => {});\n"
+        self.assertEqual(cs.count_fe_todos_in_source(src), 1)
+
+    def test_option_key_false_does_not_count(self):
+        src = "test('x', { todo: false }, () => {});\n"
+        self.assertEqual(cs.count_fe_todos_in_source(src), 0)
+
+    def test_option_key_string_reason_counts(self):
+        # node:test accepts a reason string; a reason is still a todo.
+        src = "test('x', { todo: 'blocked on the engine' }, () => {});\n"
+        self.assertEqual(cs.count_fe_todos_in_source(src), 1)
+
+    def test_option_key_tolerates_whitespace_variants(self):
+        for src in ("{todo:true}", "{ todo : true }", "{\n  todo: true,\n}"):
+            with self.subTest(src):
+                self.assertEqual(cs.count_fe_todos_in_source(src), 1)
+
+    def test_call_form_counts_every_runner_entry_point(self):
+        src = "test.todo('a');\nit.todo('b');\ndescribe.todo('c');\n"
+        self.assertEqual(cs.count_fe_todos_in_source(src), 3)
+
+    def test_call_form_tolerates_space_before_paren(self):
+        self.assertEqual(cs.count_fe_todos_in_source("test.todo ('a');\n"), 1)
+
+    def test_option_and_call_forms_add_up(self):
+        src = fe_test_src("beta", todos=2) + fe_test_src("beta", todos=1, style="call")
+        self.assertEqual(cs.count_fe_todos_in_source(src), 3)
+
+    def test_no_todos_is_zero(self):
+        self.assertEqual(cs.count_fe_todos_in_source(fe_test_src("beta", todos=0)), 0)
+        self.assertEqual(cs.count_fe_todos_in_source(""), 0)
+
+    def test_over_counting_is_pinned_deliberate_behaviour(self):
+        # The counter is textual so it can run on `git show` blobs. It therefore
+        # over-approximates: a todo-looking token in a comment counts. Pinned on
+        # purpose — over-counting fails loudly, under-counting would let a red
+        # test slip through a component gate silently.
+        self.assertEqual(cs.count_fe_todos_in_source("// todo: wire this up\n"), 1)
+        self.assertEqual(cs.count_fe_todos_in_source("/* obj.todo(x) in prose */\n"), 1)
+        # Upper-case TODO comments are the common case and do NOT count, so
+        # ordinary source comments stay quiet.
+        self.assertEqual(cs.count_fe_todos_in_source("// TODO: ordinary code comment\n"), 0)
+
+    def test_todo_count_at_ref_missing_file_is_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_feature_repo(Path(tmp))
+            self.assertEqual(
+                cs.count_fe_todos_at("master", "frontend/tests/demo_beta.test.ts", cwd=repo.root), 0
+            )
+            self.assertEqual(
+                cs.count_fe_todos_at(
+                    "feat/demo", "frontend/tests/demo_gamma.test.ts", cwd=repo.root
+                ),
+                2,
+            )
+
+
+# ---------------------------------------------------------------------------
+# artifact addressing
+# ---------------------------------------------------------------------------
+
+
+class ArtifactPathTests(unittest.TestCase):
+    def test_feature_slug_maps_dashes_and_case(self):
+        self.assertEqual(cs._feature_slug("mus-47"), "mus_47")
+        self.assertEqual(cs._feature_slug("MUS-47"), "mus_47")
+
+    def test_feature_slug_rejects_unmappable_names(self):
+        for feature in ("demo.v2", "demo/two", "demo two", "demo+"):
+            with self.subTest(feature), self.assertRaises(cs.GateError) as ctx:
+                cs._feature_slug(feature)
+            self.assertIn("feature-slug", str(ctx.exception))
+
+    def test_artifact_paths_are_feature_prefixed(self):
+        be, fe = cs._artifact_paths("mus-47", "scope_engine")
+        self.assertEqual(be, "project/app/tests_mus_47_scope_engine.py")
+        self.assertEqual(fe, "frontend/tests/mus_47_scope_engine.test.ts")
+
+    def test_artifact_paths_cannot_collide_with_a_product_module(self):
+        # The real risk this prefix exists to kill: a bare tests_<component>.py
+        # would bind to an existing product suite (e.g. tests_queue.py).
+        be, _ = cs._artifact_paths("mus-47", "queue")
+        self.assertNotEqual(be, "project/app/tests_queue.py")
+        self.assertEqual(be, "project/app/tests_mus_47_queue.py")
+
+
+# ---------------------------------------------------------------------------
+# classification
+# ---------------------------------------------------------------------------
+
+
+class ClassificationTests(unittest.TestCase):
+    def test_classify_skeleton_pr(self):
+        c = cs.classify("feat/demo", "feat/demo--skeleton")
+        self.assertEqual((c.pr_class, c.feature), ("skeleton", "demo"))
+
+    def test_classify_component_pr_extracts_component(self):
+        c = cs.classify("feat/demo", "feat/demo--scope_engine")
+        self.assertEqual(
+            (c.pr_class, c.feature, c.component), ("component", "demo", "scope_engine")
+        )
+
+    def test_classify_contract_is_now_an_ordinary_component_slug(self):
+        # The contract PR class is gone: nothing is special about the word.
+        c = cs.classify("feat/demo", "feat/demo--contract")
+        self.assertEqual((c.pr_class, c.component), ("component", "contract"))
+
+    def test_classify_rejects_dashed_component_slug(self):
+        with self.assertRaises(cs.GateError) as ctx:
+            cs.classify("feat/demo", "feat/demo--contract-v2")
+        self.assertIn("component slug", str(ctx.exception))
+
+    def test_classify_rejects_uppercase_component_slug(self):
+        with self.assertRaises(cs.GateError) as ctx:
+            cs.classify("feat/demo", "feat/demo--ScopeEngine")
+        self.assertIn("component slug", str(ctx.exception))
+
+    def test_classify_rejects_punctuated_component_slugs(self):
+        for head in ("feat/demo--alpha.v2", "feat/demo--alpha beta", "feat/demo--alpha+beta"):
+            with self.subTest(head), self.assertRaises(cs.GateError) as ctx:
+                cs.classify("feat/demo", head)
+            self.assertIn("component slug", str(ctx.exception))
+
+    def test_classify_accepts_digits_and_underscores_in_slug(self):
+        c = cs.classify("feat/mus-47", "feat/mus-47--scope_engine_2")
+        self.assertEqual((c.pr_class, c.component), ("component", "scope_engine_2"))
+
+    def test_classify_feature_landing(self):
+        c = cs.classify("master", "feat/demo")
+        self.assertEqual((c.pr_class, c.feature), ("landing", "demo"))
+
+    def test_classify_workflow_head_cannot_land_on_master(self):
+        with self.assertRaises(cs.GateError) as ctx:
+            cs.classify("master", "feat/demo--alpha")
+        self.assertIn("workflow naming", str(ctx.exception))
+
+    def test_classify_meta_pr(self):
+        self.assertEqual(cs.classify("master", "meta/workflow-rework").pr_class, "meta")
+
+    def test_classify_normal_pr_noop(self):
+        self.assertEqual(cs.classify("master", "musansht/mus-99-bugfix").pr_class, "normal")
+        self.assertEqual(cs.classify("master", "revert-12-something").pr_class, "normal")
+
+    def test_classify_malformed_head_under_feat_base_fails(self):
+        for head in ("fix-typo", "feat/other--alpha", "feat/demo-alpha", "feat/demo--"):
+            with self.subTest(head), self.assertRaises(cs.GateError) as ctx:
+                cs.classify("feat/demo", head)
+            self.assertIn("workflow naming", str(ctx.exception))
+
+    def test_classify_stacked_base_rejected(self):
+        with self.assertRaises(cs.GateError) as ctx:
+            cs.classify("feat/demo--alpha", "feat/demo--alpha_fix")
+        self.assertIn("stacked", str(ctx.exception).lower())
+
+    def test_classify_strips_ref_prefixes(self):
+        c = cs.classify("refs/heads/feat/demo", "origin/feat/demo--alpha")
+        self.assertEqual((c.pr_class, c.feature, c.component), ("component", "demo", "alpha"))
+
+    def test_classify_cli_writes_github_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_feature_repo(Path(tmp))
+            out_file = Path(tmp) / "github_output"
+            proc = run_cli(
+                repo.root,
+                "--classify",
+                env_extra={
+                    "GITHUB_BASE_REF": "feat/demo",
+                    "GITHUB_HEAD_REF": "feat/demo--alpha",
+                    "GITHUB_OUTPUT": str(out_file),
+                },
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            written = out_file.read_text()
+            self.assertIn("class=component", written)
+            self.assertIn("feature=demo", written)
+            self.assertIn("component=alpha", written)
+
+    def test_classify_cli_malformed_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_feature_repo(Path(tmp))
+            proc = run_cli(
+                repo.root, "--classify", "--base", "feat/demo", "--head", "renamed-wrong"
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("workflow naming", proc.stdout + proc.stderr)
+
+
+# ---------------------------------------------------------------------------
+# component-PR enforcement
+# ---------------------------------------------------------------------------
+
+
+class ComponentGateTests(GateRepoTestCase):
+    def test_be_only_component_zeroing_markers_passes_and_emits_targets(self):
         self.repo.branch("feat/demo--alpha", "feat/demo")
         self.implement_alpha()
-        self.repo.commit_all("markers to zero")
+        self.repo.commit_all("implement alpha")
         proc = self.gate("feat/demo", "feat/demo--alpha")
-        self.assert_gate(proc, 0, "PASS")
-        self.assertIn("project.app.tests_demo_alpha", proc.stdout + proc.stderr)
+        self.assert_gate(proc, 0, "PASS", "scoped test targets: project.app.tests_demo_alpha")
 
-    def test_mini_own_module_marker_remaining_rejected(self):
+    def test_be_marker_remaining_rejected(self):
         self.repo.branch("feat/demo--alpha", "feat/demo")
         self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
         self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=1))
@@ -494,20 +555,139 @@ class MarkerAccountingTests(GateRepoTestCase):
             self.gate("feat/demo", "feat/demo--alpha"),
             1,
             "1 expectedFailure marker(s) remaining in project/app/tests_demo_alpha.py",
+            "rule: markers-zero",
         )
 
-    def test_mini_sibling_marker_removed_rejected(self):
+    def test_fe_only_component_zeroing_todos_passes_without_targets(self):
+        self.repo.branch("feat/demo--gamma", "feat/demo")
+        self.implement_gamma(fe_todos=0)
+        self.repo.commit_all("implement gamma")
+        proc = self.gate("feat/demo", "feat/demo--gamma")
+        self.assert_gate(proc, 0, "PASS")
+        # No BE artifact -> no scoped suite to run; ci-ok's npm test covers FE.
+        self.assertNotIn("scoped test targets", proc.stdout + proc.stderr)
+
+    def test_fe_todo_remaining_rejected(self):
+        self.repo.branch("feat/demo--gamma", "feat/demo")
+        self.implement_gamma(fe_todos=1)
+        self.repo.commit_all("one todo left")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--gamma"),
+            1,
+            "1 FE todo(s) remaining in frontend/tests/demo_gamma.test.ts",
+            "rule: todos-zero",
+        )
+
+    def test_both_stack_component_must_zero_both(self):
+        self.repo.branch("feat/demo--beta", "feat/demo")
+        self.implement_beta(be_marked=0, fe_todos=0)
+        self.repo.commit_all("implement beta on both stacks")
+        self.assert_gate(self.gate("feat/demo", "feat/demo--beta"), 0, "PASS")
+
+    def test_both_stack_component_leaving_fe_red_rejected(self):
+        self.repo.branch("feat/demo--beta", "feat/demo")
+        self.implement_beta(be_marked=0, fe_todos=1)
+        self.repo.commit_all("beta BE done, FE still red")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--beta"),
+            1,
+            "FE todo(s) remaining in frontend/tests/demo_beta.test.ts",
+        )
+
+    def test_both_stack_component_leaving_be_red_rejected(self):
+        self.repo.branch("feat/demo--beta", "feat/demo")
+        self.implement_beta(be_marked=1, fe_todos=0)
+        self.repo.commit_all("beta FE done, BE still red")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--beta"),
+            1,
+            "expectedFailure marker(s) remaining in project/app/tests_demo_beta.py",
+        )
+
+    def test_component_with_no_artifact_at_base_rejected(self):
+        self.repo.branch("feat/demo--delta", "feat/demo")
+        self.repo.write("project/app/services/demo_delta.py", service_stub("delta", True))
+        self.repo.commit_all("component the skeleton never planted")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--delta"),
+            1,
+            "no test artifact for component 'delta'",
+            "rule: artifact-exists",
+        )
+
+    def test_component_cannot_self_create_its_artifact(self):
+        self.repo.branch("feat/demo--delta", "feat/demo")
+        # Bringing your own (already-green) artifact does not make you a
+        # component: the lookup is at base, so this is still artifact-exists.
+        self.repo.write("project/app/tests_demo_delta.py", tests_module_src("delta", marked=0))
+        self.repo.commit_all("PR plants its own artifact")
+        self.assert_gate(self.gate("feat/demo", "feat/demo--delta"), 1, "rule: artifact-exists")
+
+    def test_self_created_second_stack_artifact_is_swept_as_a_sibling(self):
+        # gamma owns only an FE artifact at base. A BE file appearing at gamma's
+        # BE artifact path is NOT its own artifact — it is swept like any
+        # sibling, so smuggling fresh red in there fails.
+        self.repo.branch("feat/demo--gamma", "feat/demo")
+        self.implement_gamma(fe_todos=0)
+        self.repo.write("project/app/tests_demo_gamma.py", tests_module_src("gamma", marked=1))
+        self.repo.commit_all("gamma green on FE but plants a red BE module")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--gamma"),
+            1,
+            "project/app/tests_demo_gamma.py",
+            "rule: sibling-frozen",
+        )
+
+    def test_artifact_deletion_rejected(self):
         self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.implement_alpha()
-        self.repo.write("project/app/tests_demo_beta.py", tests_module_src("beta", marked=0))
-        self.repo.commit_all("alpha done but beta marker removed")
+        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
+        self.repo.delete("project/app/tests_demo_alpha.py")
+        self.repo.commit_all("delete the artifact instead of greening it")
         self.assert_gate(
             self.gate("feat/demo", "feat/demo--alpha"),
             1,
-            "marker count changed in sibling module project/app/tests_demo_beta.py",
+            "project/app/tests_demo_alpha.py",
+            "rule: artifact-current",
         )
 
-    def test_mini_marker_added_anywhere_rejected(self):
+    def test_artifact_rename_rejected(self):
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
+        self.repo.move("project/app/tests_demo_alpha.py", "project/app/tests_demo_alpha2.py")
+        self.repo.write("project/app/tests_demo_alpha2.py", tests_module_src("alpha", marked=0))
+        self.repo.commit_all("rename the artifact")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--alpha"),
+            1,
+            "project/app/tests_demo_alpha.py",
+            "rule: artifact-current",
+        )
+
+    def test_sibling_be_marker_change_rejected(self):
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.implement_alpha()
+        self.repo.write("project/app/tests_demo_beta.py", tests_module_src("beta", marked=0))
+        self.repo.commit_all("alpha done but beta's marker removed")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--alpha"),
+            1,
+            "expectedFailure marker count changed in sibling test file "
+            "project/app/tests_demo_beta.py (1 -> 0)",
+        )
+
+    def test_sibling_fe_todo_tampering_rejected(self):
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.implement_alpha()
+        self.repo.write("frontend/tests/demo_gamma.test.ts", fe_test_src("gamma", todos=1))
+        self.repo.commit_all("alpha done but gamma's todo quietly removed")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--alpha"),
+            1,
+            "FE todo count changed in sibling test file frontend/tests/demo_gamma.test.ts (2 -> 1)",
+            "rule: sibling-frozen",
+        )
+
+    def test_new_red_added_anywhere_else_rejected(self):
         self.repo.branch("feat/demo--alpha", "feat/demo")
         self.implement_alpha()
         self.repo.write("project/app/tests_extra.py", tests_module_src("extra", marked=1))
@@ -515,12 +695,79 @@ class MarkerAccountingTests(GateRepoTestCase):
         self.assert_gate(
             self.gate("feat/demo", "feat/demo--alpha"),
             1,
-            "marker count changed in sibling module project/app/tests_extra.py",
+            "sibling test file project/app/tests_extra.py (0 -> 1)",
         )
+
+    def test_baseline_marker_may_not_be_touched_by_a_component(self):
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.implement_alpha()
+        self.repo.write("project/app/tests_baseline.py", tests_module_src("baseline", marked=0))
+        self.repo.commit_all("alpha done but the permanent baseline was 'cleaned up'")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--alpha"),
+            1,
+            "project/app/tests_baseline.py (1 -> 0)",
+        )
+
+    def test_protected_path_rejected(self):
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.implement_alpha()
+        self.repo.write("CLAUDE.md", "rewritten by a compliant-looking component PR\n")
+        self.repo.commit_all("alpha + protected edit")
+        self.assert_gate(
+            self.gate("feat/demo", "feat/demo--alpha"),
+            1,
+            "protected path modified: CLAUDE.md",
+            "rule: protected-paths",
+        )
+
+    def test_component_may_touch_any_non_protected_file(self):
+        # File-map scoping and shared-file rejection are deleted by design:
+        # sequential work, human merges, and frozen sibling tests are the
+        # mitigations, and this is documented as review-owned.
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.implement_alpha()
+        self.repo.write("project/app/services/demo_beta.py", service_stub("beta", True))
+        self.repo.write("project/app/urls_demo.py", "urlpatterns = []\n")
+        self.repo.write("README.md", "demo repo, documented\n")
+        self.repo.commit_all("alpha plus edits a file map would have blocked")
+        self.assert_gate(self.gate("feat/demo", "feat/demo--alpha"), 0, "PASS")
+
+    def test_repeat_component_pr_passes_with_no_red_left_to_clear(self):
+        # The fix/undo path on a feature branch: alpha already landed green, and
+        # a corrective PR for the same component must still be legal.
+        self.repo.checkout("feat/demo")
+        self.implement_alpha()
+        self.repo.commit_all("alpha landed")
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True) + "\n")
+        self.repo.commit_all("corrective follow-up for alpha")
+        self.assert_gate(self.gate("feat/demo", "feat/demo--alpha"), 0, "PASS")
+
+    def test_unmappable_feature_name_rejected(self):
+        repo = make_base_repo(Path(tempfile.mkdtemp()))
+        repo.branch("feat/demo.v2", "master")
+        repo.commit_all("feature with an unmappable name")
+        repo.branch("feat/demo.v2--alpha", "feat/demo.v2")
+        repo.write("project/app/services/x.py", "VALUE = 1\n")
+        repo.commit_all("component under an unmappable feature")
+        proc = run_cli(
+            repo.root, "--gate", "--base", "feat/demo.v2", "--head", "feat/demo.v2--alpha"
+        )
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertIn("rule: feature-slug", out)
+
+    def test_local_self_check_shorthand_gates_head(self):
+        self.repo.branch("feat/demo--alpha", "feat/demo")
+        self.implement_alpha()
+        self.repo.commit_all("implement alpha")
+        proc = run_cli(self.repo.root, "--gate", "--base", "feat/demo", "--component", "alpha")
+        self.assert_gate(proc, 0, "PASS", "component 'alpha'")
 
 
 # ---------------------------------------------------------------------------
-# skeleton exemption
+# skeleton PRs: red delta, not absolute markers
 # ---------------------------------------------------------------------------
 
 
@@ -528,128 +775,132 @@ class SkeletonGateTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.repo = Repo(Path(tmp.name))
-        self.repo.write("README.md", "x\n")
-        self.repo.write("CLAUDE.md", "doc\n")
-        self.repo.commit_all("base")
-        self.repo.branch("feat/demo", "master")
-        self.repo.commit_all("feature branch start")
-
-    def skeleton_payload(self):
-        self.repo.write("docs/contracts/demo.md", contract_md())
-        for comp in ("alpha", "beta", "assembly"):
-            self.repo.write(f"project/app/services/demo_{comp}.py", service_stub(comp))
-            self.repo.write(f"project/app/tests_demo_{comp}.py", tests_module_src(comp, marked=1))
+        self.repo = make_base_repo(Path(tmp.name))
+        self.repo.branch("feat/demo--skeleton", "feat/demo")
 
     def run_gate(self):
         return run_cli(
             self.repo.root, "--gate", "--base", "feat/demo", "--head", "feat/demo--skeleton"
         )
 
-    def test_skeleton_may_add_markers(self):
-        self.repo.branch("feat/demo--skeleton", "feat/demo")
-        self.skeleton_payload()
-        self.repo.commit_all("skeleton with markers")
-        proc = self.run_gate()
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-
-    def test_skeleton_scope_check_skipped_contract_still_required(self):
-        self.repo.branch("feat/demo--skeleton", "feat/demo")
-        self.skeleton_payload()
-        # Files no component claims: fine for a skeleton (scope check skipped).
-        self.repo.write("project/app/serializers_demo.py", "# unclaimed scaffolding\n")
-        self.repo.commit_all("skeleton with unclaimed file")
-        proc = self.run_gate()
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-
-        # ... but a skeleton with no contract at all is rejected.
-        self.repo.git("rm", "-q", "docs/contracts/demo.md")
-        self.repo.commit_all("drop the contract")
-        proc = self.run_gate()
+    def assert_gate(self, proc, code, *fragments):
         out = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 1, out)
-        self.assertIn("contract missing: docs/contracts/demo.md", out)
+        self.assertEqual(
+            proc.returncode, code, f"exit {proc.returncode}, expected {code}\n--- output ---\n{out}"
+        )
+        for fragment in fragments:
+            self.assertIn(fragment, out)
+
+    def test_skeleton_adding_be_markers_passes(self):
+        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha"))
+        self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=2))
+        self.repo.commit_all("skeleton with BE markers")
+        self.assert_gate(self.run_gate(), 0, "PASS")
+
+    def test_skeleton_adding_only_fe_todos_passes(self):
+        # An FE-only skeleton has no BE markers at all; the delta spans both
+        # stacks, so it is still a legitimate skeleton.
+        self.repo.write(
+            "frontend/src/demo_gamma.ts", "export const gammaValue = () => 'pending';\n"
+        )
+        self.repo.write("frontend/tests/demo_gamma.test.ts", fe_test_src("gamma", todos=2))
+        self.repo.commit_all("FE-only skeleton")
+        self.assert_gate(self.run_gate(), 0, "PASS")
+
+    def test_marker_neutral_skeleton_rejected_despite_the_baseline(self):
+        # The whole point of the delta rule: master already carries a permanent
+        # marker, so "markers exist" proves nothing. A skeleton that changes no
+        # red must fail even though the absolute count is non-zero.
+        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha"))
+        self.repo.write("docs/notes.md", "some scaffolding prose\n")
+        self.repo.commit_all("stubs and prose, no red")
+        self.assert_gate(
+            self.run_gate(),
+            1,
+            "skeleton PR changes no red tests",
+            "total 1 at both base and head",
+            "rule: skeleton-delta",
+        )
+
+    def test_removal_only_skeleton_passes(self):
+        # Re-skeletoning mid-feature may legitimately retire a red test; a
+        # negative delta is still a delta.
+        self.repo.write("project/app/tests_baseline.py", tests_module_src("baseline", marked=0))
+        self.repo.commit_all("retire a red test")
+        self.assert_gate(self.run_gate(), 0, "PASS")
+
+    def test_skeleton_may_create_unclaimed_files(self):
+        # No file map exists any more, so a skeleton may scaffold anything
+        # non-protected as long as it moves the red count.
+        self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=1))
+        self.repo.write("project/app/serializers_demo.py", "# unclaimed scaffolding\n")
+        self.repo.write("frontend/src/whatever.ts", "export const x = 1;\n")
+        self.repo.commit_all("skeleton with unclaimed files")
+        self.assert_gate(self.run_gate(), 0, "PASS")
 
     def test_skeleton_protected_path_still_rejected(self):
-        self.repo.branch("feat/demo--skeleton", "feat/demo")
-        self.skeleton_payload()
+        self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=1))
         self.repo.write("CLAUDE.md", "skeleton tries to rewrite the rules\n")
         self.repo.commit_all("skeleton touching protected path")
-        proc = self.run_gate()
-        out = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 1, out)
-        self.assertIn("protected path", out)
-        self.assertIn("CLAUDE.md", out)
+        self.assert_gate(self.run_gate(), 1, "protected path modified: CLAUDE.md")
 
 
 # ---------------------------------------------------------------------------
-# feature landing
+# feature landing: per-file delta (head <= base)
 # ---------------------------------------------------------------------------
 
 
 class FeatureLandingTests(GateRepoTestCase):
-    def finish_feature(self, leave_assembly_marker=False):
+    def finish_feature(self, be_marked=0, fe_todos=0):
         self.repo.checkout("feat/demo")
-        for comp in ("alpha", "beta", "assembly"):
-            self.repo.write(f"project/app/services/demo_{comp}.py", service_stub(comp, True))
-            marked = 1 if (comp == "assembly" and leave_assembly_marker) else 0
-            self.repo.write(f"project/app/tests_demo_{comp}.py", tests_module_src(comp, marked))
+        self.implement_alpha()
+        self.implement_beta(be_marked=be_marked, fe_todos=fe_todos)
+        self.implement_gamma(fe_todos=fe_todos)
         self.repo.commit_all("feature complete")
 
-    def test_landing_zero_markers_passes(self):
+    def test_landing_with_no_red_left_passes(self):
         self.finish_feature()
         self.assert_gate(self.gate("master", "feat/demo"), 0, "PASS")
 
-    def test_landing_surviving_marker_rejected_names_module(self):
-        self.finish_feature(leave_assembly_marker=True)
+    def test_landing_preserves_the_permanent_baseline(self):
+        # The regression this rule exists to prevent: an absolute-zero landing
+        # check would demand master's documented KNOWN GAP xfail be deleted, and
+        # would block every future landing forever.
+        self.finish_feature()
+        self.assertEqual(
+            cs.count_markers_at("feat/demo", "project/app/tests_baseline.py", cwd=self.repo.root), 1
+        )
+        self.assert_gate(self.gate("master", "feat/demo"), 0, "PASS")
+
+    def test_landing_surviving_be_marker_rejected_names_file(self):
+        self.finish_feature(be_marked=1)
         self.assert_gate(
             self.gate("master", "feat/demo"),
             1,
-            "markers remain across feature test modules: project/app/tests_demo_assembly.py",
+            "expectedFailure marker count increased in project/app/tests_demo_beta.py (0 -> 1)",
+            "rule: landing-delta",
         )
 
-
-# ---------------------------------------------------------------------------
-# contract-change PRs
-# ---------------------------------------------------------------------------
-
-
-class ContractChangeTests(GateRepoTestCase):
-    def test_contract_change_shape_allowed(self):
-        self.repo.branch("feat/demo--contract-v2", "feat/demo")
-        self.repo.write("docs/contracts/demo.md", contract_md() + "\nRevised interface note.\n")
-        self.repo.write(
-            "project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=2, plain_tests=1)
-        )
-        self.repo.commit_all("contract revision + updated expectations")
-        self.assert_gate(self.gate("feat/demo", "feat/demo--contract-v2"), 0, "PASS")
-
-    def test_contract_change_marker_add_with_contract_diff_allowed(self):
-        self.repo.branch("feat/demo--contract-v2", "feat/demo")
-        self.repo.write("docs/contracts/demo.md", contract_md() + "\nNew alpha surface.\n")
-        self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=3))
-        self.repo.commit_all("contract grows, marker added")
-        self.assert_gate(self.gate("feat/demo", "feat/demo--contract-v2"), 0, "PASS")
-
-    def test_contract_change_marker_add_without_contract_diff_rejected(self):
-        self.repo.branch("feat/demo--contract-v2", "feat/demo")
-        self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=3))
-        self.repo.commit_all("marker added with no contract change")
+    def test_landing_surviving_fe_todo_rejected_names_file(self):
+        self.finish_feature(fe_todos=1)
         self.assert_gate(
-            self.gate("feat/demo", "feat/demo--contract-v2"), 1, "paired contract diff"
-        )
-
-    def test_contract_change_touching_implementation_rejected(self):
-        self.repo.branch("feat/demo--contract-v2", "feat/demo")
-        self.repo.write("docs/contracts/demo.md", contract_md() + "\nRevision.\n")
-        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
-        self.repo.commit_all("contract change smuggling implementation")
-        self.assert_gate(
-            self.gate("feat/demo", "feat/demo--contract-v2"),
+            self.gate("master", "feat/demo"),
             1,
-            "may only touch",
-            "project/app/services/demo_alpha.py",
+            "FE todo count increased in frontend/tests/demo_gamma.test.ts (0 -> 1)",
+            "rule: landing-delta",
         )
+
+    def test_landing_may_reduce_red_below_the_baseline(self):
+        self.finish_feature()
+        self.repo.write("project/app/tests_baseline.py", tests_module_src("baseline", marked=0))
+        self.repo.commit_all("also retire the baseline xfail")
+        self.assert_gate(self.gate("master", "feat/demo"), 0, "PASS")
+
+    def test_landing_protected_path_rejected(self):
+        self.finish_feature()
+        self.repo.write("docs/ci.md", "a feature branch rewriting the enforcement docs\n")
+        self.repo.commit_all("protected edit on the feature branch")
+        self.assert_gate(self.gate("master", "feat/demo"), 1, "protected path modified: docs/ci.md")
 
 
 # ---------------------------------------------------------------------------
@@ -660,8 +911,7 @@ class ContractChangeTests(GateRepoTestCase):
 class EdgeTests(GateRepoTestCase):
     def test_empty_diff_noop_success(self):
         self.repo.branch("feat/demo--alpha", "feat/demo")
-        proc = self.gate("feat/demo", "feat/demo--alpha")
-        self.assert_gate(proc, 0, "empty diff")
+        self.assert_gate(self.gate("feat/demo", "feat/demo--alpha"), 0, "empty diff")
 
     def test_docs_only_pr_to_master_noop_success(self):
         self.repo.branch("docs/readme-tweak", "master")
@@ -677,14 +927,20 @@ class EdgeTests(GateRepoTestCase):
 
     def test_failure_messages_name_file_and_rule(self):
         self.repo.branch("feat/demo--alpha", "feat/demo")
-        self.implement_alpha()
-        self.repo.write("project/app/services/demo_beta.py", service_stub("beta", True))
-        self.repo.commit_all("out-of-map edit")
+        self.repo.write("project/app/services/demo_alpha.py", service_stub("alpha", True))
+        self.repo.write("project/app/tests_demo_alpha.py", tests_module_src("alpha", marked=1))
+        self.repo.commit_all("marker left behind")
         proc = self.gate("feat/demo", "feat/demo--alpha")
         out = proc.stdout + proc.stderr
         self.assertEqual(proc.returncode, 1, out)
-        self.assertIn("project/app/services/demo_beta.py", out)
+        self.assertIn("project/app/tests_demo_alpha.py", out)
         self.assertIn("rule:", out)
+
+    def test_unresolvable_base_ref_reports_cleanly(self):
+        proc = self.gate("feat/nonexistent", "feat/nonexistent--alpha")
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertIn("cannot resolve git ref", out)
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +954,18 @@ def _job_check_name(jobs, job_id):
 
 
 class ConsistencyTests(unittest.TestCase):
+    def test_checkpoint_skills_named_by_claude_md_exist_in_the_repo(self):
+        # CLAUDE.md points at these two skills by name as the checkpoint and
+        # resume mechanism. They live in the repo precisely so that reference
+        # is never dangling for an agent working from a clean clone.
+        claude_md = (REPO_ROOT / "CLAUDE.md").read_text()
+        for slug in ("checkpointing-work", "resuming-from-checkpoint"):
+            with self.subTest(slug):
+                skill = REPO_ROOT / ".claude" / "skills" / slug / "SKILL.md"
+                self.assertTrue(skill.is_file(), f"{skill} is missing")
+                self.assertIn(f"name: {slug}", skill.read_text())
+                self.assertIn(slug, claude_md)
+
     def test_workflow_yamls_parse(self):
         for rel in (".github/workflows/ci.yml", ".github/workflows/workflow-gate.yml"):
             with self.subTest(rel):

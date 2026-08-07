@@ -1,6 +1,6 @@
-# CI + merge enforcement (MUS-53)
+# CI + merge enforcement (MUS-53, reworked in MUS-64)
 
-How the contract → skeleton → mini-PR workflow (see `CLAUDE.md`) is mechanically
+How the Linear-driven skeleton → component-PR workflow (see `CLAUDE.md`) is mechanically
 enforced, and how to reproduce the out-of-repo parts. Governing principle: *an
 instruction is a hope; a gate is a fact.*
 
@@ -9,7 +9,7 @@ instruction is a hope; a gate is a fact.*
 | Check | Workflow | What it summarizes |
 |---|---|---|
 | `ci-ok` | `.github/workflows/ci.yml` | lint, mypy, frontend, the py×db test matrix, rules-eval, gate-tests — one stable name over all matrix legs |
-| `workflow-gate` | `.github/workflows/workflow-gate.yml` | classify → scope-gate (+ scoped mini tests, landing rules-eval) → red-proof (skeletons) → aggregate |
+| `workflow-gate` | `.github/workflows/workflow-gate.yml` | classify → scope-gate (+ scoped component tests, landing rules-eval) → red-proof (skeletons) → aggregate |
 
 Both are aggregator jobs with `if: always()`; they can be red but never absent.
 `workflow-gate` has **no branch/path filters** — it runs on every PR and no-ops with
@@ -31,7 +31,7 @@ branches are single-level by construction):
 - block force pushes,
 - **zero bypass actors** — "forced to pass" includes the admin, or it's theater.
 
-The `feat/*` ruleset **excludes `refs/heads/feat/*--*`** — the skeleton/mini/contract PR
+The `feat/*` ruleset **excludes `refs/heads/feat/*--*`** — the skeleton and component PR
 *head* branches. Those are where development pushes happen; putting a pull-request rule on
 them would reject every push and kill the workflow. The enforcement boundary is the
 integration branch `feat/<x>` (and `master`): a head branch only becomes code via a gated
@@ -98,10 +98,11 @@ deliberately out of scope here (MUS-54).
 
 - **On `master`**: GitHub's revert button works — `revert-*` heads classify as Normal PRs,
   the gate no-ops, plain CI still applies.
-- **On `feat/<x>`**: revert PRs do *not* work, by design. A GitHub-generated `revert-…`
-  head fails workflow naming, and reverting a merged mini PR would re-add markers, which
-  mini-class accounting forbids. The undo path on a feature branch is a corrected mini PR
-  for the same component (or recreating the feature branch from `master`).
+- **On `feat/<x>`**: revert PRs do *not* work, by design — a GitHub-generated `revert-…`
+  head fails workflow naming. The undo path on a feature branch is a corrected **component
+  PR for the same component** (or recreating the feature branch from `master`). That path
+  is deliberately open: the component gate does not require any red at base, so a repeat
+  PR with nothing left to clear passes.
 
 ## Operational notes
 
@@ -113,8 +114,25 @@ deliberately out of scope here (MUS-54).
   Direct README pushes to master from CI are gone — a no-bypass ruleset forbids them.
 - **Protected paths** are hardcoded in `scripts/check_scope.py` (list reproduced in
   `CLAUDE.md`). They include `evals/golden/**`, `evals/baselines/**`, and
-  `evals/run_rules_eval.py`, so a contract cannot claim the very baseline the landing gate
-  checks; the cost is that a deliberate baseline update rides a `meta/**` PR, separate
-  from the product change that motivated it.
-- **Local self-check** before pushing a mini PR:
+  `evals/run_rules_eval.py`, so a component PR cannot edit the very baseline the landing
+  gate checks; the cost is that a deliberate baseline update rides a `meta/**` PR, separate
+  from the product change that motivated it. `.claude/skills/**` is protected on the same
+  logic as `CLAUDE.md`: the checkpoint and resume skills encode the workflow's own
+  stop-and-resume protocol, so the branch class being gated must not be able to edit them.
+  The pattern is deliberately narrower than `.claude/**` — `.claude/settings.json` is local
+  tooling config and stays editable from any branch.
+- **No FE scoped-test step, on purpose.** The gate runs the scoped *backend* suite for a
+  component PR (`manage.py test project.app.<module>`) but nothing equivalent for the
+  frontend: `npm test` under `ci-ok` already runs every `frontend/tests/*.test.ts` on
+  every PR, so a second run inside `workflow-gate` would buy nothing. The gate's frontend
+  job is accounting — todo counts to zero for the component, frozen everywhere else —
+  while `ci-ok` is the real-run enforcement. Consequence: the gate emits `test_targets`
+  only when the component has a backend artifact, and an FE-only component PR passes the
+  scope gate with no scoped step at all.
+- **Landing staleness.** The landing gate compares red counts per file between
+  `origin/master` and the feature head. If `master`'s baseline moved after the branch was
+  cut (a `meta/**` or normal PR can legitimately change marker counts), a stale feature
+  branch can read as an increase it never made. "Update branch" on the PR — or a merge
+  from `master` — re-bases the comparison and the delta reads true.
+- **Local self-check** before pushing a component PR:
   `python scripts/check_scope.py --base origin/feat/<x> --component <component>`.

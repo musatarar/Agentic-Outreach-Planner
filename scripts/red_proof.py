@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Red-proof (MUS-53 §8): prove a skeleton's marked tests fail for the right reason.
+"""Red-proof (MUS-64): prove a skeleton's marked tests fail for the right reason.
 
 The skeleton's expectedFailure-marked tests are what every downstream gate
 measures against, so their genuineness cannot rest on an instruction in
@@ -8,7 +8,8 @@ red" ritual:
 
 1. AST-transform the *working copy* (uncommitted) to remove every
    ``@unittest.expectedFailure`` / bare ``@expectedFailure`` marker in the
-   feature's test modules (from the contract's file map).
+   target test modules (``--modules``, defaulting to every backend test module
+   in the checkout — there is no contract or file map to read them from).
 2. Run each marked module for real via ``manage.py test`` with a JSON-recording
    test runner.
 3. Classify every formerly-marked test:
@@ -19,9 +20,13 @@ red" ritual:
    - any other error type      -> FAIL, naming the test (conservative)
 4. Emit a module -> red-count summary table to the job log.
 
+No markers anywhere is a PASS no-op, not a failure: a frontend-only skeleton has
+nothing here to prove, and whether a skeleton went red *at all* is the skeleton
+gate's question (its red delta spans both stacks), not this script's.
+
 Usage::
 
-    python scripts/red_proof.py --contract docs/contracts/<feature>.md
+    python scripts/red_proof.py [--modules project/app/tests_x.py ...]
 
 Runs from the repository root. CI runs it on skeleton PRs only; the checkout is
 disposable there. Locally, note that it rewrites the marked test modules in
@@ -189,7 +194,7 @@ def _classify_module(dotted, records, marked):
         elif status == "pass":
             problems.append(
                 f"vacuous: {record_id} passes once its marker is stripped — a marked test "
-                "must fail against the contract"
+                "must fail against the unimplemented stub it targets"
             )
         elif status == "error":
             problems.append(
@@ -209,6 +214,20 @@ def _classify_module(dotted, records, marked):
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+
+
+def discover_default_modules():
+    """-> sorted repo-relative paths of every backend test module in the checkout.
+
+    The default target set when ``--modules`` is omitted. Deliberately the same
+    non-recursive glob the gate's own marker sweep uses
+    (``check_scope.TEST_MODULE_GLOB``), so red-proof and the skeleton gate can
+    never disagree about which modules count. Pure: a filesystem read, no git.
+    """
+    return sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in REPO_ROOT.glob(check_scope.TEST_MODULE_GLOB)
+    )
 
 
 def _run_module(dotted, python, manage):
@@ -234,23 +253,17 @@ def _run_module(dotted, python, manage):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--contract", required=True, help="path to docs/contracts/<feature>.md")
+    parser.add_argument(
+        "--modules",
+        nargs="*",
+        metavar="PATH",
+        help="repo-relative test modules to prove (default: every project/app/tests*.py)",
+    )
     parser.add_argument("--manage", default="manage.py", help="path to manage.py")
     parser.add_argument("--python", default=sys.executable, help="python interpreter to use")
     args = parser.parse_args(argv)
 
-    text = Path(args.contract).read_text(encoding="utf-8")
-    try:
-        fmap = check_scope.parse_file_map(text)
-    except check_scope.FileMapError as exc:
-        print(f"red-proof: FAIL — cannot read the contract file map: {exc}")
-        return 1
-
-    modules = []
-    for spec in fmap.components.values():
-        for test_path in spec["tests"]:
-            if test_path not in modules:
-                modules.append(test_path)
+    modules = discover_default_modules() if args.modules is None else args.modules
 
     marked_by_module = {}
     for test_path in modules:
@@ -269,11 +282,10 @@ def main(argv=None):
             path.write_text(stripped, encoding="utf-8")
 
     if not marked_by_module:
-        print(
-            "red-proof: FAIL — no expectedFailure markers found in any feature test module; "
-            "a skeleton must define red tests to prove"
-        )
-        return 1
+        # Nothing to prove is not a failure — see the module docstring. The
+        # skeleton gate is what refuses a skeleton that went red nowhere.
+        print("red-proof: PASS — no expectedFailure markers found; nothing to prove")
+        return 0
 
     all_problems = []
     summary = []

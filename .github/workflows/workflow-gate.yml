@@ -3,9 +3,9 @@ name: Workflow gate
 # One workflow, triggered on EVERY PR, one required check name: workflow-gate.
 # No branches/paths filter, ever — a required check that never triggers blocks
 # its PR forever, so the gate always runs, classifies the PR in Python
-# (scripts/check_scope.py), and no-ops with success when the contract workflow
-# doesn't apply. This YAML contains sequencing only; every verdict lives in
-# tested Python.
+# (scripts/check_scope.py), and no-ops with success when the skeleton/component
+# workflow doesn't apply. This YAML contains sequencing only; every verdict
+# lives in tested Python.
 
 on:
   pull_request:
@@ -48,8 +48,11 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - id: gate
         run: python scripts/check_scope.py --gate
-      - name: Scoped test run (mini PRs)
-        if: needs.classify.outputs.class == 'mini' && steps.gate.outputs.test_targets != ''
+      # BE only. The FE counterpart is ci-ok's `npm test`, which runs the whole
+      # frontend suite on every PR — a component's FE todos going green is
+      # proven there, not by a second scoped step here.
+      - name: Scoped test run (component PRs)
+        if: needs.classify.outputs.class == 'component' && steps.gate.outputs.test_targets != ''
         run: python manage.py test ${{ steps.gate.outputs.test_targets }}
       - name: Rules-eval baseline holds (feature landing)
         if: needs.classify.outputs.class == 'landing'
@@ -69,7 +72,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: python scripts/red_proof.py --contract "docs/contracts/${{ needs.classify.outputs.feature }}.md"
+      # No --modules: red-proof sweeps every project/app/tests*.py itself, and
+      # passes as a no-op when nothing is marked (an FE-only skeleton). Whether
+      # the skeleton went red at all is the scope-gate's delta rule, not this.
+      - run: python scripts/red_proof.py
 
   # The single required check name. Fails unless every needed job succeeded or
   # was legitimately skipped for the class (red-proof only exists for
