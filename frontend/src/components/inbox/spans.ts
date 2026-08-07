@@ -6,7 +6,7 @@ import { subjectLabelLength } from './draftText';
  *
  * Pure, and deliberately kept free of JSX so it can be exercised on its own.
  *
- * Three edges from CONTRACT §9.1 and §9.2 live here:
+ * Three edges.2 live here:
  *
  *  (a) Offsets are Unicode CODE POINT indices, because Python's `re` yields
  *      those. JavaScript's `String.prototype.slice` counts UTF-16 code units,
@@ -127,7 +127,7 @@ export function misalignedClaims(report: VerificationReport): VerificationClaim[
 /**
  * Which claim is stopping approval.
  *
- * CONTRACT §4.4 (amended): `can_approve` has two independent causes that
+ * `can_approve` has two independent causes that
  * compose — no unverified claims, AND no `unauthorized_offer` claim. An offer
  * does not count toward the `N of M` ratio, so a draft can legitimately read
  * `4 of 4 claims verified` and still be blocked. That is not a bug to

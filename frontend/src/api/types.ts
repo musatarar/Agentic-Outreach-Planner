@@ -1,6 +1,6 @@
 /**
  * Mirrors the DRF serializers in project/app/serializers.py. The backend is a
- * frozen contract for this app — see CONTRACT.md.
+ * frozen contract for this app
  */
 
 export type Priority = 1 | 2 | 3;
@@ -315,7 +315,7 @@ export interface VerificationReport {
   /** The EXACT string the offsets index into. Render THIS, never a local copy. */
   copy: string;
   copy_length: number;
-  /** false => convert offsets with Array.from() before slicing. See CONTRACT 9.1. */
+  /** false => convert offsets with Array.from() before slicing. */
   is_astral_safe: boolean;
   verified_count: number;
   unverified_count: number;

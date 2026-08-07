@@ -3,8 +3,8 @@ import { useEffect, useRef } from 'react';
 /**
  * Global keyboard shortcuts.
  *
- * MUS-40 owns this file, but it is a **shared dependency**: CONTRACT §9.13
- * requires MUS-38 and MUS-41 to bind through it rather than adding their own
+ * MUS-40 owns this file, but it is a **shared dependency**: every other page
+ * binds through it rather than adding its own
  * `keydown` listeners, because the guard below is the thing that stops typing
  * "snooze" into an email field from firing S, X and E.
  *
@@ -76,7 +76,7 @@ export function useHotkeys(map: HotkeyMap, options: UseHotkeysOptions = {}): voi
 
       const combo = hotkeyCombo(event);
 
-      // CONTRACT §9.13. The whole point of this hook.
+      // The whole point of this hook.
       if (isTextEntryTarget(document.activeElement) && !TEXT_ENTRY_ALLOWED.has(combo)) {
         return;
       }

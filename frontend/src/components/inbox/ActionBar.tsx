@@ -18,8 +18,8 @@ const BLOCKER_BUTTON = {
 export interface ActionBarProps {
   report: VerificationReport;
   /**
-   * The server's verdict, taken whole. CONTRACT §9.3 and §4.4: the frontend
-   * never counts claims and never recomputes this from the summary. The two
+   * The server's verdict, taken whole: the frontend never counts claims and
+   * never recomputes this from the summary. The two
    * answer different questions — a draft can read `4 of 4 claims verified` and
    * still be blocked, because an unauthorized offer does not count toward the
    * ratio but does block approval.
@@ -35,7 +35,7 @@ export interface ActionBarProps {
   /** Back to `suggested_copy` via POST /edit/ with {"copy": null}. */
   onRevert: () => void;
   editing: boolean;
-  /** Server-computed (§9.11); the frontend never compares the copy strings. */
+  /** Server-computed; the frontend never compares the copy strings. */
   isEdited: boolean;
   /** Local edits not yet sent to /edit/. */
   hasPendingEdit: boolean;
@@ -97,7 +97,7 @@ export function ActionBar({
         <Badge tone={report.unverified_count === 0 ? 'verified' : 'unverified'}>
           {report.unverified_count === 0 ? 'grounded' : 'check'}
         </Badge>
-        {/* Server-rendered, printed verbatim (§9.3). */}
+        {/* Server-rendered, printed verbatim. */}
         <span className="action-bar__summary-text">{report.summary}</span>
         {hasPendingEdit && <span className="action-bar__pending">unsaved</span>}
       </div>

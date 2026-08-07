@@ -9,7 +9,7 @@ Design notes:
 
 - **No LLM.** Verification is pure regex/string logic, so it adds no provider
   calls and stays unit-testable without a database — duck-typed on the lead
-  attributes from ``CONTRACT.md`` (plus ``lead.events``), exactly like
+  attributes of the ``Lead`` model (plus ``lead.events``), exactly like
   :func:`project.app.services.outreach.determine_action`.
 - **Fail closed.** ``plan_outreach`` turns any violation into
   ``needs_human=True`` and routes the (still-populated) draft to the BD review
@@ -70,7 +70,7 @@ class Claim:
     Unlike :class:`Violation` this records *passes* too — "which claims were
     checked and survived" is what the reviewer's green underlines are drawn
     from, and it is the only thing "N of M claims verified" can be computed
-    from. See CONTRACT-MUS-35.md §4.3.
+    from.
     """
 
     id: str
@@ -368,7 +368,7 @@ def normalize_copy(copy: str) -> str:
 
     An LLM may emit ``\\r\\n`` and a ``<textarea>`` may submit it; Python counts
     ``\\r\\n`` as two characters, so every span after the first line break would
-    be off by one per preceding line (CONTRACT-MUS-35.md §9.1(c)).
+    be off by one per preceding line.
     """
     if not copy:
         return copy
@@ -376,12 +376,12 @@ def normalize_copy(copy: str) -> str:
 
 
 def _is_astral_safe(copy: str) -> bool:
-    """True when JS string indices equal Unicode code-point indices (§9.1(a))."""
+    """True when JS string indices equal Unicode code-point indices."""
     return len(copy) == len(copy.encode("utf-16-le")) // 2
 
 
 def _trim_span(copy: str, start: int, end: int) -> tuple[int, int]:
-    """Trim surrounding whitespace off a match span (§9.1(b)).
+    """Trim surrounding whitespace off a match span.
 
     ``_CURRENCY_RE`` matches ``"$1,400,000 "`` because its optional magnitude
     suffix is ``\\b``-terminated; an untrimmed span underlines into the next word.
@@ -411,7 +411,7 @@ def _claim(
     stable within a report. De-duplication is keyed on
     ``(kind, start, end, message)``: keying on ``message`` alone (which is what
     ``verify_copy`` still does for its ``Violation`` list) collapses two
-    genuinely different offsets that happen to read the same (§4.7).
+    genuinely different offsets that happen to read the same.
     """
     if start is not None and end is not None:
         start, end = _trim_span(copy, start, end)
@@ -861,12 +861,12 @@ def verify_spans(
     level: str = DEFAULT_LEVEL,
     today: datetime.date | None = None,
 ) -> dict:
-    """Build the v1 verification report (CONTRACT-MUS-35.md §4.4).
+    """Build the v1 verification report.
 
     The report is what the reviewer's underlines and the
     "N of M claims verified" summary are rendered from. ``copy`` is normalized
-    (§9.1(c)) and echoed back: offsets index into ``report["copy"]``, never into
-    whatever the client currently has in its textarea (§9.2).
+    and echoed back: offsets index into ``report["copy"]``, never into
+    whatever the client currently has in its textarea.
 
     ``can_approve`` has **two independent causes** and is false if either holds:
     a contradicted claim about the record, or a claim of a

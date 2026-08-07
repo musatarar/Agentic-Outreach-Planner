@@ -138,7 +138,7 @@ export function InboxPage() {
 
   /**
    * `suggested_copy` is immutable server-side, so an edit is always recoverable.
-   * The same endpoint with a null copy is the documented way back (§5.2).
+   * The same endpoint with a null copy is the documented way back.
    */
   const revert = useCallback(
     (item: QueueItem) =>
@@ -224,7 +224,7 @@ export function InboxPage() {
    * The browse map. Rebuilt when the current lead changes, which is cheap, and
    * muted entirely while a popover or the overlay owns the keyboard.
    *
-   * `useHotkeys` already refuses to fire inside a text field (§9.13), so
+   * `useHotkeys` already refuses to fire inside a text field, so
    * nothing here has to think about the inline editor.
    */
   const hotkeys = useMemo<HotkeyMap>(() => {
@@ -318,7 +318,7 @@ export function InboxPage() {
                     <ActionBar
                       report={report}
                       // While an edit is live the dry-run report is the honest
-                      // gate; otherwise the item's own server verdict is (§9.3).
+                      // gate; otherwise the item's own server verdict is.
                       canApprove={live.isLive ? report.can_approve : current.can_approve}
                       approving={busy}
                       onApprove={() => void approve(current)}

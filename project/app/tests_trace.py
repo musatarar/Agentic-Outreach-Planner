@@ -1,4 +1,4 @@
-"""Structured rule-trace tests (MUS-42, CONTRACT-MUS-35.md §3).
+"""Structured rule-trace tests (MUS-42).
 
 The trace is an *instrumentation* layer over the two rule functions the whole
 product rests on. These tests exist to prove the instrumentation changed
@@ -26,8 +26,8 @@ PARITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "reason_parity.j
 
 TODAY = rules_eval.TODAY  # datetime.date(2026, 6, 12)
 
-# Every condition/group id the contract pins in §3.4 / §3.5. A pinned id that
-# no golden record produces means a missing `_cond()` call (§3.6 item 5).
+# Every condition/group id the trace envelope pins. A pinned id that
+# no golden record produces means a missing `_cond()` call.
 PINNED_CONDITION_IDS = frozenset(
     {
         "book_size_very_large",
@@ -109,12 +109,12 @@ def _all_ids(envelope):
 
 
 # ---------------------------------------------------------------------------
-# §3.6 — backward-compatibility guarantees
+# backward-compatibility guarantees
 # ---------------------------------------------------------------------------
 
 
 class ArityTests(unittest.TestCase):
-    """§3.6 item 1 — the signatures four other modules depend on."""
+    """the signatures four other modules depend on."""
 
     def test_determine_action_returns_a_two_tuple_of_strings(self):
         for rec, lead in _golden_leads():
@@ -143,7 +143,7 @@ class ArityTests(unittest.TestCase):
 
 
 class TraceNeutralityTests(unittest.TestCase):
-    """§3.6 item 2 — the test that catches a botched ``if``-transform.
+    """the test that catches a botched ``if``-transform.
 
     If any branch were taken on a re-evaluated expression rather than on the
     recorded ``Condition.passed``, the traced and untraced calls could diverge.
@@ -181,7 +181,7 @@ class TraceNeutralityTests(unittest.TestCase):
 
 
 class ReasonParityTests(unittest.TestCase):
-    """§3.6 item 3 — ``reason`` is displayed *and* fed to ``generate_copy``.
+    """``reason`` is displayed *and* fed to ``generate_copy``.
 
     The fixture was captured from the pre-transform code; a whitespace change
     here silently perturbs the copy eval.
@@ -212,7 +212,7 @@ class ReasonParityTests(unittest.TestCase):
 
 
 class GoldenEvalGateTests(unittest.TestCase):
-    """§3.6 item 4 — the baseline must not need regenerating."""
+    """the baseline must not need regenerating."""
 
     def test_rules_eval_exits_zero(self):
         proc = subprocess.run(
@@ -226,7 +226,7 @@ class GoldenEvalGateTests(unittest.TestCase):
 
 
 class ConditionCoverageTests(unittest.TestCase):
-    """§3.6 item 5 — a condition that is never recorded is a missing call."""
+    """a condition that is never recorded is a missing call."""
 
     def test_every_pinned_condition_id_is_reachable(self):
         seen: set = set()
@@ -244,7 +244,7 @@ class ConditionCoverageTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §3.4 — envelope shape
+# envelope shape
 # ---------------------------------------------------------------------------
 
 
@@ -350,7 +350,7 @@ class EnvelopeShapeTests(unittest.TestCase):
 
 
 class WorkedExampleTests(unittest.TestCase):
-    """The §3.5 worked example, pinned line for line.
+    """The worked example, pinned line for line.
 
     Four other branches consume these exact strings; MUS-40 snapshots them.
     """
@@ -519,7 +519,7 @@ class ConditionPrimitiveTests(unittest.TestCase):
 
 
 class DisplayFormatterTests(unittest.TestCase):
-    """§3.3's pinned formatter table."""
+    """The pinned display-formatter table."""
 
     def test_units(self):
         cases = [

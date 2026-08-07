@@ -8,7 +8,7 @@ import { takeDestination } from '../hooks/authDestination';
 import { SignInPage } from './SignInPage';
 import './auth.css';
 
-/** The two codes the backend uses to describe a dead link (CONTRACT §5.1). */
+/** The two codes the backend uses to describe a dead link. */
 const TOKEN_CODES = new Set(['expired_token', 'invalid_token']);
 
 type Phase = 'working' | 'failed';
@@ -41,7 +41,7 @@ export function ConsumePage() {
       .then(() => {
         // Soft navigation is safe across the login boundary: client.ts reads
         // the csrftoken cookie per request, so it picks up the rotated one
-        // Django set on this response (CONTRACT §9.12).
+        // Django set on this response.
         navigate(takeDestination(), { replace: true });
       })
       .catch((error: unknown) => {

@@ -1,4 +1,4 @@
-"""Verification-span tests (MUS-42, CONTRACT-MUS-35.md §4 and §9.1).
+"""Verification-span tests (MUS-42).
 
 Two jobs:
 
@@ -417,7 +417,7 @@ def _kwargs(level):
 
 
 # ---------------------------------------------------------------------------
-# §4.7 — verify_copy is unchanged
+# verify_copy is unchanged
 # ---------------------------------------------------------------------------
 
 
@@ -481,7 +481,7 @@ class VerifyCopyParityTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §4.4 — the report envelope
+# the report envelope
 # ---------------------------------------------------------------------------
 
 
@@ -522,7 +522,7 @@ class ReportEnvelopeTests(unittest.TestCase):
                         self.assertEqual(claim["text"], "")
                         continue
                     self.assertEqual(report["copy"][claim["start"] : claim["end"]], claim["text"])
-                    # §9.1(b): no span carries surrounding whitespace.
+                    # no span carries surrounding whitespace.
                     self.assertEqual(claim["text"], claim["text"].strip())
 
     def test_claims_are_ordered_by_offset_and_ids_follow(self):
@@ -580,7 +580,7 @@ class ReportEnvelopeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §4.4 — can_approve has two independent causes
+# can_approve has two independent causes
 # ---------------------------------------------------------------------------
 
 
@@ -611,7 +611,7 @@ class ApproveGateTests(unittest.TestCase):
         self.assertEqual(report["checked_count"], 4)
         self.assertEqual(report["summary"], "4 of 4 claims verified")
 
-        # ...and the offer is excluded from BOTH counts, exactly as §4.3 pins.
+        # ...and the offer is excluded from BOTH counts.
         offer = next(c for c in report["claims"] if c["kind"] == "unauthorized_offer")
         self.assertFalse(offer["counts_toward_summary"])
         self.assertIs(offer["verified"], False)
@@ -646,7 +646,7 @@ class ApproveGateTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §4.5 / §4.6 — the worked examples, pinned
+# the worked examples, pinned
 # ---------------------------------------------------------------------------
 
 
@@ -763,7 +763,7 @@ class WorkedExampleTests(unittest.TestCase):
                 ("claim-0005", "amount", 220, 230, "$1,400,000", True),
             ],
         )
-        # §9.1(b): _CURRENCY_RE's match is "$1,400,000 " (220–231).
+        # _CURRENCY_RE's match is "$1,400,000 " (220–231).
         self.assertEqual(report["copy"][220:231], "$1,400,000 ")
 
     def test_example_b_mixed(self):
@@ -797,7 +797,7 @@ class WorkedExampleTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §9.1 — the three ways offsets go wrong
+# the three ways offsets go wrong
 # ---------------------------------------------------------------------------
 
 
@@ -861,7 +861,7 @@ class OffsetHazardTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# §4.7 — claim de-duplication is re-keyed
+# claim de-duplication is re-keyed
 # ---------------------------------------------------------------------------
 
 

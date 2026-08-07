@@ -1,7 +1,7 @@
 """Outreach planning logic for Locked In's Agentic Outreach Planner.
 
 Pure business logic: `determine_priority` and `determine_action` work via
-duck typing on any object exposing the Lead attributes from CONTRACT.md
+duck typing on any object exposing the `Lead` model's attributes
 (plus `lead.events.all()` or a plain list of event-like objects), so they
 can be unit-tested without Django or a database. Django models are only
 imported inside `plan_outreach()`.
@@ -31,8 +31,8 @@ from project.app.services.llm.retry import acall_with_retry
 
 MAX_COPY_TOKENS = 500
 
-# Schema version of the trace envelope produced by `explain()`
-# (CONTRACT-MUS-35.md §3.4). Bump only with a coordinated FE change.
+# Schema version of the trace envelope produced by `explain()`.
+# Bump only with a coordinated FE change.
 TRACE_SCHEMA_VERSION = 1
 
 # Phrases (lowercase) suggesting the lead asked to be contacted later /
@@ -77,7 +77,7 @@ PRIORITY_BANDS = (
 )
 
 # Action rules, in the order `determine_action` evaluates them. Index into this
-# tuple is the frozen ``matched_rule_index`` from CONTRACT-MUS-35.md §3.4.
+# tuple is the frozen ``matched_rule_index``.
 ACTION_RULES = (
     ("R1_complete_onboarding", "Demo completed but never signed up"),
     ("R2_power_user", "Power user near a reward / volume-pricing milestone"),
@@ -217,7 +217,7 @@ def _gone_quiet_from(days_contact, no_reply, stall_phrase):
     Split out of :func:`_gone_quiet` so the trace can record the three inputs it
     is built from (see ``_score_priority``) without evaluating them twice — the
     recorded values and the taken branch are then the same evaluation by
-    construction (CONTRACT-MUS-35.md §3.3).
+    construction.
     """
     if days_contact is None or days_contact < QUIET_CONTACT_DAYS:
         return False
@@ -232,7 +232,7 @@ def _gone_quiet_from(days_contact, no_reply, stall_phrase):
 
 
 # --------------------------------------------------------------------------
-# rule trace primitives (CONTRACT-MUS-35.md §3.3 / §3.4)
+# rule trace primitives
 # --------------------------------------------------------------------------
 
 
@@ -329,7 +329,7 @@ def _render(value, unit):
 
 
 def _display_for(*, id, field, operator, threshold, value, unit, source):
-    """Server-rendered mono string; the FE prints it verbatim (§3.3 / §9.10)."""
+    """Server-rendered mono string; the FE prints it verbatim."""
     # Predicates over a free-text/event *container* read as their own id — the
     # field name ("events", "hubspot_notes") says nothing on its own.
     if source in ("events", "notes") or unit == "bool":
@@ -390,7 +390,7 @@ def _cond(
 
     The caller branches on the returned ``.passed`` — never on a re-evaluation
     of the expression — so the recorded trace and the taken branch can never
-    disagree (CONTRACT-MUS-35.md §3.3, §9.16).
+    disagree.
     """
     passed = _evaluate(operator, value, threshold, null_passes)
     condition = Condition(
@@ -713,7 +713,7 @@ def _classify_action(lead, today):
 
     Conditions are evaluated in rule order and short-circuit exactly as the
     original ``if`` chain did, so a rejected rule records only the conditions
-    that were actually reached (CONTRACT-MUS-35.md §3.4).
+    that were actually reached.
     """
     name = getattr(lead, "contact_name", "this lead")
     notes = getattr(lead, "hubspot_notes", "") or ""
@@ -1075,7 +1075,7 @@ def determine_action(lead, today=None, *, trace: list | None = None) -> tuple[st
 
 
 def explain(lead, today=None) -> dict:
-    """Assemble the v1 rule-trace envelope (CONTRACT-MUS-35.md §3.4).
+    """Assemble the v1 rule-trace envelope.
 
     The single public trace API: MUS-39's ``plan_outreach()`` calls this once
     per lead and snapshots the result onto ``OutreachAction.rule_trace``. Pure,
@@ -2161,7 +2161,7 @@ def plan_outreach():
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
 
     # Two skip rules, both keyed on the (lead, action_type) dedupe key and both
-    # read ONCE per run -- one query each, O(1) in leads (CONTRACT section 2.6).
+    # read ONCE per run -- one query each, O(1) in leads.
     #
     #   1. Dismiss is permanent. A recommendation the reviewer killed must not
     #      come back on a later run, and consulting the ledger *before* copy

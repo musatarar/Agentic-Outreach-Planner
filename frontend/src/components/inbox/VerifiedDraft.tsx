@@ -19,7 +19,7 @@ function claimTitle(claim: VerificationClaim | null): string | undefined {
 export interface VerifiedDraftProps {
   /**
    * The report to render. Its `copy` field is the text drawn — not local
-   * state, not `effective_copy` (CONTRACT §9.2). During live editing this is
+   * state, not `effective_copy`. During live editing this is
    * the response from `/verify/`, which echoes the exact string it verified.
    */
   report: VerificationReport;

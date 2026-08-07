@@ -6,7 +6,7 @@ import type { DoneSummary, QueueCounts, QueueItem } from '../api/types';
 /**
  * The triage queue, prefetched once.
  *
- * CONTRACT §9.14: `GET /api/queue/` returns *complete* QueueItems — rule trace,
+ * `GET /api/queue/` returns *complete* QueueItems — rule trace,
  * verification report, effective copy and lead detail all in one payload — so
  * moving between leads is a state change and nothing else. Every navigation
  * helper below (`select`, `next`, `previous`) and `settle` performs **zero**
@@ -26,8 +26,8 @@ export interface UseQueueResult {
   loading: boolean;
   error: string | null;
   /**
-   * The server's "today", in settings.TRIAGE_TIMEZONE. CONTRACT §9.5: the
-   * frontend never calls new Date() to decide which day it is.
+   * The server's "today", in settings.TRIAGE_TIMEZONE. The frontend never
+   * calls new Date() to decide which day it is.
    */
   date: string;
   timezone: string;
@@ -107,7 +107,7 @@ export function useQueue(): UseQueueResult {
   const cleared = !loading && error === null && items.length === 0;
 
   // The one request the empty state needs. /api/queue/done/ is the authority on
-  // pipeline value and elapsed time (CONTRACT §5.2) — deriving them from local
+  // pipeline value and elapsed time — deriving them from local
   // session state would disagree with /done the moment a tab was reloaded.
   useEffect(() => {
     if (!cleared) return;
