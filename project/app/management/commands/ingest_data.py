@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -7,10 +7,21 @@ from django.db import transaction
 from django.utils.dateparse import parse_datetime
 from django.utils.timezone import is_naive, make_aware
 
-from project.app.models import Event, Lead
+from project.app.models import AEAvailabilitySlot, Event, Lead
 
 DEFAULT_LEADS = "raw_data/leads.json"
 DEFAULT_EVENTS = "raw_data/events.json"
+
+# Synthetic AE calendar backing the agent loop's `check_ae_calendar` tool
+# (MUS-29). Fixed names and a fixed anchor keep the seed deterministic; the
+# anchor is the Monday after the newest demo event (2026-06-18), so slots sit
+# in the demo's frozen date-space rather than drifting with the wall clock.
+SYNTHETIC_AES = (
+    ("Avery Collins", "avery.collins@lockedin.example"),
+    ("Jordan Reyes", "jordan.reyes@lockedin.example"),
+)
+AE_SLOT_ANCHOR = date(2026, 6, 22)
+AE_SLOT_HOURS = {"Avery Collins": 10, "Jordan Reyes": 14}
 
 # Lead fields parsed as dates (ISO YYYY-MM-DD, nullable)
 DATE_FIELDS = (
@@ -102,6 +113,33 @@ class Command(BaseCommand):
                 )
                 event_count += 1
 
+        slot_count = self._seed_ae_slots()
+
         self.stdout.write(
-            self.style.SUCCESS(f"Ingested {lead_count} leads and {event_count} events.")
+            self.style.SUCCESS(
+                f"Ingested {lead_count} leads and {event_count} events; "
+                f"seeded {slot_count} synthetic AE slots."
+            )
         )
+
+    def _seed_ae_slots(self):
+        """Seed the synthetic AE calendar: one 30-minute slot per AE per
+        weekday of the anchor week. Idempotent by delete-and-recreate of
+        `synthetic=True` rows — never touches a manually created slot."""
+        AEAvailabilitySlot.objects.filter(synthetic=True).delete()
+        slots = []
+        for day_offset in range(5):
+            day = AE_SLOT_ANCHOR + timedelta(days=day_offset)
+            for ae_name, ae_email in SYNTHETIC_AES:
+                start = make_aware(datetime.combine(day, time(hour=AE_SLOT_HOURS[ae_name])))
+                slots.append(
+                    AEAvailabilitySlot(
+                        ae_name=ae_name,
+                        ae_email=ae_email,
+                        slot_start=start,
+                        slot_end=start + timedelta(minutes=30),
+                        synthetic=True,
+                    )
+                )
+        AEAvailabilitySlot.objects.bulk_create(slots)
+        return len(slots)
