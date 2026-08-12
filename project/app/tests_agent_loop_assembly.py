@@ -146,7 +146,6 @@ class CrashResumeTests(TestCase):
             crash_after=crash_after,
         )
 
-    @unittest.expectedFailure
     def test_flag_off_takes_the_single_shot_path_untouched(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         client = _SingleShotClient()
