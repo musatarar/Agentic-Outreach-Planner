@@ -1,14 +1,12 @@
 """Component artifact: agent_models (MUS-29).
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``
-and opens with a capability assertion. New models are resolved by attribute
-lookup off ``app_models`` only after that assertion: a module-scope import of a
-model that does not exist yet would raise ImportError before collection, which
-the marker cannot absorb. The agent_models component PR (schema + migration
-0007_agent_loop) strips the markers and takes this module to zero.
+Pins the agent-loop schema (migration 0007_agent_loop): the ``AgentLeadRun``
+resume unit with its epoch-CAS claim, the append-only ``AgentStep`` trace, the
+``ReviewDecision`` send kinds with their partial-unique backstops, and the
+terminal ``sent`` status on ``OutreachAction``. New models are resolved by
+attribute lookup off ``app_models`` behind capability assertions, the pattern
+this suite inherited from its planted-red origin.
 """
-
-import unittest
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -43,7 +41,6 @@ class ReviewDecisionSendKindTests(TestCase):
             needs_human=True,
         )
 
-    @unittest.expectedFailure
     def test_action_holds_one_resolution_and_one_send_decision(self):
         self.assertTrue(hasattr(ReviewDecision, "KIND_APPROVE_SEND"))  # red at skeleton
         ReviewDecision.objects.create(
@@ -62,7 +59,6 @@ class ReviewDecisionSendKindTests(TestCase):
         )
         self.assertEqual(self.action.review_decisions.count(), 2)
 
-    @unittest.expectedFailure
     def test_second_live_send_decision_is_rejected_by_the_db(self):
         self.assertTrue(hasattr(ReviewDecision, "KIND_APPROVE_SEND"))
         ReviewDecision.objects.create(
@@ -80,7 +76,6 @@ class ReviewDecisionSendKindTests(TestCase):
                 reviewer="b@x.example",
             )
 
-    @unittest.expectedFailure
     def test_kind_constants_partition_into_resolution_and_send(self):
         self.assertTrue(hasattr(ReviewDecision, "SEND_KINDS"))
         self.assertEqual(
@@ -98,7 +93,6 @@ class AgentRunSchemaTests(TestCase):
     def setUpTestData(cls):
         cls.lead = _lead("lead_am2")
 
-    @unittest.expectedFailure
     def test_second_step_with_same_seq_is_rejected(self):
         self.assertTrue(hasattr(app_models, "AgentStep"))  # red at skeleton
         run = app_models.AgentLeadRun.objects.create(lead=self.lead, trace_run_id="run-am-seq")
@@ -106,14 +100,12 @@ class AgentRunSchemaTests(TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             app_models.AgentStep.objects.create(lead_run=run, seq=1, kind="final", payload={})
 
-    @unittest.expectedFailure
     def test_one_run_per_lead_per_trace(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))
         app_models.AgentLeadRun.objects.create(lead=self.lead, trace_run_id="run-am-uniq")
         with self.assertRaises(IntegrityError), transaction.atomic():
             app_models.AgentLeadRun.objects.create(lead=self.lead, trace_run_id="run-am-uniq")
 
-    @unittest.expectedFailure
     def test_claim_epoch_cas_yields_exactly_one_winner(self):
         """Two claim attempts computed from the same read epoch: rowcount picks
         the winner — pure ORM, no threads, portable to both backends."""
@@ -135,7 +127,6 @@ class AgentRunSchemaTests(TestCase):
         self.assertEqual(row.claimed_by, "worker-a")
         self.assertEqual(row.claim_epoch, seen + 1)
 
-    @unittest.expectedFailure
     def test_approved_to_sent_is_allowed_and_sent_is_terminal(self):
         self.assertTrue(hasattr(OutreachAction, "STATUS_SENT"))  # red at skeleton
         action = OutreachAction.objects.create(

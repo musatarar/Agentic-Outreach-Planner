@@ -52,11 +52,13 @@ class OutreachAction(models.Model):  # what the planner decided/did
     STATUS_APPROVED = "approved"
     STATUS_SNOOZED = "snoozed"
     STATUS_DISMISSED = "dismissed"
+    STATUS_SENT = "sent"  # terminal: recorded outbound mail exists (MUS-29)
     STATUS_CHOICES = [
         (STATUS_PENDING, "Pending"),
         (STATUS_APPROVED, "Approved"),
         (STATUS_SNOOZED, "Snoozed"),
         (STATUS_DISMISSED, "Dismissed"),
+        (STATUS_SENT, "Sent"),
     ]
 
     TRIGGER_TOMORROW = "tomorrow"
@@ -148,13 +150,17 @@ class OutreachAction(models.Model):  # what the planner decided/did
     #   snoozed    -> approved | snoozed | dismissed   (re-snooze is allowed)
     #              -> pending                          (undo / unsnooze_due)
     #   approved   -> pending                          (undo only)
+    #              -> sent                             (dispatch, MUS-29)
     #   dismissed  -> pending                          (undo only, and it must
     #                                                   revoke the suppression)
+    #   sent       -> (nothing)                        (terminal -- no undo
+    #                                                   past a send)
     ALLOWED_TRANSITIONS = {
         STATUS_PENDING: (STATUS_APPROVED, STATUS_SNOOZED, STATUS_DISMISSED),
         STATUS_SNOOZED: (STATUS_APPROVED, STATUS_SNOOZED, STATUS_DISMISSED, STATUS_PENDING),
-        STATUS_APPROVED: (STATUS_PENDING,),
+        STATUS_APPROVED: (STATUS_PENDING, STATUS_SENT),
         STATUS_DISMISSED: (STATUS_PENDING,),
+        STATUS_SENT: (),
     }
 
     # Statuses whose copy a reviewer may still change. Editing is not a status
@@ -286,15 +292,23 @@ class LLMConfiguration(models.Model):
 class ReviewDecision(models.Model):
     KIND_SELECT = "select_existing"
     KIND_PROPOSE = "propose_new"
+    KIND_APPROVE_SEND = "approve_send"  # written by QueueApproveView (MUS-29)
+    KIND_REJECT_SEND = "reject_send"  # written by QueueDismissView (MUS-29)
+    RESOLUTION_KINDS = (KIND_SELECT, KIND_PROPOSE)
+    SEND_KINDS = (KIND_APPROVE_SEND, KIND_REJECT_SEND)
     STATUS_RESOLVED = "resolved"
     STATUS_PENDING = "pending_engineering"
 
-    # OneToOne: an action is resolved by exactly one decision; the DB-level
-    # unique constraint blocks duplicate/racing submissions for the same action.
-    outreach_action = models.OneToOneField(
-        OutreachAction, on_delete=models.CASCADE, related_name="review_decision"
+    # ForeignKey, not OneToOne (MUS-29): an action must be able to hold BOTH a
+    # resolution decision ("which action type is this?") and a send decision
+    # ("may this copy leave the building?"). Per-category uniqueness moved to
+    # the two partial constraints below, so duplicate/racing submissions still
+    # die at the DB rather than in a read-then-write.
+    outreach_action = models.ForeignKey(
+        OutreachAction, on_delete=models.CASCADE, related_name="review_decisions"
     )
-    kind = models.CharField(max_length=32)  # select_existing | propose_new
+    # select_existing | propose_new | approve_send | reject_send
+    kind = models.CharField(max_length=32)
     status = models.CharField(max_length=32)  # resolved | pending_engineering
     selected_action_type = models.CharField(max_length=64, blank=True)
     proposed_name = models.CharField(max_length=255, blank=True)
@@ -302,6 +316,35 @@ class ReviewDecision(models.Model):
     proposed_when = models.TextField(blank=True)
     reviewer = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # ---- Send-decision fields (MUS-29); blank on resolution kinds ----------
+    # Snapshot of `effective_copy` at decision time: the exact bytes the human
+    # approved, hash-bound so dispatch can refuse to send anything else.
+    approved_copy = models.TextField(blank=True, default="")
+    approved_body_sha256 = models.CharField(max_length=64, blank=True, default="")
+    # Stamped by undo. A voided approval is kept for audit and never
+    # authorizes a send.
+    voided_at = models.DateTimeField(null=True, blank=True, default=None)
+
+    class Meta:
+        constraints = [
+            # One resolution per action, ever -- preserves the guarantee the
+            # old OneToOne gave the triage flow. Literal kind strings: Meta
+            # cannot see the enclosing class namespace. Partial-constraint
+            # precedent: oa_one_row_per_lead_per_run.
+            models.UniqueConstraint(
+                fields=["outreach_action"],
+                condition=Q(kind__in=("select_existing", "propose_new")),
+                name="rd_one_resolution_per_action",
+            ),
+            # One LIVE send decision per action: undo voids rather than
+            # deletes, so the audit trail stays while the slot frees up.
+            models.UniqueConstraint(
+                fields=["outreach_action"],
+                condition=Q(kind__in=("approve_send", "reject_send")) & Q(voided_at__isnull=True),
+                name="rd_one_live_send_per_action",
+            ),
+        ]
 
 
 # --- Magic-link auth (MUS-37) -------------------------------------------------
@@ -431,3 +474,126 @@ class OutreachEdit(models.Model):
 
     def __str__(self):
         return f"edit of action {self.outreach_action_id} @ {self.created_at:%Y-%m-%d %H:%M}"
+
+
+# --- Agentic loop (MUS-29) ----------------------------------------------------
+
+
+class AgentLeadRun(models.Model):
+    """The per-lead resume unit of an agentic copy run (MUS-29).
+
+    One row per (trace_run_id, lead) -- the same UUID the planner stamps on
+    `OutreachAction.trace_run_id`, so run, action, and span all join on one
+    identity. A worker takes ownership with an epoch-CAS conditional UPDATE
+    (the same single-winner shape as `LoginToken` consume): read `claim_epoch`,
+    then `filter(pk, claim_epoch=seen, status__in=NON_TERMINAL_STATUSES)
+    .update(claim_epoch=seen + 1, claimed_by=token, status="claimed")` --
+    rowcount 1 means the caller owns the run. Sequential re-claim after a
+    crash succeeds (dead-worker takeover); two workers racing from the same
+    read epoch produce exactly one winner.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_CLAIMED = "claimed"
+    STATUS_GATHERING = "gathering"
+    STATUS_DRAFTING = "drafting"
+    STATUS_DONE = "done"
+    STATUS_FAILED = "failed"
+    STATUS_EXHAUSTED = "exhausted"
+    NON_TERMINAL_STATUSES = (STATUS_PENDING, STATUS_CLAIMED, STATUS_GATHERING, STATUS_DRAFTING)
+
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="agent_runs")
+    trace_run_id = models.CharField(max_length=36, db_index=True)
+    status = models.CharField(max_length=16, default=STATUS_PENDING)
+    claimed_by = models.CharField(max_length=32, blank=True, default="")  # worker token (uuid4 hex)
+    claim_epoch = models.IntegerField(default=0)  # CAS counter: bumps on every claim
+    steps_used = models.IntegerField(default=0)
+    tool_calls_used = models.IntegerField(default=0)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True, default=None)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["trace_run_id", "lead"], name="alr_one_run_per_lead_per_trace"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["trace_run_id", "status"], name="alr_resume_scan"),
+        ]
+
+    def __str__(self):
+        return f"agent run {self.trace_run_id}/{self.lead_id} [{self.status}]"
+
+
+class AgentStep(models.Model):
+    """Append-only step log: crash-resume checkpoint and reasoning trace in one.
+
+    Payload shapes by `kind` (schema in docs/contracts/agent-loop.md):
+      llm_call:    {"text", "tool_calls": [{"id", "name", "arguments"}],
+                    "provider", "model", "input_tokens", "output_tokens",
+                    "raw_finish_reason", "latency_s"}
+      tool_result: {"tool_call_id", "name", "result"}  # sanitized + capped
+      final:       {"text"}
+    """
+
+    lead_run = models.ForeignKey(AgentLeadRun, on_delete=models.CASCADE, related_name="steps")
+    seq = models.IntegerField()
+    kind = models.CharField(max_length=16)  # llm_call | tool_result | final
+    payload = models.JSONField(default=dict)
+    # The same `genai.sha256_of` hashes the OTel spans carry (MUS-25), so a
+    # span and a step cross-reference without either leaking content.
+    request_sha256 = models.CharField(max_length=64, blank=True, default="")
+    result_sha256 = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["seq"]
+        constraints = [
+            models.UniqueConstraint(fields=["lead_run", "seq"], name="astep_one_seq_per_run"),
+        ]
+
+    def __str__(self):
+        return f"step {self.seq} ({self.kind}) of run {self.lead_run_id}"
+
+
+class AEAvailabilitySlot(models.Model):
+    """Synthetic calendar slots backing the `check_ae_calendar` tool (MUS-29).
+
+    Seeded only by `ingest_data` (idempotent delete-and-recreate of
+    `synthetic=True` rows) -- never written by the agent loop.
+    """
+
+    ae_name = models.CharField(max_length=100)
+    ae_email = models.EmailField()
+    slot_start = models.DateTimeField()
+    slot_end = models.DateTimeField()
+    synthetic = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["slot_start"]
+
+    def __str__(self):
+        return f"{self.ae_name}: {self.slot_start:%Y-%m-%d %H:%M}"
+
+
+class OutboundSend(models.Model):
+    """The single send record: the DB backstop against double-send (MUS-29).
+
+    The dispatch CAS on `OutreachAction.status` is the winner-picker; this
+    OneToOne is the schema-level guarantee behind it -- a second send row for
+    the same action cannot exist. PROTECT on both FKs: rows that record real
+    outbound mail must outlive everything that produced them, so deleting an
+    action or decision with a send on it is an error, not a cascade.
+    """
+
+    outreach_action = models.OneToOneField(
+        OutreachAction, on_delete=models.PROTECT, related_name="outbound_send"
+    )
+    decision = models.ForeignKey(ReviewDecision, on_delete=models.PROTECT, related_name="+")
+    body_sha256 = models.CharField(max_length=64)
+    channel = models.CharField(max_length=16, default="console")
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"send for action {self.outreach_action_id}"

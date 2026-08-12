@@ -186,7 +186,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         )
         self.assertEqual(live.status, ReviewDecision.STATUS_RESOLVED)
 
-    @unittest.expectedFailure
     def test_unverified_claims_still_block_approval_with_a_409(self):
         """Regression: the queue's existing fail-closed check is upstream of the
         new decision write — a blocked approve records nothing."""
