@@ -168,12 +168,16 @@ WSGI_APPLICATION = "project.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 # DATABASE_URL selects the backend, e.g. postgres://user:pass@host:5432/dbname
-# (docker-compose.yml sets this for the Postgres service). Unset falls back to
-# SQLite so the app still runs with zero setup for local dev.
+# (docker-compose.yml sets this for the Postgres service). Unset or blank falls
+# back to SQLite so the app still runs with zero setup for local dev. Blank must
+# count as unset: .env.example ships a blank DATABASE_URL line, so a verbatim
+# `cp .env.example .env` exports an empty string, and dj_database_url.config()
+# treats that as present — skipping its default and returning the dummy backend.
 
+_database_url = os.environ.get("DATABASE_URL", "").strip()
 DATABASES = {
-    "default": dj_database_url.config(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+    "default": dj_database_url.parse(
+        _database_url or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
     )
 }
