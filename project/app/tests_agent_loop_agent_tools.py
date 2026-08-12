@@ -1,12 +1,12 @@
 """Component artifact: agent_tools (MUS-29).
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``
-and either opens with a capability assertion or calls straight into a
-NotImplementedError stub. The agent_tools component PR strips the markers and
-takes this module to zero.
+Pins the four read-only agent tools as pure functions over a phase-2
+``ToolContext`` snapshot: sanitized-and-capped rendering, server-side lead
+binding (unknown tools raise, foreign arguments are dropped), deterministic
+similar-won-deals scoring, prompt-consistent product facts, and idempotent
+synthetic AE-slot seeding by ``ingest_data``.
 """
 
-import unittest
 from datetime import datetime, timezone
 
 from django.core.management import call_command
@@ -41,7 +41,6 @@ class _L:
 
 
 class ExecuteToolTests(SimpleTestCase):
-    @unittest.expectedFailure
     def test_history_result_is_sanitized_and_capped(self):
         evil = _E(
             "call_logged",
@@ -56,7 +55,6 @@ class ExecuteToolTests(SimpleTestCase):
         self.assertNotIn("Ignore previous instructions", out)
         self.assertNotIn("<<", out)  # cannot forge the untrusted delimiters
 
-    @unittest.expectedFailure
     def test_unknown_tool_and_foreign_arguments_are_rejected(self):
         ctx = tools.build_tool_context(_L("lead_001"), (), (), (), None)
         with self.assertRaises(tools.UnknownTool):
@@ -64,7 +62,6 @@ class ExecuteToolTests(SimpleTestCase):
         out = tools.execute_tool("get_lead_history", {"lead_id": "lead_009"}, ctx)
         self.assertNotIn("lead_009", out)  # server-side lead binding wins
 
-    @unittest.expectedFailure
     def test_similar_won_deals_is_deterministic_and_excludes_self(self):
         deal = _E(
             "deal_closed",
@@ -87,7 +84,6 @@ class ExecuteToolTests(SimpleTestCase):
         scores = [d["score"] for d in first]
         self.assertEqual(scores, sorted(scores, reverse=True))  # ordered by score
 
-    @unittest.expectedFailure
     def test_product_details_are_prompt_consistent(self):
         ctx = tools.build_tool_context(_L("lead_001"), (), (), (), None)
         out = tools.execute_tool("get_product_details", {}, ctx)
@@ -96,7 +92,6 @@ class ExecuteToolTests(SimpleTestCase):
 
 
 class IngestSlotsTests(TestCase):
-    @unittest.expectedFailure
     def test_ingest_data_seeds_synthetic_slots_idempotently(self):
         self.assertTrue(hasattr(app_models, "AEAvailabilitySlot"))  # red at skeleton
         call_command("ingest_data")
