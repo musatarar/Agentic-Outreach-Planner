@@ -48,8 +48,10 @@ import os
 import random
 import re
 import time
+from collections.abc import Sequence
 
-from .base import FINISH_STOP, LLMClient, LLMResult
+from .base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
+from .chat_types import Message, ToolCallRequest, ToolSpec
 from .errors import LLMRateLimitError, LLMTransientError
 
 # The gate. Deliberately an environment variable rather than a Django setting:
@@ -142,6 +144,44 @@ class StubClient(LLMClient):
         # report a peak concurrency of 1 and make the benchmark measure nothing
         # -- which is the single most likely way for this file to quietly lie.
         await asyncio.sleep(latency_s)
+        return self._result(prompt, latency_s)
+
+    async def agenerate_chat(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> LLMResult:
+        """Scripted chat turn: one tool call first, then the canned email.
+
+        **Stateless on purpose.** Clients are ``lru_cache``d singletons shared
+        across every concurrently-running lead, so the script derives from the
+        *message list* — offered tools with no ``tool_result`` yet means "ask
+        for the first tool"; once any ``tool_result`` is present (or no tools
+        were offered), answer with the canned, grounded email. Replaying a
+        conversation replays the same response; eight interleaved leads cannot
+        pop each other's script entries because there is nothing to pop.
+        """
+        latency_s = self._next_latency()
+        self._maybe_fail()
+        await asyncio.sleep(latency_s)
+        prompt = next((m.content for m in messages if m.role == "user"), "")
+        if tools and not any(m.role == "tool_result" for m in messages):
+            spec = tools[0]
+            return LLMResult(
+                text="",
+                provider=self.provider_name,
+                model=self.model,
+                response_model=self.model,
+                input_tokens=max(1, len(prompt) // 4),
+                output_tokens=1,
+                finish_reason=FINISH_TOOL_CALLS,
+                raw_finish_reason="tool_calls",
+                latency_s=latency_s,
+                tool_calls=(ToolCallRequest(id="stub_call_1", name=spec.name, arguments={}),),
+            )
         return self._result(prompt, latency_s)
 
     # -- internals ----------------------------------------------------------

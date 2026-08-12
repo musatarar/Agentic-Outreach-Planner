@@ -33,6 +33,7 @@ the config "test connection" endpoint uses to fail fast instead of hanging.
 """
 
 import time
+from collections.abc import Mapping, Sequence
 
 import anthropic
 import httpx
@@ -47,6 +48,7 @@ from .base import (
     read_field,
     read_sequence,
 )
+from .chat_types import Message, ToolCallRequest, ToolSpec
 from .errors import LLMAuthError, LLMMalformedResponseError, map_anthropic_error, map_httpx_error
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -95,6 +97,52 @@ class ClaudeClient(LLMClient):
         # Per-request override only when asked for: passing it unconditionally
         # would override the client-level timeout with None on every ordinary
         # call, restoring the SDK's 600-second default by accident.
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return kwargs
+
+    def _chat_request_kwargs(self, messages, tools, max_tokens, timeout):
+        """Translate provider-neutral chat shapes into Anthropic's wire format.
+
+        An assistant turn becomes content blocks (text first, then its
+        ``tool_use`` requests); a ``tool_result`` turn is, per Anthropic's
+        convention, a *user* message carrying a ``tool_result`` block that
+        echoes the originating call's id.
+        """
+        wire = []
+        for m in messages:
+            if m.role == "assistant":
+                blocks = [{"type": "text", "text": m.content}] if m.content else []
+                blocks += [
+                    {"type": "tool_use", "id": c.id, "name": c.name, "input": dict(c.arguments)}
+                    for c in m.tool_calls
+                ]
+                wire.append({"role": "assistant", "content": blocks})
+            elif m.role == "tool_result":
+                wire.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": m.tool_call_id,
+                                "content": m.content,
+                            }
+                        ],
+                    }
+                )
+            else:
+                wire.append({"role": "user", "content": m.content})
+        kwargs = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.default_max_tokens,
+            "messages": wire,
+        }
+        if tools:
+            kwargs["tools"] = [
+                {"name": t.name, "description": t.description, "input_schema": dict(t.parameters)}
+                for t in tools
+            ]
         if timeout is not None:
             kwargs["timeout"] = timeout
         return kwargs
@@ -174,6 +222,30 @@ class ClaudeClient(LLMClient):
 
         return self._build_result(response, latency_s)
 
+    async def agenerate_chat(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> LLMResult:
+        # Mirrors agenerate: same credential check, same error mapping, same
+        # loop-bound async client. Async-only by design — see the base class.
+        client = self._async_client.get()
+        self._check_credentials(client)
+
+        started = time.perf_counter()
+        try:
+            response = await client.messages.create(
+                **self._chat_request_kwargs(messages, tools, max_tokens, timeout)
+            )
+        except (anthropic.AnthropicError, httpx.HTTPError) as exc:
+            raise self._mapped(exc, started) from exc
+        latency_s = time.perf_counter() - started
+
+        return self._build_result(response, latency_s)
+
     async def aclose(self) -> None:
         await self._async_client.aclose()
 
@@ -189,19 +261,32 @@ class ClaudeClient(LLMClient):
         as ``None`` rather than ``0`` -- see
         :func:`~project.app.services.llm.base.coerce_token_count`.
         """
-        # Join only the text blocks (skip thinking/other block types).
+        # Join the text blocks; collect the tool_use blocks (skip
+        # thinking/other block types). A tool_use block only counts when its
+        # id and name are non-empty strings and its input is a Mapping —
+        # anything else is unreadable and must not become a half-built request.
         parts = []
+        tool_calls = []
         for block in read_sequence(response, "content"):
-            if read_field(block, "type") == "text":
+            block_type = read_field(block, "type")
+            if block_type == "text":
                 parts.append(coerce_text(read_field(block, "text")) or "")
+            elif block_type == "tool_use":
+                call_id = coerce_text(read_field(block, "id"))
+                name = coerce_text(read_field(block, "name"))
+                arguments = read_field(block, "input")
+                if call_id and name and isinstance(arguments, Mapping):
+                    tool_calls.append(
+                        ToolCallRequest(id=call_id, name=name, arguments=dict(arguments))
+                    )
         text = "".join(parts).strip()
-        if not text:
-            # A 200 carrying no text block is a contract violation, not a blip.
-            # Returning "" instead would land a blank draft in the review queue
-            # labelled "shape check failed", pointing the reviewer at the wrong
-            # problem entirely.
+        if not text and not tool_calls:
+            # A 200 carrying neither a text block nor a tool call is a contract
+            # violation, not a blip. Returning "" instead would land a blank
+            # draft in the review queue labelled "shape check failed", pointing
+            # the reviewer at the wrong problem entirely.
             raise LLMMalformedResponseError(
-                "Claude returned a response with no text content.",
+                "Claude returned a response with no text content and no tool calls.",
                 provider=self.provider_name,
             )
 
@@ -222,4 +307,5 @@ class ClaudeClient(LLMClient):
             finish_reason=normalize_finish_reason(raw_finish_reason),
             raw_finish_reason=raw_finish_reason,
             latency_s=latency_s,
+            tool_calls=tuple(tool_calls),
         )
