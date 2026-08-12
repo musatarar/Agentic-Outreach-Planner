@@ -98,6 +98,21 @@ OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
 OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
 OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
 
+# --- Agentic copy step (MUS-29) ------------------------------------------------
+# Gates the tool-calling agent path in phase 3 of plan_outreach(). False means
+# the single-shot copy call runs exactly as before — merged agent code is inert
+# until an operator opts in. The three budgets bound one lead's loop: provider
+# calls, tool executions, and wall-clock seconds (validated against the
+# per-request timeout when the planner runtime is built).
+OUTREACH_AGENT_ENABLED = (os.environ.get("OUTREACH_AGENT_ENABLED") or "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+OUTREACH_AGENT_MAX_STEPS = _env_int("OUTREACH_AGENT_MAX_STEPS", 6)
+OUTREACH_AGENT_MAX_TOOL_CALLS = _env_int("OUTREACH_AGENT_MAX_TOOL_CALLS", 8)
+OUTREACH_AGENT_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_AGENT_PER_LEAD_TIMEOUT_S", 300.0)
+
 
 # Settings are read from the environment (see .env.example). `.env` is loaded
 # above for local/demo convenience; production should set these directly.

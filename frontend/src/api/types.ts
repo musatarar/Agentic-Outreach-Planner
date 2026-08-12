@@ -433,3 +433,26 @@ export interface SnoozeInput {
 export interface DismissInput {
   reason: DismissReason;
 }
+
+// --- Agent trace (MUS-29) ----------------------------------------------------
+// GET /api/outreach/{id}/trace/ — the persisted step log behind an agent-drafted
+// action. 404 {"error": "no_agent_trace"} for single-shot actions.
+
+export type AgentStepKind = 'llm_call' | 'tool_result' | 'final';
+
+export interface AgentTraceStep {
+  seq: number;
+  kind: AgentStepKind;
+  payload: Record<string, unknown>;
+  created_at: string; // ISO 8601
+}
+
+export interface AgentTrace {
+  action_id: number;
+  lead_id: string;
+  trace_run_id: string;
+  status: string;
+  steps_used: number;
+  tool_calls_used: number;
+  steps: AgentTraceStep[];
+}
