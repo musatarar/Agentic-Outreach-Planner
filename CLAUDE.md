@@ -57,6 +57,9 @@ An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]*
    `feat/*` too, so the branch can't rot.
 5. **Squash merge only** [gate — repo setting]. One PR = one commit on `master`;
    `git revert` is the undo path.
+6. **Plans follow the planning discipline** [convention]. Before writing any
+   implementation plan (ticket plan, multi-PR breakdown, ADR), invoke the
+   `planning-discipline` skill and hold the plan to it.
 
 ## Testing & database
 
@@ -66,6 +69,9 @@ An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]*
 - `python manage.py test` builds a fresh test database every run and mocks every LLM
   provider call. Real-provider evals are separate, manually gated workflows — never on
   push/PR.
+- **Existing tests are pinned**: needing to edit one to land a change is a design smell —
+  redesign (usually flag-gating) or get explicit authorization first (details in the
+  `planning-discipline` skill).
 
 ## Git
 
