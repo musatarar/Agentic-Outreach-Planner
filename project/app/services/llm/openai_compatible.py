@@ -22,6 +22,7 @@ qualifier is load-bearing.
 import json
 import os
 import time
+from collections.abc import Sequence
 
 import httpx
 
@@ -35,6 +36,7 @@ from .base import (
     read_field,
     read_sequence,
 )
+from .chat_types import Message, ToolCallRequest, ToolSpec
 from .errors import LLMAuthError, LLMMalformedResponseError, map_httpx_error
 
 # Per-HTTP-attempt timeout. A constructor argument rather than a module
@@ -123,6 +125,39 @@ class OpenAICompatibleClient(LLMClient):
             },
         }
 
+    def _chat_request(self, messages, tools, max_tokens):
+        """Chat-shaped counterpart of :meth:`_request` (MUS-29).
+
+        Same endpoint, same headers; the body carries the full conversation
+        translated by :func:`_wire_chat_message` plus, when offered, the tools
+        in the ``{"type": "function", "function": {...}}`` envelope every
+        OpenAI-compatible provider expects.
+        """
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.default_max_tokens,
+            "messages": [_wire_chat_message(m) for m in messages],
+        }
+        if tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": dict(t.parameters),
+                    },
+                }
+                for t in tools
+            ]
+        return f"{self.base_url}/chat/completions", {
+            "headers": {
+                "Authorization": f"Bearer {self._api_key()}",
+                "Content-Type": "application/json",
+            },
+            "json": body,
+        }
+
     # -- the two call paths -------------------------------------------------
 
     def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
@@ -169,17 +204,76 @@ class OpenAICompatibleClient(LLMClient):
 
         return self._build_result(data, latency_s)
 
+    async def agenerate_chat(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> LLMResult:
+        # Mirrors agenerate: same client, timeout, and error mapping — only the
+        # request body differs. Async-only by design; see the base class.
+        url, kwargs = self._chat_request(messages, tools, max_tokens)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        client = self._async_client.get()
+        started = time.perf_counter()
+        try:
+            response = await client.post(url, **kwargs)
+            latency_s = time.perf_counter() - started
+            response.raise_for_status()
+            data = response.json()
+        except _REQUEST_ERRORS as exc:
+            raise map_httpx_error(exc, self.provider_name).with_latency(
+                time.perf_counter() - started
+            ) from exc
+
+        return self._build_result(data, latency_s)
+
     async def aclose(self) -> None:
         await self._async_client.aclose()
+
+    def _read_tool_calls(self, message: object) -> tuple[ToolCallRequest, ...]:
+        """Collect ``message.tool_calls`` into :class:`ToolCallRequest`s.
+
+        ``function.arguments`` arrives as a JSON *string* on this wire format;
+        one that does not parse is a provider contract violation
+        (``LLMMalformedResponseError``), not a skippable entry — the agent loop
+        would otherwise execute a tool with silently-wrong arguments. An entry
+        whose id or name is missing, or whose parsed arguments are not a JSON
+        object, is unreadable and dropped, mirroring the Claude adapter's
+        Mapping-only acceptance of ``input``.
+        """
+        calls = []
+        for entry in read_sequence(message, "tool_calls"):
+            function = read_field(entry, "function")
+            call_id = coerce_text(read_field(entry, "id"))
+            name = coerce_text(read_field(function, "name"))
+            raw_arguments = read_field(function, "arguments")
+            if not (call_id and name and isinstance(raw_arguments, str)):
+                continue
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc:
+                raise LLMMalformedResponseError(
+                    f"{self.provider_label} returned tool-call arguments that are not valid JSON.",
+                    provider=self.provider_name,
+                ) from exc
+            if isinstance(arguments, dict):
+                calls.append(ToolCallRequest(id=call_id, name=name, arguments=arguments))
+        return tuple(calls)
 
     def _build_result(self, data, latency_s) -> LLMResult:
         """Turn a chat-completions body into an :class:`LLMResult`.
 
-        The text is the one field we insist on: every way its subscript chain
-        can break — missing key, empty ``choices``, a null ``content``,
-        whitespace-only text — arrives at the caller as a single
-        ``LLMMalformedResponseError`` rather than as a ``KeyError`` leaking out
-        of the LLM layer with no provider attached.
+        The one thing we insist on is that the message says *something* — text,
+        tool calls, or both. Every way the subscript chain down to ``message``
+        can break (missing key, empty ``choices``) arrives at the caller as a
+        single ``LLMMalformedResponseError`` rather than as a ``KeyError``
+        leaking out of the LLM layer with no provider attached. ``content`` is
+        legitimately ``null`` on a pure tool-call response (MUS-29), so missing
+        text is only an error when there are no tool calls either.
 
         Everything else is best-effort. ``usage`` and ``model`` are not part of
         the contract we depend on: Groq sends them, and the spec permits their
@@ -187,10 +281,13 @@ class OpenAICompatibleClient(LLMClient):
         result — not an error, and emphatically not a zero.
         """
         try:
-            text = data["choices"][0]["message"]["content"].strip()
+            message = data["choices"][0]["message"]
         except _SHAPE_ERRORS as exc:
             raise map_httpx_error(exc, self.provider_name) from exc
-        if not text:
+        tool_calls = self._read_tool_calls(message)
+        content = read_field(message, "content")
+        text = content.strip() if isinstance(content, str) else ""
+        if not text and not tool_calls:
             raise LLMMalformedResponseError(
                 f"{self.provider_label} returned an empty completion.",
                 provider=self.provider_name,
@@ -214,7 +311,35 @@ class OpenAICompatibleClient(LLMClient):
             finish_reason=normalize_finish_reason(raw_finish_reason),
             raw_finish_reason=raw_finish_reason,
             latency_s=latency_s,
+            tool_calls=tool_calls,
         )
+
+
+def _wire_chat_message(message: Message) -> dict[str, object]:
+    """One provider-neutral :class:`~.chat_types.Message`, chat-completions shaped.
+
+    An assistant turn's tool calls ride in the ``tool_calls`` array with
+    ``arguments`` re-serialized to the JSON string this wire format demands
+    (the inverse of the ``json.loads`` in ``_read_tool_calls``); a
+    ``tool_result`` turn is the ``role: "tool"`` message echoing
+    ``tool_call_id``. ``content`` is ``null``, not ``""``, on a text-less
+    assistant turn — some providers reject an empty string there.
+    """
+    if message.role == "assistant":
+        wire: dict[str, object] = {"role": "assistant", "content": message.content or None}
+        if message.tool_calls:
+            wire["tool_calls"] = [
+                {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {"name": c.name, "arguments": json.dumps(dict(c.arguments))},
+                }
+                for c in message.tool_calls
+            ]
+        return wire
+    if message.role == "tool_result":
+        return {"role": "tool", "tool_call_id": message.tool_call_id, "content": message.content}
+    return {"role": message.role, "content": message.content}
 
 
 def _mapping_or_empty(value):

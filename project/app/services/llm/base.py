@@ -26,9 +26,11 @@ call for the majority of callers that only want the string.
 import asyncio
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
+
+from .chat_types import Message, ToolCallRequest, ToolSpec
 
 # The async client an adapter caches: httpx.AsyncClient or AsyncAnthropic.
 ClientT = TypeVar("ClientT")
@@ -170,6 +172,14 @@ class LLMResult:
     ``slots=True`` means instances have no ``__dict__`` — use
     :func:`dataclasses.asdict` rather than ``vars()`` when fanning the fields out
     into span attributes.
+
+    ``tool_calls`` (MUS-29) is the model requesting tool executions, appended as
+    the LAST field with a default so existing construction stays valid. Fanout
+    audit at widening time, per the warning above: ``genai.py`` reads these
+    fields explicitly (``_record_success``, ``_finish_reasons``,
+    ``_add_run_usage``) and no ``dataclasses.asdict`` fanout exists anywhere, so
+    a defaulted trailing field cannot leak into span attributes behind the
+    telemetry allowlist's back.
     """
 
     text: str
@@ -183,6 +193,7 @@ class LLMResult:
     finish_reason: str | None = None
     raw_finish_reason: str | None = None
     latency_s: float | None = None
+    tool_calls: tuple[ToolCallRequest, ...] = ()
 
 
 class LLMClient(ABC):
@@ -230,6 +241,29 @@ class LLMClient(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} has no native async implementation; call generate() instead."
         )
+
+    async def agenerate_chat(
+        self,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> LLMResult:
+        """Async multi-turn chat with optional tool offers (MUS-29).
+
+        The agent loop's seam. ``messages`` is the running conversation in the
+        provider-neutral shapes of :mod:`.chat_types`; ``tools`` are the specs
+        offered to the model. The result may carry
+        :attr:`LLMResult.tool_calls` instead of — or alongside — text.
+
+        **Async-only by design.** The sync Claude client keeps 2 SDK-internal
+        retries (see the claude module docstring); a sync chat path would
+        double-retry underneath the loop's own retry policy. Like
+        :meth:`agenerate`, the default raises rather than impersonating async
+        via a thread pool.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no chat/tool-calling implementation.")
 
     def complete(self, prompt, max_tokens=None, timeout=None) -> str:
         """Return just the model's text completion for a single user ``prompt``.

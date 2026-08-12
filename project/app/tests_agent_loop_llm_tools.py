@@ -1,14 +1,12 @@
 """Component artifact: llm_tools (MUS-29).
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``
-and opens with a capability assertion, so a stripped-marker failure is an
-AssertionError (or a NotImplementedError from a stub), never an
-AttributeError/TypeError. The llm_tools component PR strips the markers and takes
-this module to zero; sibling artifacts stay untouched (docs/contracts/agent-loop.md).
+Planted red by the skeleton PR; this component PR stripped the
+``@unittest.expectedFailure`` markers and took the module to zero failures.
+Sibling artifacts keep their marker counts untouched
+(docs/contracts/agent-loop.md).
 """
 
 import asyncio
-import unittest
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -79,7 +77,6 @@ class ClaudeToolCallTests(SimpleTestCase):
         cls_.return_value.auth_token = None
         return claude_mod.ClaudeClient(api_key="k")
 
-    @unittest.expectedFailure
     def test_pure_tool_use_response_parses_instead_of_raising(self):
         self.assertTrue(hasattr(claude_mod.ClaudeClient, "agenerate_chat"))
         client = self._client_returning(_tool_use_response())
@@ -91,7 +88,6 @@ class ClaudeToolCallTests(SimpleTestCase):
         self.assertEqual(result.tool_calls[0].name, "get_lead_history")
         self.assertEqual(dict(result.tool_calls[0].arguments), {"limit": 5})
 
-    @unittest.expectedFailure
     def test_mixed_text_and_tool_use_yields_both(self):
         self.assertTrue(hasattr(claude_mod.ClaudeClient, "agenerate_chat"))
         client = self._client_returning(_mixed_response())
@@ -102,7 +98,6 @@ class ClaudeToolCallTests(SimpleTestCase):
         self.assertEqual(result.tool_calls[0].id, "toolu_02")
         self.assertEqual(result.finish_reason, FINISH_TOOL_CALLS)
 
-    @unittest.expectedFailure
     def test_no_text_no_tools_still_raises_malformed(self):
         self.assertTrue(hasattr(claude_mod.ClaudeClient, "agenerate_chat"))
         client = self._client_returning(_empty_response())
@@ -111,7 +106,6 @@ class ClaudeToolCallTests(SimpleTestCase):
 
 
 class BaseChatInterfaceTests(SimpleTestCase):
-    @unittest.expectedFailure
     def test_agenerate_chat_default_raises_not_implemented(self):
         self.assertTrue(hasattr(LLMClient, "agenerate_chat"))
 
@@ -132,7 +126,6 @@ class OpenAICompatibleToolCallTests(SimpleTestCase):
         client.provider_name = "groq"
         return client
 
-    @unittest.expectedFailure
     def test_null_content_with_tool_calls_parses(self):
         self.assertTrue(hasattr(oa_mod.OpenAICompatibleClient, "agenerate_chat"))
         body = {
@@ -162,7 +155,6 @@ class OpenAICompatibleToolCallTests(SimpleTestCase):
         self.assertEqual(result.tool_calls[0].arguments, {"limit": 5})
         self.assertEqual(result.finish_reason, FINISH_TOOL_CALLS)
 
-    @unittest.expectedFailure
     def test_no_text_no_tools_still_raises_malformed(self):
         self.assertTrue(hasattr(oa_mod.OpenAICompatibleClient, "agenerate_chat"))
         body = {
@@ -173,7 +165,6 @@ class OpenAICompatibleToolCallTests(SimpleTestCase):
         with self.assertRaises(LLMMalformedResponseError):
             self._bare_client()._build_result(body, 0.1)
 
-    @unittest.expectedFailure
     def test_malformed_tool_arguments_json_raises(self):
         self.assertTrue(hasattr(oa_mod.OpenAICompatibleClient, "agenerate_chat"))
         body = {
@@ -207,7 +198,6 @@ class StubChatScriptTests(SimpleTestCase):
         with mock.patch.dict("os.environ", {stub_mod.ALLOW_ENV_VAR: "1"}):
             return stub_mod.StubClient(latency_mean_s=0.0, latency_stddev_s=0.0, seed=7)
 
-    @unittest.expectedFailure
     def test_stub_sequence_is_deterministic_and_stateless(self):
         self.assertTrue(hasattr(stub_mod.StubClient, "agenerate_chat"))
         client = self._client()
@@ -228,7 +218,6 @@ class StubChatScriptTests(SimpleTestCase):
         again = asyncio.run(client.agenerate_chat(opening, tools=(HISTORY_TOOL,)))
         self.assertEqual(again.tool_calls[0].name, "get_lead_history")
 
-    @unittest.expectedFailure
     def test_stub_without_tools_stays_a_plain_completion(self):
         self.assertTrue(hasattr(stub_mod.StubClient, "agenerate_chat"))
         client = self._client()
