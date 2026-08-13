@@ -1,14 +1,14 @@
 """Component artifact: loop (MUS-29).
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``
-and opens with a capability assertion (new models resolved lazily off
-``app_models``; ``genai.tool_span`` probed with hasattr), so a stripped-marker
-failure is an AssertionError or NotImplementedError. The loop component PR
-strips the markers and takes this module to zero.
+Pins the bounded tool-calling loop and its event-sourced checkpoint: a gapless
+persisted step trace per lead, resume-after-final replay with zero re-billed
+provider calls, budget exhaustion forcing one toolless final call, epoch-CAS
+claim semantics (fresh runs claimable, terminal runs refused, a lost claim
+surfaces as ``AgentClaimLost`` with nothing written), and the ``execute_tool``
+span that carries content hashes but never payloads.
 """
 
 import asyncio
-import unittest
 
 from django.test import TestCase
 
@@ -93,7 +93,6 @@ class RunAgentLeadTests(TestCase):
         )
         return outcome, client, pks[self.lead.id]
 
-    @unittest.expectedFailure
     def test_tool_call_then_final_persists_a_gapless_trace(self):
         self.assertTrue(hasattr(app_models, "AgentStep"))  # red at skeleton
         outcome, client, pk = self._run([_tool_result(), _final()])
@@ -108,7 +107,6 @@ class RunAgentLeadTests(TestCase):
         )
         self.assertEqual(app_models.AgentLeadRun.objects.get(pk=pk).status, "done")
 
-    @unittest.expectedFailure
     def test_resume_after_final_replays_without_any_provider_call(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         _, _, pk = self._run([_tool_result(), _final()])
@@ -128,7 +126,6 @@ class RunAgentLeadTests(TestCase):
         self.assertEqual(outcome.draft_text, "Subject: Hi\n\nBody.")
         self.assertEqual(client.chat_calls, [])  # zero re-billed calls
 
-    @unittest.expectedFailure
     def test_step_budget_forces_a_toolless_final_call(self):
         self.assertTrue(hasattr(app_models, "AgentStep"))  # red at skeleton
         script = [_tool_result()] * 5 + [_final("Subject: F\n\nDone.")]
@@ -154,7 +151,6 @@ class CheckpointClaimTests(TestCase):
             stage="active_trial",
         )
 
-    @unittest.expectedFailure
     def test_claim_succeeds_on_fresh_runs_and_refuses_terminal_ones(self):
         """Instance-symmetric: either Checkpoint claims a fresh run, and neither
         can claim a run that already reached a terminal status — cover both
@@ -172,7 +168,6 @@ class CheckpointClaimTests(TestCase):
                 app_models.AgentLeadRun.objects.filter(pk=run.pk).update(status="done")
                 self.assertFalse(asyncio.run(second.claim(run.pk)))
 
-    @unittest.expectedFailure
     def test_lost_claim_surfaces_as_agent_claim_lost_with_no_provider_calls(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         run = app_models.AgentLeadRun.objects.create(
@@ -196,7 +191,6 @@ class CheckpointClaimTests(TestCase):
 
 
 class ToolSpanTests(RecordingTestCase):
-    @unittest.expectedFailure
     def test_execute_tool_span_carries_hashes_and_no_payload(self):
         self.assertTrue(hasattr(genai, "tool_span"))  # red at skeleton
         self.assertTrue(hasattr(semconv, "OPERATION_EXECUTE_TOOL"))
