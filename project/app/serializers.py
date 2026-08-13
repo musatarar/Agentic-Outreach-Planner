@@ -167,11 +167,28 @@ class LLMConfigurationSerializer(serializers.Serializer):
 
 
 class ReviewDecisionSerializer(serializers.ModelSerializer):
-    """A BD reviewer's decision on a needs_human outreach action."""
+    """A BD reviewer's decision on a needs_human outreach action.
+
+    The field surface is pinned to the triage fields: the send-decision
+    columns (``approved_copy``, ``approved_body_sha256``, ``voided_at``) are
+    written only by the queue endpoints and must never be client-writable
+    here — a crafted POST could otherwise forge a live send approval.
+    """
 
     class Meta:
         model = ReviewDecision
-        fields = "__all__"
+        fields = [
+            "id",
+            "outreach_action",
+            "kind",
+            "status",
+            "selected_action_type",
+            "proposed_name",
+            "proposed_what",
+            "proposed_when",
+            "reviewer",
+            "created_at",
+        ]
         read_only_fields = ["status", "created_at"]
         # Drop DRF's auto UniqueValidator on the OneToOne field so a duplicate
         # surfaces as the DB IntegrityError -> 409 (one code path, race-safe),
@@ -185,6 +202,13 @@ class ReviewDecisionSerializer(serializers.ModelSerializer):
                 {"outreach_action": "This action does not require human review."}
             )
         kind = data.get("kind")
+        if kind in ReviewDecision.SEND_KINDS:
+            raise serializers.ValidationError(
+                {
+                    "kind": "Send decisions are recorded by POST /api/queue/{id}/approve/ "
+                    "or /dismiss/, not this endpoint."
+                }
+            )
         if kind == ReviewDecision.KIND_SELECT:
             if data.get("selected_action_type") not in SELECTABLE_ACTION_TYPES:
                 raise serializers.ValidationError(

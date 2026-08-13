@@ -13,6 +13,7 @@ shape identical whether or not that handler is installed.
 """
 
 import datetime
+import hashlib
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -25,7 +26,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from project.app.models import DismissedOutreachKey, Event, OutreachAction, OutreachEdit
+from project.app.models import (
+    DismissedOutreachKey,
+    Event,
+    OutreachAction,
+    OutreachEdit,
+    ReviewDecision,
+)
 from project.app.serializers_queue import QueueItemSerializer, iso
 from project.app.services import dedupe, queue_copy
 
@@ -388,6 +395,16 @@ class QueueApproveView(QueueMutationView):
                 status.HTTP_409_CONFLICT,
             )
 
+        # IsAuthenticated guarantees a session identity; defensive, because an
+        # approve_send decision with no recorded approver authorizes nothing.
+        reviewer = editor_of(request)
+        if not reviewer:
+            return error(
+                "authentication_required",
+                "Approving a send requires an identified reviewer session.",
+                status.HTTP_401_UNAUTHORIZED,
+            )
+
         now = timezone.now()
         with transaction.atomic():
             action.status = OutreachAction.STATUS_APPROVED
@@ -400,6 +417,19 @@ class QueueApproveView(QueueMutationView):
             if latest is not None:
                 latest.committed = True
                 latest.save(update_fields=["committed"])
+            # The human decision dispatch() later re-verifies: who approved,
+            # when, and the exact bytes they approved, hash-bound. Re-approve
+            # after an undo creates a fresh live row (the old one is voided,
+            # so rd_one_live_send_per_action permits it).
+            approved = action.effective_copy
+            ReviewDecision.objects.create(
+                outreach_action=action,
+                kind=ReviewDecision.KIND_APPROVE_SEND,
+                status=ReviewDecision.STATUS_RESOLVED,
+                reviewer=reviewer,
+                approved_copy=approved,
+                approved_body_sha256=hashlib.sha256(approved.encode("utf-8")).hexdigest(),
+            )
 
         return Response(self.serialize(action, now=now), status=status.HTTP_200_OK)
 
@@ -493,6 +523,17 @@ class QueueDismissView(QueueMutationView):
                     "revoked_at": None,
                 },
             )
+            # Dismissal is the queue's rejection of an outbound send — recorded
+            # evidence (who, when), not just a status flip. No copy snapshot:
+            # nothing is authorized by a rejection. No collision with a live
+            # approval is possible — there is no approved→dismissed edge, so an
+            # approved action must undo (voiding its decision) first.
+            ReviewDecision.objects.create(
+                outreach_action=action,
+                kind=ReviewDecision.KIND_REJECT_SEND,
+                status=ReviewDecision.STATUS_RESOLVED,
+                reviewer=editor_of(request),
+            )
 
         return Response(self.serialize(action, now=now), status=status.HTTP_200_OK)
 
@@ -544,11 +585,24 @@ class QueueUndoView(QueueMutationView):
                 )
 
         was_dismissed = action.status == OutreachAction.STATUS_DISMISSED
+        # Leaving approved or dismissed voids the send decision that state
+        # carried — symmetrically for both kinds. Voided rows stay for audit
+        # and never authorize; dispatch() checks voided_at IS NULL.
+        leaves_send_decision = action.status in (
+            OutreachAction.STATUS_APPROVED,
+            OutreachAction.STATUS_DISMISSED,
+        )
         with transaction.atomic():
             if was_dismissed:
                 DismissedOutreachKey.objects.filter(
                     dedupe_key=action.dedupe_key, revoked_at__isnull=True
                 ).update(revoked_at=now)
+            if leaves_send_decision:
+                ReviewDecision.objects.filter(
+                    outreach_action=action,
+                    kind__in=ReviewDecision.SEND_KINDS,
+                    voided_at__isnull=True,
+                ).update(voided_at=now)
             action.status = OutreachAction.STATUS_PENDING
             action.status_changed_at = now
             action.snooze_until = None
