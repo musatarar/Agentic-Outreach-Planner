@@ -1,18 +1,13 @@
 """Component artifact: approval_gate (MUS-29).
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``
-and opens with a capability assertion (send kinds / OutboundSend resolved lazily),
-so a stripped-marker failure is an AssertionError or a NotImplementedError from
-the send-gate stub. The approval_gate component PR strips the markers and takes
-this module to zero.
-
 "Nothing sends without a recorded human approval" is a tested property, not
-prose — these are those tests.
+prose — these are those tests: the hash-bound one-shot dispatch gate, the
+queue-recorded send decisions (approve/dismiss/undo), and the serializer
+surface that keeps send decisions out of the triage endpoint.
 """
 
 import hashlib
 import itertools
-import unittest
 
 from project.app import models as app_models  # OutboundSend: lazy until Task 3 lands
 from project.app.models import Lead, OutreachAction, ReviewDecision
@@ -63,7 +58,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
             f"/api/queue/{action.pk}/undo/", data={}, content_type="application/json"
         )
 
-    @unittest.expectedFailure
     def test_dispatch_hard_raises_without_an_approve_send_decision(self):
         self.assertTrue(hasattr(app_models, "OutboundSend"))  # red at skeleton
         action = _pending_action()
@@ -73,7 +67,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
             dispatch.dispatch(action)
         self.assertFalse(app_models.OutboundSend.objects.filter(outreach_action=action).exists())
 
-    @unittest.expectedFailure
     def test_queue_approve_records_reviewer_hash_and_copy_snapshot(self):
         self.assertTrue(hasattr(ReviewDecision, "KIND_APPROVE_SEND"))  # red at skeleton
         action = _pending_action()
@@ -90,7 +83,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
             hashlib.sha256(action.effective_copy.encode("utf-8")).hexdigest(),
         )
 
-    @unittest.expectedFailure
     def test_post_approval_edit_voids_the_send_via_hash_mismatch(self):
         self.assertTrue(hasattr(ReviewDecision, "KIND_APPROVE_SEND"))  # red at skeleton
         action = _pending_action()
@@ -103,7 +95,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         with self.assertRaises(dispatch.DispatchBlocked):
             dispatch.dispatch(action)
 
-    @unittest.expectedFailure
     def test_send_is_one_shot(self):
         self.assertTrue(hasattr(app_models, "OutboundSend"))  # red at skeleton
         action = _pending_action()
@@ -119,7 +110,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         with self.assertRaises(dispatch.DispatchBlocked):
             dispatch.dispatch(action)  # CAS finds no approved row
 
-    @unittest.expectedFailure
     def test_serializer_rejects_send_kinds(self):
         self.assertTrue(hasattr(ReviewDecision, "SEND_KINDS"))  # red at skeleton
         action = _pending_action()
@@ -135,7 +125,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
                 # The error names the queue endpoints that own send decisions.
                 self.assertIn("queue", str(resp.data).lower())
 
-    @unittest.expectedFailure
     def test_undo_voids_the_approval_and_a_voided_approval_never_authorizes(self):
         self.assertTrue(hasattr(ReviewDecision, "KIND_APPROVE_SEND"))  # red at skeleton
         action = _pending_action()
@@ -151,7 +140,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         with self.assertRaises(dispatch.DispatchBlocked):
             dispatch.dispatch(action)
 
-    @unittest.expectedFailure
     def test_dismiss_records_a_reject_send_decision(self):
         """Dismissal is the queue's recorded rejection of an outbound send —
         reviewer identity and timestamp, not just a status flip."""
@@ -167,7 +155,6 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         self.assertIsNone(decision.voided_at)
         self.assertEqual(decision.approved_copy, "")  # nothing is authorized by a rejection
 
-    @unittest.expectedFailure
     def test_undo_of_dismiss_voids_the_rejection_and_reapprove_creates_a_fresh_decision(self):
         self.assertTrue(hasattr(ReviewDecision, "SEND_KINDS"))  # red at skeleton
         action = _pending_action()
