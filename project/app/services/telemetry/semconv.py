@@ -56,11 +56,16 @@ GEN_AI_TOKEN_TYPE = "gen_ai.token.type"
 TOKEN_TYPE_INPUT = "input"
 TOKEN_TYPE_OUTPUT = "output"
 
-# gen_ai.operation.name allowed values (the spec's enum). Only the two we use
-# are named; the rest of the enum is chat, create_agent, embeddings,
-# execute_tool, generate_content, invoke_workflow, retrieval, text_completion.
+# gen_ai.operation.name allowed values (the spec's enum). Only the three we
+# use are named; the rest of the enum is chat, create_agent, embeddings,
+# generate_content, invoke_workflow, retrieval, text_completion.
 OPERATION_CHAT = "chat"
 OPERATION_INVOKE_AGENT = "invoke_agent"
+OPERATION_EXECUTE_TOOL = "execute_tool"
+
+# Conditionally required on an execute_tool span: the name of the tool the
+# agent ran (MUS-29).
+GEN_AI_TOOL_NAME = "gen_ai.tool.name"
 
 # gen_ai.provider.name allowed values, for the four providers this app ships.
 # The full enum also includes aws.bedrock, azure.ai.inference, azure.ai.openai,
@@ -98,6 +103,7 @@ OPENINFERENCE_SPAN_KIND = "openinference.span.kind"
 OPENINFERENCE_KIND_AGENT = "AGENT"
 OPENINFERENCE_KIND_CHAIN = "CHAIN"
 OPENINFERENCE_KIND_LLM = "LLM"
+OPENINFERENCE_KIND_TOOL = "TOOL"
 
 LLM_MODEL_NAME = "llm.model_name"
 LLM_PROVIDER = "llm.provider"
