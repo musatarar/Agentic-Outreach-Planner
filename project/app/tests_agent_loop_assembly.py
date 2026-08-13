@@ -1,8 +1,9 @@
 """Component artifact: assembly (MUS-29) — the acceptance criteria as tests.
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``
-and opens with a capability assertion or a call into a NotImplementedError stub.
-The assembly component PR strips the markers and takes this module to zero.
+A run produces an inspectable trace per lead, survives a mid-run kill without
+losing or duplicating work, and the agent gathers context without gaining
+authority: crash-then-resume, contested claims, the resume endpoint, and the
+red-team fencing of tool results.
 
 ``_tool_result``/``_final`` are module-level copies of the same-named helpers in
 tests_agent_loop_loop.py (LLMResult builders; component modules do not import
@@ -12,7 +13,6 @@ each other).
 import dataclasses
 import inspect
 import re
-import unittest
 from datetime import datetime
 from datetime import timezone as dt_timezone
 from unittest import mock
@@ -158,7 +158,6 @@ class CrashResumeTests(TestCase):
         self.assertGreater(client.copy_calls, 0)
         self.assertEqual(app_models.AgentLeadRun.objects.count(), 0)
 
-    @unittest.expectedFailure
     def test_kill_then_resume_loses_no_work_and_duplicates_nothing(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         client = self._fake_chat(crash_after=4)  # dies after 4 of the 6 scripted calls
@@ -186,7 +185,6 @@ class CrashResumeTests(TestCase):
             seqs = list(run.steps.order_by("seq").values_list("seq", flat=True))
             self.assertEqual(seqs, list(range(1, len(seqs) + 1)))
 
-    @unittest.expectedFailure
     def test_lost_claim_produces_no_duplicate_row_and_a_later_resume_completes(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         client = self._fake_chat(crash_after=0)  # every call dies: runs exist, no steps
@@ -227,7 +225,6 @@ class CrashResumeTests(TestCase):
             OutreachAction.objects.filter(trace_run_id=run_id, lead_id="lead_001").count(), 1
         )
 
-    @unittest.expectedFailure
     def test_agent_outcome_cannot_override_the_rules(self):
         self.assertIn(
             "resume_run_id", inspect.signature(outreach.plan_outreach).parameters
@@ -239,7 +236,6 @@ class CrashResumeTests(TestCase):
 
 
 class RedTeamFencingTests(TestCase):
-    @unittest.expectedFailure
     def test_injected_note_stays_redacted_and_fenced_in_the_folded_conversation(self):
         # First statement calls into the NotImplementedError stub at skeleton.
         payload = redteam_payloads.payloads_for(redteam_payloads.DIRECT_OVERRIDE)[0]
@@ -303,7 +299,6 @@ class RuntimeDefaultTests(SimpleTestCase):
 
 
 class ResumeEndpointTests(AuthenticatedAPITestCase):
-    @unittest.expectedFailure
     def test_unknown_resume_run_id_is_a_400(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         resp = self.client.post(
