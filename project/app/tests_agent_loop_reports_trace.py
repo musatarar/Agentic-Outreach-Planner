@@ -1,13 +1,11 @@
 """Component artifact: reports_trace (MUS-29).
 
-Planted red by the skeleton PR — every test carries ``@unittest.expectedFailure``.
-``setUpTestData`` guards its new-model seeding behind a hasattr check because a
-class-setup error is not absorbed by per-test markers. The reports_trace
-component PR strips the markers and takes this module (plus the frontend
-artifact) to zero.
+"A run produces an inspectable reasoning trace per lead" is a tested property,
+not prose — these tests pin the per-action trace endpoint: run status, budgets
+used, and the ordered steps for agent actions, and a clean ``no_agent_trace``
+404 for single-shot rows so the reports page hides the toggle instead of
+special-casing an empty trace.
 """
-
-import unittest
 
 from project.app import models as app_models  # AgentLeadRun/AgentStep: lazy until Task 3 lands
 from project.app.models import Lead, OutreachAction
@@ -57,7 +55,6 @@ class TraceEndpointTests(AuthenticatedAPITestCase):
             payload={"tool_call_id": "c1", "name": "get_lead_history", "result": '{"events": []}'},
         )
 
-    @unittest.expectedFailure
     def test_trace_returns_ordered_steps_for_an_agent_action(self):
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         resp = self.client.get(f"/api/outreach/{self.action.pk}/trace/")
@@ -69,7 +66,6 @@ class TraceEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(body["lead_id"], "lead_tr1")
         self.assertEqual(body["trace_run_id"], "run-tr-1")
 
-    @unittest.expectedFailure
     def test_single_shot_actions_404_cleanly(self):
         # First statement calls into the NotImplementedError stub view at skeleton.
         bare = OutreachAction.objects.create(
