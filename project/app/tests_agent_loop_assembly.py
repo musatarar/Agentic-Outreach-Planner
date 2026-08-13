@@ -293,7 +293,6 @@ class RedTeamFencingTests(TestCase):
 
 
 class RuntimeDefaultTests(SimpleTestCase):
-    @unittest.expectedFailure
     def test_agent_is_disabled_by_default_so_merged_code_is_inert(self):
         """The bench (evals/bench_planner.py) and every existing mock seam keep
         driving the single-shot path until an operator opts in."""
