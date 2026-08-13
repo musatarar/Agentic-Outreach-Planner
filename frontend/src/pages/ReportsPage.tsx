@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { errorMessage } from '../api/client';
-import { fetchReports } from '../api/endpoints';
-import type { Lead, OutreachAction } from '../api/types';
+import { fetchOutreachTrace, fetchReports } from '../api/endpoints';
+import type { AgentTrace, Lead, OutreachAction } from '../api/types';
 import { EmptyState, ErrorMessage } from '../components/Messages';
 import { PageHeader } from '../components/PageHeader';
 import { PriorityBadge } from '../components/PriorityBadge';
 import { formatActionType, formatTimestamp } from '../util/labels';
+import { hidesTraceToggle, traceStepViews } from '../util/trace';
 
 interface LeadGroup {
   lead: Lead;
@@ -25,6 +26,74 @@ function groupByLead(actions: OutreachAction[]): LeadGroup[] {
     }
   }
   return [...groups.values()];
+}
+
+type TraceState =
+  | { phase: 'idle' }
+  | { phase: 'loading' }
+  | { phase: 'loaded'; trace: AgentTrace }
+  | { phase: 'error'; message: string }
+  | { phase: 'hidden' }; // 404: single-shot action, no agent run
+
+/**
+ * Collapsible per-entry agent step log. Lazy: nothing is fetched until the
+ * first expand, and a `no_agent_trace` 404 removes the toggle entirely —
+ * single-shot rows simply have no trace to show.
+ */
+function TraceSection({ actionId }: { actionId: number }) {
+  const [state, setState] = useState<TraceState>({ phase: 'idle' });
+
+  if (state.phase === 'hidden') return null;
+
+  const load = () => {
+    if (state.phase !== 'idle') return;
+    setState({ phase: 'loading' });
+    fetchOutreachTrace(actionId)
+      .then((trace) => setState({ phase: 'loaded', trace }))
+      .catch((err: unknown) => {
+        setState(
+          hidesTraceToggle(err)
+            ? { phase: 'hidden' }
+            : { phase: 'error', message: errorMessage(err) },
+        );
+      });
+  };
+
+  return (
+    <details
+      className="copy-block"
+      onToggle={(event) => {
+        if ((event.target as HTMLDetailsElement).open) load();
+      }}
+    >
+      <summary>How this draft was reached</summary>
+      {state.phase === 'loading' && <div className="bd-note">Loading trace…</div>}
+      {state.phase === 'error' && (
+        <div className="bd-note">Failed to load trace: {state.message}</div>
+      )}
+      {state.phase === 'loaded' && (
+        <>
+          <div className="bd-note">
+            Run {state.trace.status} · {state.trace.steps_used} steps ·{' '}
+            {state.trace.tool_calls_used} tool calls
+          </div>
+          <ol className="trace-steps">
+            {traceStepViews(state.trace.steps).map((view) => (
+              <li key={view.seq}>
+                <div className="section-label">{view.title}</div>
+                {view.text !== '' &&
+                  (view.pre ? (
+                    <div className="copy-pre">{view.text}</div>
+                  ) : (
+                    <div>{view.text}</div>
+                  ))}
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+    </details>
+  );
 }
 
 function Entry({ entry }: { entry: OutreachAction }) {
@@ -50,6 +119,8 @@ function Entry({ entry }: { entry: OutreachAction }) {
       ) : (
         <div className="bd-note">No copy generated.</div>
       )}
+
+      <TraceSection actionId={entry.id} />
 
       {entry.further_action && (
         <div className="next-action">

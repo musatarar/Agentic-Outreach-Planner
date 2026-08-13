@@ -1,5 +1,6 @@
 import { getJson, postJson, putJson } from './client';
 import type {
+  AgentTrace,
   AuthConsumeInput,
   AuthConsumeResult,
   AuthMe,
@@ -29,6 +30,9 @@ export const runOutreachPlan = () =>
   postJson<OutreachAction[]>('/api/outreach/run/', {});
 
 export const fetchReports = () => getJson<OutreachAction[]>('/api/reports/');
+
+export const fetchOutreachTrace = (id: number) =>
+  getJson<AgentTrace>(`/api/outreach/${id}/trace/`);
 
 export const fetchReviewQueue = () => getJson<ReviewQueue>('/api/review-queue/');
 
