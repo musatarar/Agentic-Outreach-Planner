@@ -436,3 +436,89 @@ class ResumeEndpointTests(AuthenticatedAPITestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "unknown_run")
+
+    def test_resume_with_the_agent_flag_off_is_refused_rather_than_replanned(self):
+        """MB3: the view gates resume purely on `AgentLeadRun` rows existing,
+        never on the flag, and those rows survive a crash. Every piece of resume
+        machinery — run lookup, prior steps, claims, the already-finalized
+        filter — sits inside `if runtime.agent_enabled:`, while the telemetry
+        layer reuses the supplied run id and stamps it on every new row.
+
+        So a crash with the flag on followed by an operator flipping it off and
+        restarting (a natural incident response) re-bills every lead
+        single-shot, including ones a flag-on resume would have replayed from
+        the log at zero cost, and then serves the crashed agent run's step log
+        as the provenance of a draft that was written single-shot.
+        """
+        self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
+        _seed_leads(2)
+        with (
+            override_settings(OUTREACH_AGENT_ENABLED=True),
+            mock.patch.object(outreach, "get_llm_client", return_value=_ScriptedChatClient({})),
+        ):
+            with self.assertRaises(Exception):
+                outreach.plan_outreach()  # dies before phase 5: rows exist, no actions
+        run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
+        self.assertIsNotNone(run_id)
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 0)
+
+        client = _SingleShotClient()
+        with (
+            override_settings(OUTREACH_AGENT_ENABLED=False),
+            mock.patch.object(outreach, "get_llm_client", return_value=client),
+        ):
+            resp = self.client.post(
+                "/api/outreach/run/",
+                data={"resume_run_id": run_id},
+                content_type="application/json",
+            )
+
+        self.assertEqual(client.copy_calls, 0)  # nothing re-billed single-shot
+        # Nor mislabelled: a row stamped with the crashed agent run's id makes
+        # the trace endpoint serve that run's step log as this draft's
+        # provenance, for a draft the agent never wrote.
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 0)
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "agent_disabled")
+
+
+@override_settings(OUTREACH_AGENT_ENABLED=True)
+class ResumeValidationTests(TestCase):
+    """FU-A: the guards belong at the mechanism, not only at the one view that
+    happens to reach it. `plan_outreach` is importable, scriptable and called
+    directly by tests and scripts; a guard only the view enforces is a guard
+    the next caller does not get."""
+
+    @classmethod
+    def setUpTestData(cls):
+        _seed_leads(1)
+
+    def test_plan_outreach_refuses_an_unknown_resume_run_id(self):
+        client = _ScriptedChatClient({})
+        with mock.patch.object(outreach, "get_llm_client", return_value=client):
+            with self.assertRaises(outreach.UnknownRun):
+                outreach.plan_outreach(resume_run_id="no-such-run")
+        # A typo'd id must not mint a fully-billed run under itself.
+        self.assertEqual(client.chat_calls, [])
+        self.assertEqual(app_models.AgentLeadRun.objects.count(), 0)
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id="no-such-run").count(), 0)
+
+    def test_plan_outreach_refuses_a_resume_when_the_agent_is_disabled(self):
+        self._crashed_run()
+        run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
+        single_shot = _SingleShotClient()
+        with (
+            override_settings(OUTREACH_AGENT_ENABLED=False),
+            mock.patch.object(outreach, "get_llm_client", return_value=single_shot),
+        ):
+            with self.assertRaises(outreach.AgentDisabled):
+                outreach.plan_outreach(resume_run_id=run_id)
+        self.assertEqual(single_shot.copy_calls, 0)
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 0)
+
+    def _crashed_run(self):
+        client = _ScriptedChatClient({})
+        with mock.patch.object(outreach, "get_llm_client", return_value=client):
+            with self.assertRaises(Exception):
+                outreach.plan_outreach()
+        return client

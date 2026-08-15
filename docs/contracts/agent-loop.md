@@ -183,8 +183,12 @@ collapsible "How this draft was reached" per reports entry.
 
 ```python
 def plan_outreach(resume_run_id: str | None = None)
+# Both refusals are raised by plan_outreach itself, before any read or span, so
+# a refused resume writes no row and makes no provider call. The view maps them:
+#   UnknownRun    → 400 {"error": "unknown_run"}     no AgentLeadRun rows match
+#   AgentDisabled → 400 {"error": "agent_disabled"}  OUTREACH_AGENT_ENABLED off
+# Unknown is checked first, so a typo is reported as a typo whatever the flag.
 # POST /api/outreach/run/ accepts {"resume_run_id": "<uuid>"}
-#   → 400 {"error": "unknown_run"} when no AgentLeadRun rows match
 async def _agenerate_for(item, client, runtime, client_error=None,
                          agent_plan=None, checkpoint=None)
 
