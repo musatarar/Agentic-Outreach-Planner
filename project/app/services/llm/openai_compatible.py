@@ -118,18 +118,24 @@ class OpenAICompatibleClient(LLMClient):
             provider=self.provider_name,
         )
 
-    def _request(self, prompt, max_tokens):
+    def _post(self, body):
+        """One request body, addressed and authenticated: ``(url, kwargs)``."""
         return f"{self.base_url}/chat/completions", {
             "headers": {
                 "Authorization": f"Bearer {self._api_key()}",
                 "Content-Type": "application/json",
             },
-            "json": {
+            "json": body,
+        }
+
+    def _request(self, prompt, max_tokens):
+        return self._post(
+            {
                 "model": self.model,
                 "max_tokens": max_tokens or self.default_max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
-            },
-        }
+            }
+        )
 
     def _chat_request(self, messages, tools, max_tokens):
         """Chat-shaped counterpart of :meth:`_request` (MUS-29).
@@ -156,13 +162,7 @@ class OpenAICompatibleClient(LLMClient):
                 }
                 for t in tools
             ]
-        return f"{self.base_url}/chat/completions", {
-            "headers": {
-                "Authorization": f"Bearer {self._api_key()}",
-                "Content-Type": "application/json",
-            },
-            "json": body,
-        }
+        return self._post(body)
 
     # -- the two call paths -------------------------------------------------
 
@@ -190,8 +190,15 @@ class OpenAICompatibleClient(LLMClient):
 
         return self._build_result(data, latency_s)
 
-    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
-        url, kwargs = self._request(prompt, max_tokens)
+    async def _apost(self, url, kwargs, timeout) -> LLMResult:
+        """Send one already-built request on the async client.
+
+        The whole async path — client, timing, status check, error mapping —
+        lives here once, so the completion and chat entry points differ only in
+        which builder produced ``(url, kwargs)``. They were byte-for-byte
+        copies of each other before MUS-66, which is one place too many for the
+        next fix to the latency clock or the error taxonomy to land.
+        """
         # The default timeout lives on the AsyncClient, so it is only repeated
         # here when this one call is overriding it.
         if timeout is not None:
@@ -210,6 +217,10 @@ class OpenAICompatibleClient(LLMClient):
 
         return self._build_result(data, latency_s)
 
+    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
+        url, kwargs = self._request(prompt, max_tokens)
+        return await self._apost(url, kwargs, timeout)
+
     async def agenerate_chat(
         self,
         messages: Sequence[Message],
@@ -221,21 +232,7 @@ class OpenAICompatibleClient(LLMClient):
         # Mirrors agenerate: same client, timeout, and error mapping — only the
         # request body differs. Async-only by design; see the base class.
         url, kwargs = self._chat_request(messages, tools, max_tokens)
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        client = self._async_client.get()
-        started = time.perf_counter()
-        try:
-            response = await client.post(url, **kwargs)
-            latency_s = time.perf_counter() - started
-            response.raise_for_status()
-            data = response.json()
-        except _REQUEST_ERRORS as exc:
-            raise map_httpx_error(exc, self.provider_name).with_latency(
-                time.perf_counter() - started
-            ) from exc
-
-        return self._build_result(data, latency_s)
+        return await self._apost(url, kwargs, timeout)
 
     async def aclose(self) -> None:
         await self._async_client.aclose()
@@ -243,32 +240,64 @@ class OpenAICompatibleClient(LLMClient):
     def _read_tool_calls(self, message: object) -> tuple[ToolCallRequest, ...]:
         """Collect ``message.tool_calls`` into :class:`ToolCallRequest`s.
 
-        ``function.arguments`` arrives as a JSON *string* on this wire format;
-        one that does not parse is a provider contract violation
-        (``LLMMalformedResponseError``), not a skippable entry — the agent loop
-        would otherwise execute a tool with silently-wrong arguments. An entry
-        whose id or name is missing, or whose parsed arguments are not a JSON
-        object, is unreadable and dropped, mirroring the Claude adapter's
-        Mapping-only acceptance of ``input``.
+        Every entry is either read or raised on. Dropping one silently (which
+        this did until MUS-66) leaves the loop executing fewer calls than the
+        model asked for, with no error and no log line to say so, and when the
+        last entry drops it promotes the turn's narration to the draft — the
+        provider said "tool call", we heard "email".
+
+        ``function.arguments`` arrives as a JSON *string* on this wire format,
+        and "no arguments" is spelled at least four ways across the providers
+        sharing it: ``"{}"``, ``""``, ``"null"``, or the key omitted entirely.
+        All four are the same request, and all four of this app's agent tools
+        take zero arguments — treating the blank spellings as a contract
+        violation failed the run on a *correct* provider response. Anything
+        else that does not parse to a JSON object still raises: the alternative
+        is executing a tool with silently-wrong arguments.
         """
         calls = []
         for entry in read_sequence(message, "tool_calls"):
             function = read_field(entry, "function")
             call_id = coerce_text(read_field(entry, "id"))
             name = coerce_text(read_field(function, "name"))
-            raw_arguments = read_field(function, "arguments")
-            if not (call_id and name and isinstance(raw_arguments, str)):
-                continue
-            try:
-                arguments = json.loads(raw_arguments)
-            except json.JSONDecodeError as exc:
+            if not (call_id and name):
                 raise LLMMalformedResponseError(
-                    f"{self.provider_label} returned tool-call arguments that are not valid JSON.",
+                    f"{self.provider_label} returned a tool call with no id or no name.",
                     provider=self.provider_name,
-                ) from exc
-            if isinstance(arguments, dict):
-                calls.append(ToolCallRequest(id=call_id, name=name, arguments=arguments))
+                )
+            calls.append(
+                ToolCallRequest(
+                    id=call_id,
+                    name=name,
+                    arguments=self._read_arguments(read_field(function, "arguments")),
+                )
+            )
         return tuple(calls)
+
+    def _read_arguments(self, raw: object) -> dict:
+        """One entry's ``function.arguments`` as a mapping; raise if it isn't one."""
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return {}
+        if not isinstance(raw, str):
+            raise LLMMalformedResponseError(
+                f"{self.provider_label} returned tool-call arguments that are not a JSON string.",
+                provider=self.provider_name,
+            )
+        try:
+            arguments = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMMalformedResponseError(
+                f"{self.provider_label} returned tool-call arguments that are not valid JSON.",
+                provider=self.provider_name,
+            ) from exc
+        if arguments is None:
+            return {}
+        if not isinstance(arguments, dict):
+            raise LLMMalformedResponseError(
+                f"{self.provider_label} returned tool-call arguments that are not a JSON object.",
+                provider=self.provider_name,
+            )
+        return arguments
 
     def _build_result(self, data, latency_s) -> LLMResult:
         """Turn a chat-completions body into an :class:`LLMResult`.
