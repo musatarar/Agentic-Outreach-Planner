@@ -8,6 +8,9 @@ surface that keeps send decisions out of the triage endpoint.
 
 import hashlib
 import itertools
+from unittest import mock
+
+from django.utils import timezone
 
 from project.app import models as app_models  # OutboundSend: lazy until Task 3 lands
 from project.app.models import Lead, OutreachAction, ReviewDecision
@@ -172,6 +175,108 @@ class DispatchGateTests(AuthenticatedAPITestCase):
             voided_at__isnull=True,
         )
         self.assertEqual(live.status, ReviewDecision.STATUS_RESOLVED)
+
+    def test_a_send_is_never_recorded_against_an_approval_voided_before_it_commits(self):
+        """MB1: liveness and hash equality are facts about the instant the send
+        commits, so the checks that establish them must run inside the
+        transaction that consumes them — not before it.
+
+        The interleave is the one the queue explicitly supports and documents:
+        undo voids the live decision and returns the action to pending, an edit
+        changes the bytes, and re-approve mints a fresh live decision over the
+        new copy. The action is `approved` again, so the CAS still wins — but
+        against a *different* approval than the one dispatch() checked. The send
+        that results must be attributed to the approval that is live when it
+        commits, over the bytes that are current when it commits.
+        """
+        action = _pending_action()
+        self.assertEqual(self._approve(action).status_code, 200)
+        action.refresh_from_db()
+        voided = ReviewDecision.objects.get(
+            outreach_action=action, kind=ReviewDecision.KIND_APPROVE_SEND
+        )
+        recopy = "Subject: Hello again\n\nHi there,\n\nA second nudge.\n\nBest,\nDana"
+
+        fired = []
+
+        def reviewer_cycle_then_atomic(*args, **kwargs):
+            # Only the outermost call is the send transaction; the views the
+            # cycle drives open their own, and must delegate untouched.
+            if not fired:
+                fired.append(True)
+                self.assertEqual(self._undo(action).status_code, 200)
+                OutreachAction.objects.filter(pk=action.pk).update(edited_copy=recopy)
+                self.assertEqual(self._approve(action).status_code, 200)
+            return real_atomic(*args, **kwargs)
+
+        real_atomic = dispatch.transaction.atomic
+        with mock.patch.object(
+            dispatch.transaction, "atomic", side_effect=reviewer_cycle_then_atomic
+        ):
+            record = dispatch.dispatch(action)
+
+        self.assertTrue(fired)  # the interleave really happened
+        voided.refresh_from_db()
+        self.assertIsNotNone(voided.voided_at)
+        live = ReviewDecision.objects.get(
+            outreach_action=action,
+            kind=ReviewDecision.KIND_APPROVE_SEND,
+            voided_at__isnull=True,
+        )
+        # A retracted approval authorizes nothing, and the digest on the record
+        # is the digest of what is actually there to send.
+        self.assertNotEqual(record.decision_id, voided.pk)
+        self.assertEqual(record.decision_id, live.pk)
+        self.assertEqual(record.body_sha256, hashlib.sha256(recopy.encode("utf-8")).hexdigest())
+        self.assertEqual(record.body_sha256, live.approved_body_sha256)
+
+    def test_a_void_with_no_reapproval_blocks_the_send_and_rolls_the_cas_back(self):
+        """The other half: when the window closes on a void that is *not*
+        followed by a fresh approval, there is nothing live to attribute the
+        send to, so the CAS must roll back rather than mark the action sent."""
+        action = _pending_action()
+        self.assertEqual(self._approve(action).status_code, 200)
+        action.refresh_from_db()
+
+        fired = []
+
+        def void_then_atomic(*args, **kwargs):
+            if not fired:
+                fired.append(True)
+                # Void alone — the status flip that normally accompanies undo is
+                # left off, so the CAS still finds `approved` and wins.
+                ReviewDecision.objects.filter(
+                    outreach_action=action, kind__in=ReviewDecision.SEND_KINDS
+                ).update(voided_at=timezone.now())
+            return real_atomic(*args, **kwargs)
+
+        real_atomic = dispatch.transaction.atomic
+        with mock.patch.object(dispatch.transaction, "atomic", side_effect=void_then_atomic):
+            with self.assertRaises(dispatch.DispatchBlocked):
+                dispatch.dispatch(action)
+
+        self.assertTrue(fired)
+        self.assertFalse(app_models.OutboundSend.objects.filter(outreach_action=action).exists())
+        action.refresh_from_db()
+        self.assertEqual(action.status, OutreachAction.STATUS_APPROVED)  # CAS rolled back
+
+    def test_dispatch_binds_the_send_to_the_live_decision_it_reverified(self):
+        """The re-read must not over-block: an untouched approval still sends,
+        and the recorded `OutboundSend` points at the decision that authorized
+        it — the row an auditor follows back to a named human."""
+        action = _pending_action()
+        self.assertEqual(self._approve(action).status_code, 200)
+        action.refresh_from_db()
+        live = ReviewDecision.objects.get(
+            outreach_action=action,
+            kind=ReviewDecision.KIND_APPROVE_SEND,
+            voided_at__isnull=True,
+        )
+
+        record = dispatch.dispatch(action)
+
+        self.assertEqual(record.decision_id, live.pk)
+        self.assertEqual(record.body_sha256, live.approved_body_sha256)
 
     def test_unverified_claims_still_block_approval_with_a_409(self):
         """Regression: the queue's existing fail-closed check is upstream of the
