@@ -20,6 +20,7 @@ from project.app.services.agent.tools import ToolContext
 from project.app.services.llm import (
     LLMAuthError,
     LLMBadRequestError,
+    LLMEmptyCompletionError,
     LLMError,
     LLMMalformedResponseError,
     LLMRateLimitError,
@@ -1772,7 +1773,15 @@ async def _agenerate_for(
             checkpoint=checkpoint,
         )
         if agent_outcome.error is not None:
-            return CopyOutcome(error=agent_outcome.error)
+            # Carried across, not defaulted: phase 4 renders these two into
+            # "gave up after N attempt(s) over Ns", and leaving them at zero
+            # told every reviewer the run never tried while the loop had in
+            # fact spent its whole retry budget on this lead.
+            return CopyOutcome(
+                error=agent_outcome.error,
+                attempts=agent_outcome.attempts,
+                elapsed_s=agent_outcome.elapsed_s,
+            )
         # An exhausted run hands back an empty draft with no error; the empty
         # string fails the shape gate in phase 4 and routes to a human, which
         # is the honest reading of "the budget ran out before a final".
@@ -2058,6 +2067,11 @@ FAILURE_KINDS = {
     LLMAuthError: "an authentication failure",
     LLMBadRequestError: "a rejected request",
     LLMMalformedResponseError: "an unreadable response",
+    # Listed separately from its parent so the row does not blame the wire
+    # format for what is a bad roll of the sampler. `failure_kind` walks the
+    # MRO, so this entry is what a subclass gets and "an unreadable response"
+    # stays with the structural case.
+    LLMEmptyCompletionError: "an unusable (empty or truncated) completion",
     LLMError: "an unclassified provider failure",
 }
 

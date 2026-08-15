@@ -39,6 +39,7 @@ import anthropic
 import httpx
 
 from .base import (
+    FINISH_TOOL_CALLS,
     LLMClient,
     LLMResult,
     LoopBoundAsyncClient,
@@ -49,7 +50,12 @@ from .base import (
     read_sequence,
 )
 from .chat_types import Message, ToolCallRequest, ToolSpec
-from .errors import LLMAuthError, LLMMalformedResponseError, map_anthropic_error, map_httpx_error
+from .errors import (
+    LLMAuthError,
+    LLMEmptyCompletionError,
+    map_anthropic_error,
+    map_httpx_error,
+)
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
@@ -280,18 +286,28 @@ class ClaudeClient(LLMClient):
                         ToolCallRequest(id=call_id, name=name, arguments=dict(arguments))
                     )
         text = "".join(parts).strip()
+        raw_finish_reason = coerce_text(read_field(response, "stop_reason"))
+
         if not text and not tool_calls:
-            # A 200 carrying neither a text block nor a tool call is a contract
-            # violation, not a blip. Returning "" instead would land a blank
-            # draft in the review queue labelled "shape check failed", pointing
-            # the reviewer at the wrong problem entirely.
-            raise LLMMalformedResponseError(
+            # A 200 carrying neither a text block nor a tool call is a
+            # degenerate sample. Returning "" instead would land a blank draft
+            # in the review queue labelled "shape check failed", pointing the
+            # reviewer at the wrong problem entirely.
+            raise LLMEmptyCompletionError(
                 "Claude returned a response with no text content and no tool calls.",
+                provider=self.provider_name,
+            )
+        # `stop_reason: tool_use` with nothing readable in the tool_use blocks:
+        # the text is the model's reasoning on its way to a call it never
+        # managed to make, and finalizing it would publish that reasoning as
+        # the outreach email. Mirrors the same guard in openai_compatible.
+        if normalize_finish_reason(raw_finish_reason) == FINISH_TOOL_CALLS and not tool_calls:
+            raise LLMEmptyCompletionError(
+                "Claude signalled a tool call but sent none we could read.",
                 provider=self.provider_name,
             )
 
         usage = read_field(response, "usage")
-        raw_finish_reason = coerce_text(read_field(response, "stop_reason"))
         return LLMResult(
             text=text,
             provider=self.provider_name,

@@ -184,6 +184,32 @@ class LLMMalformedResponseError(LLMError):
     fault_domain = FAULT_CONTRACT
 
 
+class LLMEmptyCompletionError(LLMMalformedResponseError):
+    """The provider answered with a sample we cannot use: nothing, or a turn it
+    marked as a tool call while carrying no tool call we could read.
+
+    Split from the parent because the parent's reasoning does not reach this
+    case. "A shape we don't understand is a contract problem, not a blip" is
+    right about a missing ``choices`` key or a body that isn't JSON — the wire
+    format genuinely disagrees, and the next request will disagree identically.
+    It is wrong about a *degenerate sample*: the format was fine, the sampler
+    produced nothing usable this time, and the same request very often succeeds
+    on the next roll. Observed on groq/llama-3.1-8b-instant, where three of nine
+    leads in one run drew an empty completion while the rest of the run, on the
+    same model and the same prompt shape, drew perfectly good drafts.
+
+    So this one is **retryable**, and the fault is the provider's rather than a
+    contract mismatch neither party can fix by waiting.
+
+    A subclass rather than a sibling, deliberately: every existing
+    ``except LLMMalformedResponseError`` still catches it, so making the
+    distinction costs no caller a change.
+    """
+
+    retryable = True
+    fault_domain = FAULT_PROVIDER
+
+
 class LLMUnexpectedError(LLMError):
     """Something that is not a provider failure, caught where one was expected.
 
@@ -435,6 +461,49 @@ def _status_of(exc: BaseException) -> int | None:
 _MALFORMED_EXCEPTIONS = (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError)
 
 
+# How much of an error body to keep. `str(httpx.HTTPStatusError)` is a canned
+# sentence naming the status code and linking MDN -- it repeats what the caller
+# already has and omits the only field that says *why*, which is the body. So
+# the body is appended, bounded here rather than downstream: `outreach.py` caps
+# what a reviewer sees, but spans and logs read this message too, and a proxy
+# answering a 502 with a full HTML page must not reach any of them whole.
+_BODY_EXCERPT_MAX_CHARS = 300
+
+
+def _response_detail(response: httpx.Response) -> str:
+    """The provider's own explanation, bounded, or ``""`` when there isn't one.
+
+    Every OpenAI-compatible provider puts it in ``error.message`` (Groq's
+    ``tool_use_failed``, a decommissioned model, a context-length overflow);
+    that field is preferred over the raw body because it is the one sentence a
+    human wants. Anything else degrades to a truncated excerpt.
+
+    Total by construction. The mappers are pure and must not raise: a streaming
+    response has not been read, so ``.text`` raises ``ResponseNotRead`` on it,
+    and turning a provider's error into our own traceback is the one outcome
+    worse than losing the detail.
+    """
+    try:
+        body = response.text
+    except Exception:
+        return ""
+    if not body:
+        return ""
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        candidate = error.get("message") if isinstance(error, dict) else payload.get("message")
+        if isinstance(candidate, str) and candidate.strip():
+            body = candidate.strip()
+    body = " ".join(body.split())
+    if len(body) > _BODY_EXCERPT_MAX_CHARS:
+        body = body[:_BODY_EXCERPT_MAX_CHARS].rstrip() + "..."
+    return body
+
+
 def map_httpx_error(exc: BaseException, provider: str | None = None) -> LLMError:
     """Translate an ``httpx`` (or response-parsing) exception into an
     :class:`LLMError`.
@@ -450,9 +519,10 @@ def map_httpx_error(exc: BaseException, provider: str | None = None) -> LLMError
 
     if isinstance(exc, httpx.HTTPStatusError):
         retry_after = _parse_retry_after(exc.response.headers)
+        detail = _response_detail(exc.response)
         return _from_status_code(
             exc.response.status_code,
-            message,
+            f"{message} {detail}" if detail else message,
             provider=provider,
             retry_after=retry_after,
             cause=exc,
@@ -494,6 +564,7 @@ __all__ = [
     "LLMAuthError",
     "LLMBadRequestError",
     "LLMMalformedResponseError",
+    "LLMEmptyCompletionError",
     "LLMUnexpectedError",
     "map_anthropic_error",
     "map_httpx_error",

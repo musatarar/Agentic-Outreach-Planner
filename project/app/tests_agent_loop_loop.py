@@ -153,7 +153,9 @@ class RunAgentLeadTests(TestCase):
         self.assertEqual(client.chat_calls[-1]["tools"], ())  # forced final: no tools offered
 
 
-@override_settings(OUTREACH_MAX_ATTEMPTS=3, OUTREACH_INITIAL_BACKOFF_S=0.0, OUTREACH_MAX_BACKOFF_S=0.0)
+@override_settings(
+    OUTREACH_MAX_ATTEMPTS=3, OUTREACH_INITIAL_BACKOFF_S=0.0, OUTREACH_MAX_BACKOFF_S=0.0
+)
 class AgentFailureAccountingTests(TestCase):
     """What the reviewer's failure sentence is built from.
 

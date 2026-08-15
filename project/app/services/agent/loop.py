@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -50,12 +51,23 @@ class AgentOutcome:
     the rules engine keeps sole authority over classification, and this package
     never imports the send-gate module — both facts are pinned by
     ``tests_agent_loop_assembly.py``.
+
+    ``attempts`` and ``elapsed_s`` are the two numbers phase 4's failure
+    sentence is built from ("gave up after 4 attempts over 31s"), and this
+    dataclass is the only thing that crosses back to phase 3 — so a failure
+    that does not carry them arrives as "0 attempt(s) over 0.0s", which tells a
+    reviewer the run never tried. They count *provider attempts for this lead*,
+    summed across every step of the loop, which is the honest reading of "how
+    hard we tried" for a path that can legitimately call the provider more than
+    once. Meaningful only on a failure, exactly like ``CopyOutcome``'s pair.
     """
 
     draft_text: str = ""
     error: Exception | None = None
     steps_used: int = 0
     tool_calls_used: int = 0
+    attempts: int = 0
+    elapsed_s: float = 0.0
 
 
 def _rendered_request(messages: Sequence[Message]) -> str:
@@ -127,20 +139,30 @@ async def run_agent_lead(
     steps_used = sum(1 for step in steps if step.kind == KIND_LLM_CALL)
     tool_calls_used = sum(1 for step in steps if step.kind == KIND_TOOL_RESULT)
 
-    # Resume replay: a persisted final is the answer — zero provider calls.
-    if steps and steps[-1].kind == KIND_FINAL:
+    # What phase 4's failure sentence is built from. Counted here rather than
+    # derived from `steps_used` afterwards because the two differ exactly when
+    # it matters: a step that failed every retry persists no step record, so a
+    # lead that spent its whole budget and wrote nothing would report zero.
+    attempts = 0
+    started = time.monotonic()
+
+    def outcome(*, draft_text: str = "", error: Exception | None = None) -> AgentOutcome:
+        """One exit shape, so no return path can forget the accounting."""
         return AgentOutcome(
-            draft_text=str(steps[-1].payload.get("text") or ""),
+            draft_text=draft_text,
+            error=error,
             steps_used=steps_used,
             tool_calls_used=tool_calls_used,
+            attempts=attempts,
+            elapsed_s=time.monotonic() - started,
         )
 
+    # Resume replay: a persisted final is the answer — zero provider calls.
+    if steps and steps[-1].kind == KIND_FINAL:
+        return outcome(draft_text=str(steps[-1].payload.get("text") or ""))
+
     if not await checkpoint.claim(lead_run_pk):
-        return AgentOutcome(
-            error=AgentClaimLost(f"run {lead_run_pk}: another worker owns the claim"),
-            steps_used=steps_used,
-            tool_calls_used=tool_calls_used,
-        )
+        return outcome(error=AgentClaimLost(f"run {lead_run_pk}: another worker owns the claim"))
 
     # Function-local for the same reasons as in outreach.py — genai so the
     # module imports with no telemetry configured, MAX_COPY_TOKENS because
@@ -171,6 +193,8 @@ async def run_agent_lead(
                     messages: Sequence[Message] = messages,
                     offered: Sequence[Any] = offered,
                 ) -> LLMResult:
+                    nonlocal attempts
+                    attempts += 1
                     return await client.agenerate_chat(
                         messages,
                         tools=offered,
@@ -242,11 +266,7 @@ async def run_agent_lead(
                         steps_used=steps_used,
                         tool_calls_used=tool_calls_used,
                     )
-                    return AgentOutcome(
-                        draft_text=result.text,
-                        steps_used=steps_used,
-                        tool_calls_used=tool_calls_used,
-                    )
+                    return outcome(draft_text=result.text)
 
                 # A forced-final response with no text: the budget ran out
                 # before the model produced a final. Persist the call, mark the
@@ -258,7 +278,7 @@ async def run_agent_lead(
                     steps_used=steps_used,
                     tool_calls_used=tool_calls_used,
                 )
-                return AgentOutcome(steps_used=steps_used, tool_calls_used=tool_calls_used)
+                return outcome()
 
         # Entered with the step budget already spent (a resumed run that
         # crashed after its last allowed call) and no final on record.
@@ -269,10 +289,10 @@ async def run_agent_lead(
             steps_used=steps_used,
             tool_calls_used=tool_calls_used,
         )
-        return AgentOutcome(steps_used=steps_used, tool_calls_used=tool_calls_used)
+        return outcome()
     except AgentClaimLost as exc:
         # Surfaced from an append: the run has a new owner. Write nothing.
-        return AgentOutcome(error=exc, steps_used=steps_used, tool_calls_used=tool_calls_used)
+        return outcome(error=exc)
     except (LLMError, TimeoutError, UnknownTool) as exc:
         try:
             await checkpoint.append(
@@ -286,4 +306,4 @@ async def run_agent_lead(
             # The claim moved while this worker was failing; the new owner's
             # status wins and the original error still describes this attempt.
             pass
-        return AgentOutcome(error=exc, steps_used=steps_used, tool_calls_used=tool_calls_used)
+        return outcome(error=exc)

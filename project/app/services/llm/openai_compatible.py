@@ -27,6 +27,7 @@ from collections.abc import Sequence
 import httpx
 
 from .base import (
+    FINISH_TOOL_CALLS,
     LLMClient,
     LLMResult,
     LoopBoundAsyncClient,
@@ -37,7 +38,12 @@ from .base import (
     read_sequence,
 )
 from .chat_types import Message, ToolCallRequest, ToolSpec
-from .errors import LLMAuthError, LLMMalformedResponseError, map_httpx_error
+from .errors import (
+    LLMAuthError,
+    LLMEmptyCompletionError,
+    LLMMalformedResponseError,
+    map_httpx_error,
+)
 
 # Per-HTTP-attempt timeout. A constructor argument rather than a module
 # constant so MUS-26 only has to wire Django settings into the caller; the value
@@ -287,16 +293,33 @@ class OpenAICompatibleClient(LLMClient):
         tool_calls = self._read_tool_calls(message)
         content = read_field(message, "content")
         text = content.strip() if isinstance(content, str) else ""
+
+        first_choice = _first_choice(data)
+        raw_finish_reason = coerce_text(read_field(first_choice, "finish_reason"))
+        finish_reason = normalize_finish_reason(raw_finish_reason)
+
         if not text and not tool_calls:
-            raise LLMMalformedResponseError(
+            raise LLMEmptyCompletionError(
                 f"{self.provider_label} returned an empty completion.",
+                provider=self.provider_name,
+            )
+        # The provider says the model wanted to call a tool, and not one call
+        # survived parsing. Whatever sits in `content` is the model talking to
+        # itself on the way to that call, NOT an answer -- handing it back lets
+        # the agent loop finalize a monologue as the outreach email, which is
+        # how "To write a tailored outreach email, I should start by gathering
+        # more context about the lead." reached a reviewer as Suggested Copy.
+        #
+        # Checked here rather than in the loop because it is a fact about the
+        # response, so every caller gets it rather than just `run_agent_lead`.
+        if finish_reason == FINISH_TOOL_CALLS and not tool_calls:
+            raise LLMEmptyCompletionError(
+                f"{self.provider_label} signalled a tool call but sent none we could read.",
                 provider=self.provider_name,
             )
 
         usage = _mapping_or_empty(data.get("usage"))
         prompt_details = _mapping_or_empty(usage.get("prompt_tokens_details"))
-        first_choice = _first_choice(data)
-        raw_finish_reason = coerce_text(read_field(first_choice, "finish_reason"))
         return LLMResult(
             text=text,
             provider=self.provider_name,

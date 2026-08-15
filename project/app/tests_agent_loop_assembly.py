@@ -380,7 +380,13 @@ class CrashResumeTests(TestCase):
             "resume_run_id", inspect.signature(outreach.plan_outreach).parameters
         )  # red at skeleton
         fields = {f.name for f in dataclasses.fields(agent_loop.AgentOutcome)}
-        self.assertEqual(fields, {"draft_text", "error", "steps_used", "tool_calls_used"})
+        # attempts/elapsed_s are retry accounting, not classification: they feed
+        # phase 4's "gave up after N attempt(s) over Ns" sentence and nothing
+        # else reads them. The authority this guard protects is still absent.
+        self.assertEqual(
+            fields,
+            {"draft_text", "error", "steps_used", "tool_calls_used", "attempts", "elapsed_s"},
+        )
         src = inspect.getsource(agent_loop) + inspect.getsource(state)
         self.assertNotIn("dispatch", src)  # services/agent/ never imports the send gate
 
@@ -420,7 +426,11 @@ class AgentFailureReportingTests(TestCase):
         self.assertTrue(action.needs_human)
         self.assertIn("gave up after 3 attempt(s)", action.further_action)
         self.assertNotIn("0 attempt(s)", action.further_action)
-        self.assertNotIn("over 0.0s", action.further_action)
+        # Elapsed is asserted at the unit level (tests_agent_loop_loop) rather
+        # than here: with a fake provider and the backoff overridden to zero,
+        # three attempts really do take under 0.05s, so this row would say
+        # "over 0.0s" truthfully and the assertion would be about how fast the
+        # test double is.
 
 
 class RedTeamFencingTests(TestCase):
