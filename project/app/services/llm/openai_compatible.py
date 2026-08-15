@@ -243,32 +243,64 @@ class OpenAICompatibleClient(LLMClient):
     def _read_tool_calls(self, message: object) -> tuple[ToolCallRequest, ...]:
         """Collect ``message.tool_calls`` into :class:`ToolCallRequest`s.
 
-        ``function.arguments`` arrives as a JSON *string* on this wire format;
-        one that does not parse is a provider contract violation
-        (``LLMMalformedResponseError``), not a skippable entry — the agent loop
-        would otherwise execute a tool with silently-wrong arguments. An entry
-        whose id or name is missing, or whose parsed arguments are not a JSON
-        object, is unreadable and dropped, mirroring the Claude adapter's
-        Mapping-only acceptance of ``input``.
+        Every entry is either read or raised on. Dropping one silently (which
+        this did until MUS-66) leaves the loop executing fewer calls than the
+        model asked for, with no error and no log line to say so, and when the
+        last entry drops it promotes the turn's narration to the draft — the
+        provider said "tool call", we heard "email".
+
+        ``function.arguments`` arrives as a JSON *string* on this wire format,
+        and "no arguments" is spelled at least four ways across the providers
+        sharing it: ``"{}"``, ``""``, ``"null"``, or the key omitted entirely.
+        All four are the same request, and all four of this app's agent tools
+        take zero arguments — treating the blank spellings as a contract
+        violation failed the run on a *correct* provider response. Anything
+        else that does not parse to a JSON object still raises: the alternative
+        is executing a tool with silently-wrong arguments.
         """
         calls = []
         for entry in read_sequence(message, "tool_calls"):
             function = read_field(entry, "function")
             call_id = coerce_text(read_field(entry, "id"))
             name = coerce_text(read_field(function, "name"))
-            raw_arguments = read_field(function, "arguments")
-            if not (call_id and name and isinstance(raw_arguments, str)):
-                continue
-            try:
-                arguments = json.loads(raw_arguments)
-            except json.JSONDecodeError as exc:
+            if not (call_id and name):
                 raise LLMMalformedResponseError(
-                    f"{self.provider_label} returned tool-call arguments that are not valid JSON.",
+                    f"{self.provider_label} returned a tool call with no id or no name.",
                     provider=self.provider_name,
-                ) from exc
-            if isinstance(arguments, dict):
-                calls.append(ToolCallRequest(id=call_id, name=name, arguments=arguments))
+                )
+            calls.append(
+                ToolCallRequest(
+                    id=call_id,
+                    name=name,
+                    arguments=self._read_arguments(read_field(function, "arguments")),
+                )
+            )
         return tuple(calls)
+
+    def _read_arguments(self, raw: object) -> dict:
+        """One entry's ``function.arguments`` as a mapping; raise if it isn't one."""
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return {}
+        if not isinstance(raw, str):
+            raise LLMMalformedResponseError(
+                f"{self.provider_label} returned tool-call arguments that are not a JSON string.",
+                provider=self.provider_name,
+            )
+        try:
+            arguments = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMMalformedResponseError(
+                f"{self.provider_label} returned tool-call arguments that are not valid JSON.",
+                provider=self.provider_name,
+            ) from exc
+        if arguments is None:
+            return {}
+        if not isinstance(arguments, dict):
+            raise LLMMalformedResponseError(
+                f"{self.provider_label} returned tool-call arguments that are not a JSON object.",
+                provider=self.provider_name,
+            )
+        return arguments
 
     def _build_result(self, data, latency_s) -> LLMResult:
         """Turn a chat-completions body into an :class:`LLMResult`.

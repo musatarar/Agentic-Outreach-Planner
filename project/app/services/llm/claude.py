@@ -53,6 +53,7 @@ from .chat_types import Message, ToolCallRequest, ToolSpec
 from .errors import (
     LLMAuthError,
     LLMEmptyCompletionError,
+    LLMMalformedResponseError,
     map_anthropic_error,
     map_httpx_error,
 )
@@ -63,6 +64,25 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 # default so both providers time out on the same schedule; MUS-26 feeds it from
 # Django settings and only has to change the caller, not this module.
 DEFAULT_TIMEOUT_SECONDS = 60.0
+
+
+def _open_tool_result_blocks(wire: list[dict[str, object]]) -> list[dict[str, object]] | None:
+    """The block list of a trailing tool-result user message, if that is what
+    the wire conversation currently ends with — else ``None``.
+
+    "Currently ends with" is the whole point: only results that are *adjacent*
+    merge, so a tool result arriving after some other turn opens a new message
+    rather than reaching back into an earlier one.
+    """
+    if not wire:
+        return None
+    last = wire[-1]
+    content = last.get("content")
+    if last.get("role") != "user" or not isinstance(content, list):
+        return None
+    if not all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+        return None
+    return content
 
 
 class ClaudeClient(LLMClient):
@@ -114,8 +134,16 @@ class ClaudeClient(LLMClient):
         ``tool_use`` requests); a ``tool_result`` turn is, per Anthropic's
         convention, a *user* message carrying a ``tool_result`` block that
         echoes the originating call's id.
+
+        Consecutive ``tool_result`` messages fold into ONE user message holding
+        every block, which is the shape Anthropic's tool-use contract specifies
+        for a turn that requested several tools at once. One message per result
+        never 400s — the API merges consecutive user turns — so nothing here
+        fails loudly; the docs simply warn that splitting them degrades
+        parallel tool use, which is why this is checked by a test rather than
+        by the provider (MUS-66).
         """
-        wire = []
+        wire: list[dict[str, object]] = []
         for m in messages:
             if m.role == "assistant":
                 blocks = [{"type": "text", "text": m.content}] if m.content else []
@@ -125,18 +153,16 @@ class ClaudeClient(LLMClient):
                 ]
                 wire.append({"role": "assistant", "content": blocks})
             elif m.role == "tool_result":
-                wire.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": m.tool_call_id,
-                                "content": m.content,
-                            }
-                        ],
-                    }
-                )
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": m.tool_call_id,
+                    "content": m.content,
+                }
+                open_results = _open_tool_result_blocks(wire)
+                if open_results is None:
+                    wire.append({"role": "user", "content": [block]})
+                else:
+                    open_results.append(block)
             else:
                 wire.append({"role": "user", "content": m.content})
         kwargs = {
@@ -268,9 +294,13 @@ class ClaudeClient(LLMClient):
         :func:`~project.app.services.llm.base.coerce_token_count`.
         """
         # Join the text blocks; collect the tool_use blocks (skip
-        # thinking/other block types). A tool_use block only counts when its
-        # id and name are non-empty strings and its input is a Mapping —
-        # anything else is unreadable and must not become a half-built request.
+        # thinking/other block types). A tool_use block is either read or
+        # raised on: dropping one silently (which this did until MUS-66) leaves
+        # the loop executing fewer calls than the model asked for, and when the
+        # last one drops it hands the turn's narration back as if it were an
+        # answer. An absent ``input`` is the zero-argument call every one of
+        # this app's agent tools is, and reads as ``{}``; anything else
+        # non-Mapping is unreadable and must not become a half-built request.
         parts = []
         tool_calls = []
         for block in read_sequence(response, "content"):
@@ -281,10 +311,19 @@ class ClaudeClient(LLMClient):
                 call_id = coerce_text(read_field(block, "id"))
                 name = coerce_text(read_field(block, "name"))
                 arguments = read_field(block, "input")
-                if call_id and name and isinstance(arguments, Mapping):
-                    tool_calls.append(
-                        ToolCallRequest(id=call_id, name=name, arguments=dict(arguments))
+                if not (call_id and name):
+                    raise LLMMalformedResponseError(
+                        "Claude returned a tool_use block with no id or no name.",
+                        provider=self.provider_name,
                     )
+                if arguments is None:
+                    arguments = {}
+                if not isinstance(arguments, Mapping):
+                    raise LLMMalformedResponseError(
+                        "Claude returned a tool_use block whose input is not an object.",
+                        provider=self.provider_name,
+                    )
+                tool_calls.append(ToolCallRequest(id=call_id, name=name, arguments=dict(arguments)))
         text = "".join(parts).strip()
         raw_finish_reason = coerce_text(read_field(response, "stop_reason"))
 

@@ -36,7 +36,7 @@ from project.app.services.agent.tools import (
     UnknownTool,
     execute_tool,
 )
-from project.app.services.llm.base import LLMClient, LLMResult
+from project.app.services.llm.base import FINISH_TOOL_CALLS, LLMClient, LLMResult
 from project.app.services.llm.chat_types import Message, ToolCallRequest
 from project.app.services.llm.errors import LLMError
 from project.app.services.llm.retry import acall_with_retry
@@ -247,7 +247,18 @@ async def run_agent_lead(
                     steps.extend(records)
                     continue
 
-                if result.text:
+                # A turn the provider marked as a tool-call turn is a tool-call
+                # turn whatever text rides along with it: that text is the model
+                # narrating its way to a call, not the email. The adapters
+                # already refuse a tool-call turn with nothing readable in it;
+                # what is left for the loop is the forced-final turn, where no
+                # tools are offered, the response's calls are therefore
+                # discarded above, and the preamble that came with them would
+                # otherwise be persisted as the draft — which is how four
+                # literal function-call markers reached a reviewer as Suggested
+                # Copy (MUS-66). Falling through marks the run exhausted, so
+                # phase 4 routes the lead to a human rather than to that text.
+                if result.text and result.finish_reason != FINISH_TOOL_CALLS:
                     seq += 1
                     records.append(
                         StepRecord(
@@ -268,9 +279,11 @@ async def run_agent_lead(
                     )
                     return outcome(draft_text=result.text)
 
-                # A forced-final response with no text: the budget ran out
-                # before the model produced a final. Persist the call, mark the
-                # run exhausted rather than inventing an empty final step.
+                # A forced-final response with no usable final in it: no text at
+                # all, or text the provider labelled a tool-call turn. Either
+                # way the budget ran out before the model produced a draft.
+                # Persist the call, mark the run exhausted rather than inventing
+                # an empty final step or publishing a preamble as one.
                 await checkpoint.append(
                     lead_run_pk,
                     records,
