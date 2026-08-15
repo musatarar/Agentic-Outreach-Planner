@@ -19,7 +19,6 @@ taking every sibling artifact's count down with it.
 """
 
 import datetime
-import unittest
 
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.loader import MigrationLoader
@@ -139,7 +138,6 @@ class PlannerRunStatusTests(SimpleTestCase):
     """The status machine, exercised entirely in memory -- no run is saved, so
     a transition rule can never be confused with a constraint."""
 
-    @unittest.expectedFailure
     def test_status_constants_and_the_active_terminal_partition(self):
         """The six strings live in a CharField *and* are inlined a second time
         as literals inside ``Meta`` (which cannot see the enclosing class
@@ -166,7 +164,6 @@ class PlannerRunStatusTests(SimpleTestCase):
         self.assertEqual(active & terminal, set())
         self.assertEqual(active | terminal, set(_ALL_STATUSES))
 
-    @unittest.expectedFailure
     def test_allowed_transitions_is_exactly_the_contract_table(self):
         """Pinned whole. Adding an edge is a product decision (it changes which
         stages an operator can re-enter and what a paid stage can be repeated
@@ -175,7 +172,6 @@ class PlannerRunStatusTests(SimpleTestCase):
 
         self.assertEqual(PlannerRun.ALLOWED_TRANSITIONS, _TRANSITIONS)
 
-    @unittest.expectedFailure
     def test_can_transition_to_agrees_with_the_table_on_every_ordered_pair(self):
         """All 36 ordered pairs, three ways: the model, the contract's literal
         table, and ``_legal_by_product_rules`` must all agree.
@@ -197,7 +193,6 @@ class PlannerRunStatusTests(SimpleTestCase):
                     run.status = source
                     self.assertEqual(run.can_transition_to(target), expected)
 
-    @unittest.expectedFailure
     def test_an_unknown_status_has_no_legal_transitions(self):
         """Same guarantee ``OutreachAction`` gives (``tests_queue.py``): a value
         that is not in the table yields ``()``, not a ``KeyError``. A row can
@@ -215,7 +210,6 @@ class ActiveRunSlotTests(TestCase):
     """``pr_one_active_run`` and ``pr_sentinel_matches_status`` -- the pair that
     makes "one active run" true rather than intended."""
 
-    @unittest.expectedFailure
     def test_a_new_run_takes_the_active_slot_by_default(self):
         """The defaults *are* the mechanism. ``create_run`` never sets
         ``active_sentinel``; it relies on ``default=True`` to make the insert
@@ -247,7 +241,6 @@ class ActiveRunSlotTests(TestCase):
                 # differently.
                 self.assertIsNone(getattr(run, column))
 
-    @unittest.expectedFailure
     def test_a_second_active_run_is_rejected_by_the_partial_unique_index(self):
         """THE constraint. Two active runs would mean two competing selections
         writing ``OutreachAction`` rows against one queue, so the second insert
@@ -267,7 +260,6 @@ class ActiveRunSlotTests(TestCase):
         self.assertEqual(PlannerRun.objects.count(), 1)
         self.assertEqual(PlannerRun.objects.get().pk, first.pk)
 
-    @unittest.expectedFailure
     def test_the_slot_is_released_when_a_run_goes_terminal_and_cycles(self):
         """The other direction, and the one no unit test of ``create_run``
         would catch: if closing a run left the sentinel set, the product would
@@ -290,7 +282,6 @@ class ActiveRunSlotTests(TestCase):
         held = PlannerRun.objects.filter(active_sentinel=True)
         self.assertEqual([row.pk for row in held], [third.pk])
 
-    @unittest.expectedFailure
     def test_many_terminal_runs_coexist_because_nulls_are_distinct(self):
         """Why the column is nullable rather than a plain ``BooleanField``: run
         history is unbounded, and both backends treat NULLs as distinct in a
@@ -310,7 +301,6 @@ class ActiveRunSlotTests(TestCase):
             [row.pk for row in PlannerRun.objects.filter(active_sentinel=True)], [current.pk]
         )
 
-    @unittest.expectedFailure
     def test_the_sentinel_must_agree_with_the_status(self):
         """``pr_sentinel_matches_status`` rules out the half-written close.
 
@@ -363,7 +353,6 @@ class RunLeadFieldTests(TestCase):
     """``RunLead``'s columns: the defaults the read stage reads, and the
     rules/effective split that organizing principle #1 rests on."""
 
-    @unittest.expectedFailure
     def test_rule_trace_defaults_to_a_mapping_and_holds_the_v1_envelope(self):
         """``default=dict``, not ``default=list``. MUS-42 already ships the
         structured trace as ``outreach.explain()``'s schema-v1 *envelope* -- a
@@ -397,7 +386,6 @@ class RunLeadFieldTests(TestCase):
         self.assertEqual(stored["today"], "2026-03-01")
         self.assertEqual(stored, envelope)
 
-    @unittest.expectedFailure
     def test_a_fresh_row_carries_no_suggestion(self):
         """``suggestion_state`` defaults to the string ``"none"`` -- a state,
         not Python ``None``. A lead the read never reached, one whose provider
@@ -428,7 +416,6 @@ class RunLeadFieldTests(TestCase):
         self.assertIsNone(row.generated_action)
         self.assertEqual(row.generation_error, "")
 
-    @unittest.expectedFailure
     def test_rules_and_effective_are_independent_columns(self):
         """Six columns, not three plus a property. Deriving
         ``effective_priority`` from ``rules_priority`` is the obvious
@@ -472,7 +459,6 @@ class RunLeadFieldTests(TestCase):
 
 
 class SavedScopeTests(TestCase):
-    @unittest.expectedFailure
     def test_scope_names_are_unique_and_ordered(self):
         """``name`` is the handle the FE saves and re-selects by, so two rows
         called "Dormant CA" would make "load my saved scope" ambiguous with no
@@ -499,7 +485,6 @@ class RunComposerMigrationTests(TestCase):
     map says, and actually carries ``RunLead``'s uniqueness constraint and its
     selection-order index into the database."""
 
-    @unittest.expectedFailure
     def test_migration_0008_run_composer_is_the_named_node_that_creates_the_tables(self):
         """CI's ``makemigrations --check --dry-run`` proves models and
         migrations agree; it does not care what the migration is *called* or
@@ -519,7 +504,6 @@ class RunComposerMigrationTests(TestCase):
             with self.subTest(model=model.__name__):
                 self.assertIn(model._meta.db_table, tables)
 
-    @unittest.expectedFailure
     def test_a_lead_may_appear_once_in_each_of_two_different_runs(self):
         """Uniqueness is per ``(run, lead)``, not per lead. A lead last week's
         run looked at showing up again in today's is the normal case; a
@@ -545,7 +529,6 @@ class RunComposerMigrationTests(TestCase):
             [1, 2],
         )
 
-    @unittest.expectedFailure
     def test_a_lead_cannot_appear_twice_in_one_run(self):
         """``rl_one_row_per_lead_per_run``. Re-classify is specified to *replace*
         a run's RunLead rows rather than add to them, and selection counts,
@@ -562,7 +545,6 @@ class RunComposerMigrationTests(TestCase):
             _run_lead(run, lead, rules_priority=1, rules_action=actions.REENGAGE_DORMANT)
         self.assertEqual(RunLead.objects.filter(run=run).count(), 1)
 
-    @unittest.expectedFailure
     def test_rl_selection_order_index_covers_the_one_query_every_stage_runs(self):
         """``Index(fields=["run", "effective_priority", "lead"],
         name="rl_selection_order")``, pinned by name and by field list.
