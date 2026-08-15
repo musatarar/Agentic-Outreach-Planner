@@ -16,7 +16,7 @@ from project.app.services.llm import openai_compatible as oa_mod
 from project.app.services.llm import stub as stub_mod
 from project.app.services.llm.base import FINISH_TOOL_CALLS, LLMClient
 from project.app.services.llm.chat_types import Message, ToolSpec
-from project.app.services.llm.errors import LLMMalformedResponseError
+from project.app.services.llm.errors import LLMEmptyCompletionError, LLMMalformedResponseError
 
 HISTORY_TOOL = ToolSpec(
     name="get_lead_history",
@@ -188,6 +188,126 @@ class OpenAICompatibleToolCallTests(SimpleTestCase):
         }
         with self.assertRaises(LLMMalformedResponseError):
             self._bare_client()._build_result(body, 0.1)
+
+
+class DegenerateCompletionTests(SimpleTestCase):
+    """A turn the provider says was a tool call, carrying no readable tool call.
+
+    Observed against groq/llama-3.1-8b-instant: the persisted trace holds
+    ``finish_reason: "tool_calls"`` with an empty ``tool_calls`` array and the
+    model's own planning prose in ``content`` ("To write a tailored outreach
+    email, I should start by gathering more context…"). The agent loop's
+    ``if result.text:`` then finalized that prose as the email, and it reached
+    the review queue as Suggested Copy — a reviewer one click away from sending
+    the model's inner monologue to a broker.
+
+    The check belongs in the adapter rather than the loop: it is a fact about
+    the wire response, and every caller needs it, not just ``run_agent_lead``.
+
+    These are **retryable**. A model that failed to emit a parseable tool call
+    on one sample very often succeeds on the next, which makes it a blip rather
+    than the contract disagreement `LLMMalformedResponseError` describes — so
+    the class is a subclass carrying its own retryability, and structural
+    breakage keeps the non-retryable parent.
+    """
+
+    def _oa_client(self):
+        client = oa_mod.OpenAICompatibleClient.__new__(oa_mod.OpenAICompatibleClient)
+        client.model = "m"
+        client.provider_name = "groq"
+        return client
+
+    def _claude_client_returning(self, response):
+        async def fake_create(**kwargs):
+            return response
+
+        patcher = mock.patch.object(claude_mod.anthropic, "AsyncAnthropic")
+        cls_ = patcher.start()
+        self.addCleanup(patcher.stop)
+        cls_.return_value.messages.create = fake_create
+        cls_.return_value.api_key = "k"
+        cls_.return_value.auth_token = None
+        return claude_mod.ClaudeClient(api_key="k")
+
+    def test_openai_tool_call_finish_with_no_readable_calls_is_not_a_draft(self):
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "To write a tailored outreach email, I should start by "
+                            "gathering more context about the lead."
+                        ),
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "model": "m",
+            "usage": {"prompt_tokens": 900, "completion_tokens": 288},
+        }
+        with self.assertRaises(LLMEmptyCompletionError) as caught:
+            self._oa_client()._build_result(body, 0.1)
+        self.assertTrue(caught.exception.retryable)
+
+    def test_openai_empty_completion_is_retryable(self):
+        body = {
+            "choices": [{"message": {"content": None}, "finish_reason": "stop"}],
+            "model": "m",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 0},
+        }
+        with self.assertRaises(LLMEmptyCompletionError) as caught:
+            self._oa_client()._build_result(body, 0.1)
+        # Still an LLMMalformedResponseError to every existing catch site.
+        self.assertIsInstance(caught.exception, LLMMalformedResponseError)
+        self.assertTrue(caught.exception.retryable)
+
+    def test_structural_breakage_stays_non_retryable(self):
+        """The distinction this subclass exists to preserve: a degenerate sample
+        is worth another roll of the dice, a wire format we cannot read is not."""
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_lead_history", "arguments": "{not json"},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "model": "m",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 0},
+        }
+        with self.assertRaises(LLMMalformedResponseError) as caught:
+            self._oa_client()._build_result(body, 0.1)
+        self.assertNotIsInstance(caught.exception, LLMEmptyCompletionError)
+        self.assertFalse(caught.exception.retryable)
+
+    def test_claude_tool_use_stop_with_no_readable_blocks_is_not_a_draft(self):
+        response = _Obj(
+            content=[_Obj(type="text", text="Let me look that up first.")],
+            stop_reason="tool_use",
+            model="claude-sonnet-4-6",
+            usage=_usage(),
+        )
+        client = self._claude_client_returning(response)
+        with self.assertRaises(LLMEmptyCompletionError) as caught:
+            asyncio.run(
+                client.agenerate_chat([Message(role="user", content="hi")], tools=(HISTORY_TOOL,))
+            )
+        self.assertTrue(caught.exception.retryable)
+
+    def test_claude_empty_completion_is_retryable(self):
+        client = self._claude_client_returning(_empty_response())
+        with self.assertRaises(LLMEmptyCompletionError) as caught:
+            asyncio.run(client.agenerate_chat([Message(role="user", content="hi")]))
+        self.assertTrue(caught.exception.retryable)
 
 
 class StubChatScriptTests(SimpleTestCase):

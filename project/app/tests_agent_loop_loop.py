@@ -10,7 +10,7 @@ span that carries content hashes but never payloads.
 
 import asyncio
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from project.app import models as app_models  # AgentLeadRun/AgentStep: lazy until Task 3 lands
 from project.app.models import Lead
@@ -18,6 +18,7 @@ from project.app.services.agent import loop as agent_loop
 from project.app.services.agent import state, tools
 from project.app.services.llm.base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
 from project.app.services.llm.chat_types import ToolCallRequest
+from project.app.services.llm.errors import LLMAuthError, LLMRateLimitError
 from project.app.services.llm.runtime import get_planner_runtime
 from project.app.services.telemetry import genai, semconv
 
@@ -58,6 +59,23 @@ class _FakeChatClient(LLMClient):
     async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
         self.chat_calls.append({"messages": list(messages), "tools": tuple(tools)})
         return self.script.pop(0)
+
+
+class _RefusingChatClient(LLMClient):
+    """Fails every call with one error, and counts how often it was asked."""
+
+    provider_name = "groq"
+
+    def __init__(self, error):
+        super().__init__(model="fake-model", default_max_tokens=1)
+        self.error, self.chat_calls = error, []
+
+    def generate(self, prompt, max_tokens=None, timeout=None):
+        raise AssertionError("agent loop must not take the blocking path")
+
+    async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
+        self.chat_calls.append({"messages": list(messages), "tools": tuple(tools)})
+        raise self.error
 
 
 class RunAgentLeadTests(TestCase):
@@ -133,6 +151,68 @@ class RunAgentLeadTests(TestCase):
         self.assertEqual(outcome.draft_text, "Subject: F\n\nDone.")
         self.assertEqual(len(client.chat_calls), 6)  # OUTREACH_AGENT_MAX_STEPS
         self.assertEqual(client.chat_calls[-1]["tools"], ())  # forced final: no tools offered
+
+
+@override_settings(OUTREACH_MAX_ATTEMPTS=3, OUTREACH_INITIAL_BACKOFF_S=0.0, OUTREACH_MAX_BACKOFF_S=0.0)
+class AgentFailureAccountingTests(TestCase):
+    """What the reviewer's failure sentence is built from.
+
+    ``_describe_failure`` renders "gave up after {attempts} attempt(s) over
+    {elapsed}s", and those two numbers are the whole difference between a row a
+    reviewer reads as noise and one they read as work. The single-shot path
+    counts them in ``agenerate_copy``; the agent path has to count them here,
+    because ``AgentOutcome`` is the only thing that crosses back to phase 3.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.lead = Lead.objects.create(
+            id="lead_lp3",
+            agency_name="C",
+            contact_name="C",
+            contact_email="c@c.com",
+            contact_phone="1",
+            state="TX",
+            num_producers=3,
+            years_in_business=4,
+            estimated_book_size_usd=1,
+            stage="active_trial",
+        )
+
+    def _run(self, client):
+        pks = state.create_lead_runs("run-loop-acct", [self.lead.id])
+        return asyncio.run(
+            agent_loop.run_agent_lead(
+                prompt="PROMPT",
+                lead_run_pk=pks[self.lead.id],
+                prior_steps=(),
+                context=tools.build_tool_context(self.lead, (), (), (), None),
+                client=client,
+                runtime=get_planner_runtime(),
+                checkpoint=state.Checkpoint(),
+            )
+        )
+
+    def test_a_retried_failure_reports_every_attempt_it_spent(self):
+        client = _RefusingChatClient(LLMRateLimitError("slow down", provider="groq"))
+        outcome = self._run(client)
+
+        self.assertIsInstance(outcome.error, LLMRateLimitError)
+        # The budget was spent, so the sentence must say so. Reporting 0 here
+        # tells a reviewer the run never tried.
+        self.assertEqual(len(client.chat_calls), 3)  # OUTREACH_MAX_ATTEMPTS
+        self.assertEqual(outcome.attempts, 3)
+        self.assertGreater(outcome.elapsed_s, 0.0)
+
+    def test_a_failure_that_was_not_retried_reports_its_single_attempt(self):
+        """One attempt is still one, not zero: "gave up after 0 attempts" and
+        "gave up after 1 attempt" describe different bugs to whoever reads it."""
+        client = _RefusingChatClient(LLMAuthError("bad key", provider="groq"))
+        outcome = self._run(client)
+
+        self.assertIsInstance(outcome.error, LLMAuthError)
+        self.assertEqual(len(client.chat_calls), 1)
+        self.assertEqual(outcome.attempts, 1)
 
 
 class CheckpointClaimTests(TestCase):

@@ -27,7 +27,7 @@ from project.app.services.agent import loop as agent_loop
 from project.app.services.agent import state, tools
 from project.app.services.llm.base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
 from project.app.services.llm.chat_types import ToolCallRequest
-from project.app.services.llm.errors import LLMAuthError
+from project.app.services.llm.errors import LLMAuthError, LLMRateLimitError
 from project.app.services.llm.runtime import get_planner_runtime
 from project.app.services.llm.stub import canned_email
 from project.app.tests_auth_utils import AuthenticatedAPITestCase
@@ -124,6 +124,28 @@ class _OutageChatClient(LLMClient):
     async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
         self.chat_calls.append(messages)
         raise LLMAuthError("the provider refused this call")
+
+
+class _RateLimitedChatClient(LLMClient):
+    """Every call draws a 429 — a free tier meeting OUTREACH_MAX_IN_FLIGHT.
+
+    Unlike `_OutageChatClient`'s auth failure this one is *retryable*, so the
+    loop spends its whole budget before giving up, which is the case whose
+    accounting the review row reports.
+    """
+
+    provider_name = "groq"
+
+    def __init__(self):
+        super().__init__(model="fake-model", default_max_tokens=1)
+        self.chat_calls = []
+
+    def generate(self, prompt, max_tokens=None, timeout=None):
+        raise AssertionError("agent path must not take the blocking seam")
+
+    async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
+        self.chat_calls.append(messages)
+        raise LLMRateLimitError("Too Many Requests", provider="groq", status_code=429)
 
 
 class _SingleShotClient(LLMClient):
@@ -361,6 +383,44 @@ class CrashResumeTests(TestCase):
         self.assertEqual(fields, {"draft_text", "error", "steps_used", "tool_calls_used"})
         src = inspect.getsource(agent_loop) + inspect.getsource(state)
         self.assertNotIn("dispatch", src)  # services/agent/ never imports the send gate
+
+
+@override_settings(
+    OUTREACH_AGENT_ENABLED=True,
+    OUTREACH_MAX_ATTEMPTS=3,
+    OUTREACH_INITIAL_BACKOFF_S=0.0,
+    OUTREACH_MAX_BACKOFF_S=0.0,
+    COPY_VERIFY_LEVEL="off",
+)
+class AgentFailureReportingTests(TestCase):
+    """Found by running the app against a rate-limiting provider.
+
+    Every review row read "Copy generation gave up after 0 attempt(s) over
+    0.0s" while the loop had in fact spent its entire retry budget on each
+    lead. The sentence exists to tell a reviewer this is provider noise rather
+    than work; "0 attempts over 0.0s" tells them the opposite — that nothing was
+    even tried — and points whoever investigates at a retry loop that is
+    working correctly.
+
+    The numbers are carried, not recomputed: `AgentOutcome` is the only thing
+    that crosses from the loop back to phase 3.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        _seed_leads(1)
+
+    def test_a_rate_limited_agent_run_reports_what_it_actually_spent(self):
+        client = _RateLimitedChatClient()
+        with mock.patch.object(outreach, "get_llm_client", return_value=client):
+            outreach.plan_outreach()
+
+        self.assertEqual(len(client.chat_calls), 3)  # OUTREACH_MAX_ATTEMPTS
+        action = OutreachAction.objects.get()
+        self.assertTrue(action.needs_human)
+        self.assertIn("gave up after 3 attempt(s)", action.further_action)
+        self.assertNotIn("0 attempt(s)", action.further_action)
+        self.assertNotIn("over 0.0s", action.further_action)
 
 
 class RedTeamFencingTests(TestCase):
