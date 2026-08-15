@@ -166,38 +166,38 @@ def create_lead_runs(trace_run_id: str, lead_ids: Sequence[str]) -> dict[str, in
     return pks
 
 
-def reopen_unfinalized_runs(trace_run_id: str, lead_ids: Sequence[str]) -> int:
-    """Return this run's terminal-but-unfinalized rows to ``pending``; count them.
+def reopen_runs(trace_run_id: str, lead_ids: Sequence[str]) -> int:
+    """Return the named leads' terminal runs to ``pending``; count them.
 
     Sync, called from phase 2 after :func:`create_lead_runs`. ``failed`` and
     ``exhausted`` are outside ``NON_TERMINAL_STATUSES``, so the claim CAS refuses
     them — correct while a run is finishing, wrong forever afterwards: a run that
-    checkpointed one of them and then died before finalize wrote its
-    ``OutreachAction`` can never be claimed again, and no worker will ever write
-    the row the loser of a claim is entitled to assume someone else writes.
+    checkpointed one of them can never be claimed again, and the lead is dropped
+    from the rows to write on this resume and on every later one.
 
-    Conditioned on owing a row, not on being terminal. A terminal run that *did*
-    finalize is finished work; reopening it would re-bill the provider for a row
-    the idempotent finalize would then discard. The step log is untouched either
-    way, so a reopened run keeps the trace of why it failed — only the
-    denormalized status moves, and a retry that fails again restores it.
+    *Which* leads owe another attempt is the caller's decision, not this
+    function's: "does this lead still have a row a reviewer can act on" is a
+    planner-level question about `failed_generation_filter` and the phase-5
+    supersede, and answering it here would drag that policy into state-keeping.
+
+    The step log is untouched, so a reopened run keeps the trace of why it
+    failed — only the denormalized status moves, and a retry that fails again
+    restores it.
 
     Deliberately *not* a change to ``_claim_sync``'s status filter: the refusal
     is what makes a contested claim safe, and it stays. The reopen lives one
-    layer up, where "this attempt is over and owes a row" is knowable.
+    layer up, where "this attempt is over" is knowable.
     """
-    from project.app.models import AgentLeadRun, OutreachAction
+    from project.app.models import AgentLeadRun
 
+    if not lead_ids:
+        return 0
     return int(
         AgentLeadRun.objects.filter(
             trace_run_id=trace_run_id,
             lead_id__in=lead_ids,
             status__in=(AgentLeadRun.STATUS_FAILED, AgentLeadRun.STATUS_EXHAUSTED),
-        )
-        .exclude(
-            lead_id__in=OutreachAction.objects.filter(trace_run_id=trace_run_id).values("lead_id")
-        )
-        .update(status=AgentLeadRun.STATUS_PENDING)
+        ).update(status=AgentLeadRun.STATUS_PENDING)
     )
 
 

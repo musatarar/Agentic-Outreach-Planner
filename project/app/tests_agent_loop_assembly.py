@@ -27,6 +27,7 @@ from project.app.services.agent import loop as agent_loop
 from project.app.services.agent import state, tools
 from project.app.services.llm.base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
 from project.app.services.llm.chat_types import ToolCallRequest
+from project.app.services.llm.errors import LLMAuthError
 from project.app.services.llm.runtime import get_planner_runtime
 from project.app.services.llm.stub import canned_email
 from project.app.tests_auth_utils import AuthenticatedAPITestCase
@@ -104,6 +105,25 @@ class _ScriptedChatClient(LLMClient):
         self.served += 1
         self.chat_calls.append({"messages": list(messages), "tools": tuple(tools)})
         return self.scripts[_lead_of(messages[0].content)].pop(0)
+
+
+class _OutageChatClient(LLMClient):
+    """The provider is up but refusing every call — the shape a rate-limited or
+    unauthenticated run takes. `LLMError` is a value on the agent path, so each
+    run checkpoints `failed` and phase 5 writes a failed-generation row."""
+
+    provider_name = "fake"
+
+    def __init__(self):
+        super().__init__(model="fake-model", default_max_tokens=1)
+        self.chat_calls = []
+
+    def generate(self, prompt, max_tokens=None, timeout=None):
+        raise AssertionError("agent path must not take the blocking seam")
+
+    async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
+        self.chat_calls.append(messages)
+        raise LLMAuthError("the provider refused this call")
 
 
 class _SingleShotClient(LLMClient):
@@ -265,6 +285,46 @@ class CrashResumeTests(TestCase):
                 self.assertEqual(
                     OutreachAction.objects.filter(trace_run_id=run_id, lead_id=lead_id).count(), 1
                 )
+
+    def test_resume_after_a_provider_outage_replaces_the_failure_rows(self):
+        """Found by running the app against a rate-limiting provider: every lead
+        failed, phase 5 wrote the failed-generation rows that tell the reviewer
+        "re-run the planner once the provider recovers" — and the re-run deleted
+        all of them and wrote nothing back.
+
+        Phase 5 supersedes failed-generation rows by design
+        (`failed_generation_filter`), but the leads behind them are dropped from
+        the rows to write, because their runs are terminal and the claim CAS
+        refuses them. Delete plus drop equals a lead that silently leaves the
+        queue — strictly worse than the stale row it replaced, and the exact
+        instruction the reviewer was given turns into data loss.
+
+        A row recording a failed attempt is therefore *not* the "already
+        finalized" that must be left alone: phase 5 itself treats it as
+        replaceable.
+        """
+        self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
+        with mock.patch.object(outreach, "get_llm_client", return_value=_OutageChatClient()):
+            outreach.plan_outreach()
+        run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
+        rows = OutreachAction.objects.filter(trace_run_id=run_id)
+        self.assertEqual(rows.count(), 3)
+        self.assertEqual(rows.filter(needs_human=True, suggested_copy="").count(), 3)
+        self.assertEqual(
+            app_models.AgentLeadRun.objects.filter(trace_run_id=run_id, status="failed").count(), 3
+        )
+
+        recovered = self._fake_chat()  # the provider is back
+        with mock.patch.object(outreach, "get_llm_client", return_value=recovered):
+            outreach.plan_outreach(resume_run_id=run_id)
+
+        # No lead leaves the queue, and each now carries the draft the re-run
+        # was told to go and fetch.
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 3)
+        for lead_id in ("lead_000", "lead_001", "lead_002"):
+            with self.subTest(lead_id=lead_id):
+                action = OutreachAction.objects.get(trace_run_id=run_id, lead_id=lead_id)
+                self.assertNotEqual(action.suggested_copy, "")
 
     def test_resume_leaves_a_terminal_run_that_already_finalized_alone(self):
         """The reset is conditioned on having no row, not on being terminal:
