@@ -94,7 +94,8 @@ class PlannerRun(models.Model):
             UniqueConstraint(fields=["active_sentinel"],
                              condition=Q(active_sentinel=True), name="pr_one_active_run"),
             CheckConstraint(
-                check=(Q(active_sentinel=True, status__in=ACTIVE_STATUSES)
+                check=(Q(active_sentinel=True, active_sentinel__isnull=False,
+                         status__in=ACTIVE_STATUSES)
                        | Q(active_sentinel__isnull=True, status__in=TERMINAL_STATUSES)),
                 name="pr_sentinel_matches_status"),
         ]
@@ -103,6 +104,14 @@ class PlannerRun(models.Model):
 `ACTIVE_STATUSES`/`TERMINAL_STATUSES` are inlined as literal tuples inside `Meta`
 (Meta cannot see the enclosing class namespace — same reason `ReviewDecision`'s
 constraints spell their kind strings out).
+
+`active_sentinel__isnull=False` in the first disjunct looks redundant beside
+`active_sentinel=True` and is not. Django renders the latter as a bare column
+comparison, so for a NULL sentinel it evaluates to NULL, `NULL OR FALSE` is NULL,
+and SQL rejects a row only when a CHECK is **FALSE** — without the `isnull` guard
+the `(NULL, "draft")` case (a run that released the active slot but still claims a
+working status) would pass the constraint entirely. Verified by probing all five
+sentinel/status combinations against a real database, not by reading the SQL.
 
 ```python
 class RunLead(models.Model):

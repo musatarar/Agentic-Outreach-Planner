@@ -12,10 +12,12 @@ so two concurrent POSTs cannot both pass a read-then-write check. That only
 works if the partial unique index and its companion check constraint behave
 exactly as described here, so both are pinned at the DB.
 
-Planted red by the skeleton PR: every test is ``@unittest.expectedFailure`` and
-imports ``PlannerRun`` / ``RunLead`` / ``SavedScope`` inside its own body, so a
-missing symbol is an absorbed ``ImportError`` rather than a collection error
-taking every sibling artifact's count down with it.
+Planted red by the skeleton, green as of the models component: the
+``@unittest.expectedFailure`` markers are gone and nothing else in this file
+moved with them. The in-body imports of ``PlannerRun`` / ``RunLead`` /
+``SavedScope`` stay as written — they cost nothing now that the symbols exist,
+and they are why a missing one was an absorbed ``ImportError`` rather than a
+collection error that took every sibling artifact's count down with it.
 """
 
 import datetime
