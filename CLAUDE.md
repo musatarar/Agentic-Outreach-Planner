@@ -72,6 +72,7 @@ An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]*
 - **Existing tests are pinned**: needing to edit one to land a change is a design smell —
   redesign (usually flag-gating) or get explicit authorization first (details in the
   `planning-discipline` skill).
+- **Frontend testing uses the `webapp-testing` skill**
 
 ## Git
 
