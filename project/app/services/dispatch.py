@@ -3,7 +3,10 @@
 Nothing sends without a live (``voided_at IS NULL``), resolved ``approve_send``
 ``ReviewDecision`` whose ``approved_body_sha256`` equals
 ``sha256(action.effective_copy)`` at send time; :func:`dispatch` hard-raises
-otherwise. The ``approved → sent`` flip is a conditional-UPDATE CAS and the
+otherwise. "At send time" is literal: both facts are re-established from the
+database *inside* the transaction that consumes the approval, after the CAS
+wins, because winning the CAS is not authorization — see :func:`_live_approval`.
+The ``approved → sent`` flip is a conditional-UPDATE CAS and the
 ``OutboundSend`` OneToOne is the DB backstop against a double send. Delivery is
 console-only — the gate is the deliverable, not SMTP.
 """
@@ -25,25 +28,47 @@ class DispatchBlocked(RuntimeError):
     """A required link in the approval chain is missing; nothing was sent."""
 
 
-def dispatch(action: OutreachAction) -> OutboundSend:
-    """Send ``action``'s approved copy exactly once; return the ``OutboundSend``."""
-    decision = (
-        ReviewDecision.objects.filter(
-            outreach_action=action,
-            kind=ReviewDecision.KIND_APPROVE_SEND,
-            status=ReviewDecision.STATUS_RESOLVED,
-            voided_at__isnull=True,
-        )
-        .order_by("-created_at")
-        .first()
-    )
+def _live_approval(action: OutreachAction, *, lock: bool = False) -> tuple[ReviewDecision, str]:
+    """The live approval authorizing ``action``'s copy *right now*, with the
+    digest of the bytes it authorizes.
+
+    Both halves are read together and from the database, never from the caller's
+    in-memory ``action``: liveness and hash equality are one fact about one
+    instant, and splitting them across two instants is what MB1 was. ``lock``
+    takes the row for update so a concurrent void serializes behind the send
+    (a no-op on SQLite, which has no row locks; the re-read is what carries the
+    guarantee there).
+    """
+    decisions = ReviewDecision.objects.filter(
+        outreach_action=action,
+        kind=ReviewDecision.KIND_APPROVE_SEND,
+        status=ReviewDecision.STATUS_RESOLVED,
+        voided_at__isnull=True,
+    ).order_by("-created_at")
+    decision = (decisions.select_for_update() if lock else decisions).first()
     if decision is None:
         raise DispatchBlocked("no live approve_send decision recorded for this action")
 
-    body = action.effective_copy
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    body = (
+        OutreachAction.objects.filter(pk=action.pk)
+        .values_list("edited_copy", "suggested_copy")
+        .first()
+    )
+    if body is None:
+        raise DispatchBlocked("action no longer exists")
+    effective_copy = body[0] or body[1]
+
+    digest = hashlib.sha256(effective_copy.encode("utf-8")).hexdigest()
     if digest != decision.approved_body_sha256:
         raise DispatchBlocked("copy changed after approval; re-approve before sending")
+    return decision, digest
+
+
+def dispatch(action: OutreachAction) -> OutboundSend:
+    """Send ``action``'s approved copy exactly once; return the ``OutboundSend``."""
+    # Cheap pre-check: refuse obviously unsendable actions without opening a
+    # transaction. It decides nothing — the re-read below is authoritative.
+    _live_approval(action)
 
     with transaction.atomic():
         # The CAS is the winner-picker (same shape as the login-token consume):
@@ -53,6 +78,12 @@ def dispatch(action: OutreachAction) -> OutboundSend:
         ).update(status=OutreachAction.STATUS_SENT, status_changed_at=timezone.now())
         if updated != 1:
             raise DispatchBlocked("action is not in an approved state")
+        # Winning the CAS is not authorization. Between the pre-check and here,
+        # an undo can have voided the approval and a re-approve minted a fresh
+        # one over different bytes — leaving the action `approved` again, so the
+        # CAS still succeeds. Re-establish liveness and hash equality *inside*
+        # the transaction that consumes them; raising rolls the CAS back.
+        decision, digest = _live_approval(action, lock=True)
         record = OutboundSend.objects.create(
             outreach_action=action,
             decision=decision,
