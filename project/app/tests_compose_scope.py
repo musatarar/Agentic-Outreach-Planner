@@ -12,14 +12,15 @@ rows gets all three wrong in the same silent direction: the run just comes out s
 nobody can tell which leads went missing. The component also owns
 ``POST /api/runs/preview-count/`` and the ``/api/scopes/`` family: the validator on the wire.
 
-Planted red by the skeleton PR -- every test is ``@unittest.expectedFailure`` and imports
-``scope`` inside the test body, so the artifact still collects while the component is a stub.
-:class:`UrlOrderingTests` is the one exception: it pins ``urls.py``, which the skeleton
-already ships, so it is green today and its job is to stay green.
+Planted red by the skeleton and green as of the scope component: the
+``@unittest.expectedFailure`` markers are gone and nothing else in this file moved with
+them. The in-body ``scope`` imports stay as written -- they are why the artifact still
+collected while the component was a stub, and they cost nothing now that it is not.
+:class:`UrlOrderingTests` never carried a marker at all: it pins ``urls.py``, which the
+skeleton already shipped, so its job was always to stay green rather than to go green.
 """
 
 import datetime
-import unittest
 
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
@@ -221,7 +222,6 @@ class ScopeValidationTests(SimpleTestCase):
     ...}``, and an exception that cannot name the filter turns a fixable error into a shrug.
     """
 
-    @unittest.expectedFailure
     def test_an_unknown_key_is_rejected_and_named(self):
         from project.app.services.compose import scope
 
@@ -242,7 +242,6 @@ class ScopeValidationTests(SimpleTestCase):
                 # still fails closed rather than passing it on.
                 self.assertIsInstance(caught.exception, ValueError)
 
-    @unittest.expectedFailure
     def test_one_unknown_key_poisons_the_whole_scope(self):
         """Dropping the one extra key runs against a wider lead set than the operator saw."""
         from project.app.services.compose import scope
@@ -251,7 +250,6 @@ class ScopeValidationTests(SimpleTestCase):
             scope.validate_scope({"stage": "active_trial", "id__in": [BIG]})
         self.assertEqual(caught.exception.key, "id__in")
 
-    @unittest.expectedFailure
     def test_numeric_values_coerce_from_digit_strings_and_reject_everything_else(self):
         from project.app.services.compose import scope
 
@@ -289,7 +287,6 @@ class ScopeValidationTests(SimpleTestCase):
                     scope.validate_scope({"book_min": value})
                 self.assertEqual(caught.exception.key, "book_min")
 
-    @unittest.expectedFailure
     def test_a_structured_value_cannot_smuggle_a_lookup(self):
         """The shape that beats a validator checking keys and handing the value to the ORM."""
         from project.app.services.compose import scope
@@ -309,7 +306,6 @@ class ScopeValidationTests(SimpleTestCase):
             scope.validate_scope({"book_min": {"__gt": 1}})
         self.assertEqual(caught.exception.key, "book_min")
 
-    @unittest.expectedFailure
     def test_has_notes_takes_json_booleans_and_refuses_to_guess_at_anything_else(self):
         """ "yes" read as falsey selects the exact complement, invisibly: different leads."""
         from project.app.services.compose import scope
@@ -332,7 +328,6 @@ class ScopeValidationTests(SimpleTestCase):
                     scope.validate_scope({"has_notes": ambiguous})
                 self.assertEqual(caught.exception.key, "has_notes")
 
-    @unittest.expectedFailure
     def test_day_windows_are_non_negative_whole_numbers(self):
         from project.app.services.compose import scope
 
@@ -348,7 +343,6 @@ class ScopeValidationTests(SimpleTestCase):
                             scope.validate_scope({key: bad})
                         self.assertEqual(caught.exception.key, key)
 
-    @unittest.expectedFailure
     def test_select_values_are_checked_against_the_column_they_filter(self):
         """An empty run for a typo'd stage is indistinguishable from "no leads match"."""
         from project.app.services.compose import scope
@@ -369,7 +363,6 @@ class ScopeValidationTests(SimpleTestCase):
                     scope.validate_scope({"state": bad})
                 self.assertEqual(caught.exception.key, "state")
 
-    @unittest.expectedFailure
     def test_validation_returns_a_fresh_dict_and_leaves_the_request_body_alone(self):
         """``SavedScope.filters`` stores the return value; the view still owns the raw body."""
         from project.app.services.compose import scope
@@ -390,7 +383,6 @@ class ScopeCatalogTests(SimpleTestCase):
     the UI offers a filter the API refuses, or hides one it accepts.
     """
 
-    @unittest.expectedFailure
     def test_the_catalog_the_validator_and_the_contract_all_carry_the_same_keys(self):
         """Uniqueness is asserted on ``key`` and nowhere else -- see the twins test below."""
         from project.app.services.compose import scope
@@ -400,7 +392,6 @@ class ScopeCatalogTests(SimpleTestCase):
         self.assertEqual(set(keys), set(scope.FILTERABLE))
         self.assertEqual(set(keys), set(CONTRACT_KEYS))
 
-    @unittest.expectedFailure
     def test_every_entry_is_a_projection_of_its_filter_spec(self):
         """A catalog maintained beside ``FILTERABLE`` starts lying the first time one moves."""
         from project.app.services.compose import scope
@@ -445,7 +436,6 @@ class ScopeCatalogTests(SimpleTestCase):
         stage = next(entry for entry in catalog if entry["key"] == "stage")
         self.assertEqual(tuple(stage["choices"]), ("active_trial", "demo_completed"))
 
-    @unittest.expectedFailure
     def test_min_max_twins_share_a_label_and_are_told_apart_by_bound(self):
         """What the chip renderer depends on, and why uniqueness is pinned on ``key``."""
         from project.app.services.compose import scope
@@ -487,12 +477,10 @@ class ScopeQueryTests(TestCase):
         queryset = scope.apply_scope(Lead.objects.all(), scope.validate_scope(raw), today=TODAY)
         return set(queryset.values_list("id", flat=True))
 
-    @unittest.expectedFailure
     def test_an_empty_scope_returns_every_lead(self):
         """Scoping is an offer, not a requirement: "everyone" is the default run."""
         self.assertEqual(self._scoped({}), set(ALL_LEADS))
 
-    @unittest.expectedFailure
     def test_each_column_filter_narrows_to_exactly_its_leads(self):
         cases = (
             # An exact match, not a contains/startswith: "active" must find nothing.
@@ -518,7 +506,6 @@ class ScopeQueryTests(TestCase):
             with self.subTest(scope=raw):
                 self.assertEqual(self._scoped(raw), expected)
 
-    @unittest.expectedFailure
     def test_last_contacted_gt_days_counts_never_contacted_as_the_most_overdue(self):
         """``last_contacted_date__lt=cutoff`` drops the NULL -- the one lead most wanted."""
 
@@ -535,7 +522,6 @@ class ScopeQueryTests(TestCase):
         # can satisfy.
         self.assertEqual(scoped(3650), {NEVER})
 
-    @unittest.expectedFailure
     def test_dormant_days_follows_the_login_events_not_the_lead_column(self):
         """``Lead.last_login_date`` is a denormalized CRM column; the events are the record."""
 
@@ -552,7 +538,6 @@ class ScopeQueryTests(TestCase):
         self.assertNotIn(MID, dormant)  # login exactly 30 days ago: strictly greater
         self.assertEqual(scoped(29), {MID, SMALL, NEVER, GHOST})
 
-    @unittest.expectedFailure
     def test_signed_up_within_days_is_a_closed_window_over_a_real_signup(self):
         """The opposite NULL rule: no ``signed_up_date`` did not sign up inside the window."""
 
@@ -565,7 +550,6 @@ class ScopeQueryTests(TestCase):
         self.assertEqual(scoped(59), {BIG, LURKER})
         self.assertEqual(scoped(3650), {BIG, MID, SMALL, GHOST, LURKER})  # still never NEVER
 
-    @unittest.expectedFailure
     def test_has_notes_partitions_the_table_and_whitespace_is_not_a_note(self):
         """Three spaces give the model nothing to read, and the two sides must cover the
         table exactly or "has notes" plus "has none" adds up to fewer leads than exist."""
@@ -577,7 +561,6 @@ class ScopeQueryTests(TestCase):
         self.assertEqual(with_notes | without_notes, set(ALL_LEADS))
         self.assertEqual(with_notes & without_notes, set())
 
-    @unittest.expectedFailure
     def test_filters_intersect_rather_than_accumulate(self):
         """Chips read as "and", including across the annotations most likely to be applied
         to a fresh queryset instead of the narrowed one."""
@@ -592,7 +575,6 @@ class ScopeQueryTests(TestCase):
         # A combination nothing satisfies is empty, not everything.
         self.assertEqual(self._scoped({"state": "NY", "book_min": 10_000_000}), set())
 
-    @unittest.expectedFailure
     def test_apply_scope_refuses_a_key_that_never_went_through_the_validator(self):
         """ "Already validated" is a comment; the refusal happens at the call, not at
         queryset evaluation, so a bad scope never becomes a lazy queryset someone passes on."""
@@ -639,7 +621,6 @@ class ScopeQueryCountTests(TestCase):
             _event(lead, "login", 35)
             _event(lead, "email_sent", 2)
 
-    @unittest.expectedFailure
     def test_the_computed_filters_cost_one_query_at_any_lead_count(self):
         from project.app.services.compose import scope
 
@@ -687,7 +668,6 @@ class ScopeFieldsEndpointTests(AuthenticatedAPITestCase):
     catalog test cannot see.
     """
 
-    @unittest.expectedFailure
     def test_the_catalog_is_served_under_a_fields_key(self):
         response = self.client.get("/api/scopes/fields/")
 
@@ -698,7 +678,6 @@ class ScopeFieldsEndpointTests(AuthenticatedAPITestCase):
         self.assertIsInstance(body["fields"], list)
         self.assertEqual({entry["key"] for entry in body["fields"]}, set(CONTRACT_KEYS))
 
-    @unittest.expectedFailure
     def test_every_entry_matches_the_frontend_ScopeField_type(self):
         """A field ``types.ts`` reads and the serializer omits only shows up in the browser."""
         response = self.client.get("/api/scopes/fields/")
@@ -734,7 +713,6 @@ class PreviewCountEndpointTests(AuthenticatedAPITestCase):
             content_type="application/json",
         )
 
-    @unittest.expectedFailure
     def test_preview_reports_the_scoped_count_beside_the_table_total(self):
         """``total`` is what makes ``count`` legible: "4" alone does not say of how many."""
         response = self._preview({"stage": "active_trial"})
@@ -752,7 +730,6 @@ class PreviewCountEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(none.status_code, 200)
         self.assertEqual(none.json()["count"], 0)
 
-    @unittest.expectedFailure
     def test_previewing_creates_no_run(self):
         """A run created here would take the single active slot the operator was still
         deciding how to fill."""
@@ -762,7 +739,6 @@ class PreviewCountEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(PlannerRun.objects.count(), 0)
         self.assertEqual(RunLead.objects.count(), 0)
 
-    @unittest.expectedFailure
     def test_preview_answers_the_same_whether_or_not_a_run_is_active(self):
         """``POST /api/runs/`` 409s while a run is active; preview must not, because
         re-scoping is exactly what an operator does *with* a run open."""
@@ -779,7 +755,6 @@ class PreviewCountEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(run.status, PlannerRun.STATUS_DRAFT)  # untouched, not re-scoped
         self.assertEqual(PlannerRun.objects.count(), 1)
 
-    @unittest.expectedFailure
     def test_an_invalid_scope_is_a_400_naming_the_offending_filter(self):
         """``ScopeError.key`` reaches the wire, so the FE can point at the chip."""
         from project.app.models import PlannerRun
@@ -813,7 +788,6 @@ class SavedScopeEndpointTests(AuthenticatedAPITestCase):
             content_type="application/json",
         )
 
-    @unittest.expectedFailure
     def test_a_saved_scope_cannot_store_a_key_the_validator_would_reject(self):
         from project.app.models import SavedScope
 
@@ -824,7 +798,6 @@ class SavedScopeEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(response.json()["key"], "id__in")  # named, so it is fixable
         self.assertEqual(SavedScope.objects.count(), 0)  # nothing partially stored
 
-    @unittest.expectedFailure
     def test_a_saved_scope_with_an_uncoercible_value_is_refused_too(self):
         """A known key with a value that will never coerce is as unusable stored as live."""
         from project.app.models import SavedScope
@@ -836,7 +809,6 @@ class SavedScopeEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(response.json()["key"], "book_min")
         self.assertEqual(SavedScope.objects.count(), 0)
 
-    @unittest.expectedFailure
     def test_a_saved_scope_stores_the_coerced_filters_not_the_raw_body(self):
         """Storing the raw body pushes coercion onto every future reader."""
         from project.app.models import SavedScope
@@ -851,7 +823,6 @@ class SavedScopeEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(response.json()["id"], saved.pk)
         self.assertEqual(response.json()["filters"], {"state": "TX", "book_min": 50000})
 
-    @unittest.expectedFailure
     def test_the_list_serves_every_saved_scope_in_name_order(self):
         """``Meta.ordering`` is ``["name"]``; rows carry the FE ``SavedScope`` fields."""
         self.assertEqual(self._post("Texas books", {"state": "TX"}).status_code, 201)
@@ -866,7 +837,6 @@ class SavedScopeEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(rows[0]["filters"], {})  # an empty scope is a scope
         self.assertEqual(rows[1]["filters"], {"state": "TX"})
 
-    @unittest.expectedFailure
     def test_deleting_a_scope_forgets_that_one_and_leaves_the_rest(self):
         from project.app.models import SavedScope
 
@@ -879,7 +849,6 @@ class SavedScopeEndpointTests(AuthenticatedAPITestCase):
         self.assertFalse(SavedScope.objects.filter(pk=doomed).exists())
         self.assertEqual([s.name for s in SavedScope.objects.all()], ["Any lead"])
 
-    @unittest.expectedFailure
     def test_deleting_a_scope_that_is_not_there_is_a_404_with_a_slug(self):
         """Two tabs, one scope, one delete each: the second gets a branchable answer."""
         response = self.client.delete("/api/scopes/4242/")

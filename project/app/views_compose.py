@@ -1,21 +1,51 @@
 """Run Composer endpoints (MUS-47).
 
-Skeleton state: every view below is wired into ``urls.py`` and raises
-``NotImplementedError``. That is deliberate. A route that does not exist yet answers an
-endpoint test with a Django 404, and a 404 proves nothing about the endpoint the test is
-specifying — it is the same answer a typo'd path gives. Wiring the routes up front means a
-red endpoint test fails on the thing it is actually asserting, and the component PR that
+Every route is wired in ``urls.py`` from the skeleton onward, and a view its component
+has not landed yet raises ``NotImplementedError`` rather than 404ing. That is deliberate:
+a route that does not exist answers an endpoint test with the same 404 a typo'd path
+gives, so the test would pass or fail for reasons unrelated to what it specifies. Wiring
+up front means a red endpoint test fails on its own assertion, and the component PR that
 fills the view in is the only diff that has to change.
+
+The scope-owned views are live (MUS-47 component 2); the rest still carry their stubs.
 
 Error envelope: ``views_queue.error()``, i.e. ``{"code": ..., "detail": ...}``. Reused
 rather than reimplemented, because ``frontend/src/api/client.ts`` reads ``code`` as the
 machine slug it branches on. See docs/contracts/run-composer.md.
 """
 
+import datetime
+
+from django.db import IntegrityError
+from rest_framework import status
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from project.app.models import Lead, SavedScope
+from project.app.serializers_compose import SavedScopeSerializer
+from project.app.services.compose import scope as scope_service
+
 # Reused, not reimplemented -- one error shape across the whole API.
-from project.app.views_queue import error  # noqa: F401  (component PRs use it)
+from project.app.views_queue import error
+
+
+def scope_error(exc):
+    """A 400 that names the filter that caused it.
+
+    The standard envelope plus one key. ``key`` is what lets the frontend highlight the
+    chip the operator has to fix rather than making them re-read the whole scope.
+    """
+    return Response(
+        {"code": exc.code, "detail": str(exc), "key": exc.key},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def scope_body(request):
+    """The ``scope`` object out of a request body, defaulting to "everyone"."""
+    body = request.data if isinstance(request.data, dict) else {}
+    raw = body.get("scope", {})
+    return raw if isinstance(raw, dict) else {}
 
 
 class _ComposeStub(APIView):
@@ -58,10 +88,30 @@ class RunActiveView(_ComposeStub):
     component = "lifecycle"
 
 
-class RunPreviewCountView(_ComposeStub):
-    """POST /api/runs/preview-count/ -- how many leads a scope matches. No run created."""
+class RunPreviewCountView(APIView):
+    """POST /api/runs/preview-count/ -- how many leads a scope matches.
 
-    component = "scope"
+    The number under the Create Run button, and the only compose endpoint that spends
+    nothing, writes nothing, and knows nothing about the run lifecycle. That last part is
+    deliberate: `POST /api/runs/` 409s while a run is active, but re-scoping is exactly
+    what an operator does *with* a run open, so this must keep answering.
+
+    `total` is what makes `count` legible -- "4" on its own does not say of how many.
+    """
+
+    def post(self, request, *args, **kwargs):
+        try:
+            validated = scope_service.validate_scope(scope_body(request))
+        except scope_service.ScopeError as exc:
+            return scope_error(exc)
+
+        matched = scope_service.apply_scope(
+            Lead.objects.all(), validated, today=datetime.date.today()
+        )
+        return Response(
+            {"count": matched.count(), "total": Lead.objects.count()},
+            status=status.HTTP_200_OK,
+        )
 
 
 class RunDetailView(_ComposeStub):
@@ -127,19 +177,66 @@ class RunGenerateView(_ComposeStub):
 # --- saved scopes (scope component) -----------------------------------------
 
 
-class ScopeFieldsView(_ComposeStub):
-    """GET /api/scopes/fields/ -- the filterable-field catalog the chip builder renders."""
+class ScopeFieldsView(APIView):
+    """GET /api/scopes/fields/ -- the filterable-field catalog the chip builder renders.
 
-    component = "scope"
+    An envelope rather than a bare list, so a key can be added later without breaking
+    the frontend's parse.
+    """
+
+    def get(self, request, *args, **kwargs):
+        return Response({"fields": scope_service.scope_field_catalog()}, status=status.HTTP_200_OK)
 
 
-class ScopeListCreateView(_ComposeStub):
-    """GET/POST /api/scopes/ -- list and save named scopes."""
+class ScopeListCreateView(APIView):
+    """GET/POST /api/scopes/ -- list and save named scopes.
 
-    component = "scope"
+    A saved scope's filters go through `validate_scope` on the way IN, not on the way
+    out. The row is replayed into `apply_scope` on some future run, and validating only
+    then leaves an unusable scope sitting in the list looking legitimate in the
+    meantime -- and stores a raw body that pushes coercion onto every later reader.
+    """
+
+    def get(self, request, *args, **kwargs):
+        scopes = SavedScope.objects.all()  # Meta.ordering = ["name"]
+        return Response(SavedScopeSerializer(scopes, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        body = request.data if isinstance(request.data, dict) else {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return error(
+                "invalid_scope", "A saved scope needs a name.", status.HTTP_400_BAD_REQUEST
+            )
+
+        raw = body.get("filters", {})
+        try:
+            filters = scope_service.validate_scope(raw if isinstance(raw, dict) else {})
+        except scope_service.ScopeError as exc:
+            return scope_error(exc)
+
+        try:
+            saved = SavedScope.objects.create(
+                name=name, filters=filters, created_by=getattr(request.user, "email", "") or ""
+            )
+        except IntegrityError:
+            # `name` is unique: two tabs, or a re-submitted save.
+            return error(
+                "scope_exists",
+                f"A saved scope named {name!r} already exists.",
+                status.HTTP_409_CONFLICT,
+            )
+
+        return Response(SavedScopeSerializer(saved).data, status=status.HTTP_201_CREATED)
 
 
-class ScopeDetailView(_ComposeStub):
+class ScopeDetailView(APIView):
     """DELETE /api/scopes/{id}/ -- forget a saved scope."""
 
-    component = "scope"
+    def delete(self, request, pk, *args, **kwargs):
+        deleted, _ = SavedScope.objects.filter(pk=pk).delete()
+        if not deleted:
+            # Two tabs, one scope, one delete each: the second gets an answer it can
+            # branch on rather than a silent success that implies it did something.
+            return error("not_found", "No saved scope with that id.", status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
