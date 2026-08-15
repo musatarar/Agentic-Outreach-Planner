@@ -114,11 +114,12 @@ class ClaudeClient(LLMClient):
 
     # -- request construction (shared by both paths) ------------------------
 
-    def _request_kwargs(self, prompt, max_tokens, timeout):
+    def _envelope(self, wire_messages, max_tokens, timeout):
+        """The model/max_tokens/messages/timeout envelope both builders share."""
         kwargs = {
             "model": self.model,
             "max_tokens": max_tokens or self.default_max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": wire_messages,
         }
         # Per-request override only when asked for: passing it unconditionally
         # would override the client-level timeout with None on every ordinary
@@ -126,6 +127,9 @@ class ClaudeClient(LLMClient):
         if timeout is not None:
             kwargs["timeout"] = timeout
         return kwargs
+
+    def _request_kwargs(self, prompt, max_tokens, timeout):
+        return self._envelope([{"role": "user", "content": prompt}], max_tokens, timeout)
 
     def _chat_request_kwargs(self, messages, tools, max_tokens, timeout):
         """Translate provider-neutral chat shapes into Anthropic's wire format.
@@ -165,18 +169,12 @@ class ClaudeClient(LLMClient):
                     open_results.append(block)
             else:
                 wire.append({"role": "user", "content": m.content})
-        kwargs = {
-            "model": self.model,
-            "max_tokens": max_tokens or self.default_max_tokens,
-            "messages": wire,
-        }
+        kwargs = self._envelope(wire, max_tokens, timeout)
         if tools:
             kwargs["tools"] = [
                 {"name": t.name, "description": t.description, "input_schema": dict(t.parameters)}
                 for t in tools
             ]
-        if timeout is not None:
-            kwargs["timeout"] = timeout
         return kwargs
 
     def _check_credentials(self, client):
@@ -239,20 +237,29 @@ class ClaudeClient(LLMClient):
 
         return self._build_result(response, latency_s)
 
-    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
+    async def _acall(self, kwargs) -> LLMResult:
+        """Send one already-built request on the loop-bound async client.
+
+        Credential check, latency clock and error mapping live here once: the
+        completion and chat entry points were copies of each other down to the
+        placement of the ``perf_counter`` calls before MUS-66, and the clock's
+        exact stopping point is precisely the kind of detail that drifts when it
+        is written twice.
+        """
         client = self._async_client.get()
         self._check_credentials(client)
 
         started = time.perf_counter()
         try:
-            response = await client.messages.create(
-                **self._request_kwargs(prompt, max_tokens, timeout)
-            )
+            response = await client.messages.create(**kwargs)
         except (anthropic.AnthropicError, httpx.HTTPError) as exc:
             raise self._mapped(exc, started) from exc
         latency_s = time.perf_counter() - started
 
         return self._build_result(response, latency_s)
+
+    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
+        return await self._acall(self._request_kwargs(prompt, max_tokens, timeout))
 
     async def agenerate_chat(
         self,
@@ -264,19 +271,7 @@ class ClaudeClient(LLMClient):
     ) -> LLMResult:
         # Mirrors agenerate: same credential check, same error mapping, same
         # loop-bound async client. Async-only by design — see the base class.
-        client = self._async_client.get()
-        self._check_credentials(client)
-
-        started = time.perf_counter()
-        try:
-            response = await client.messages.create(
-                **self._chat_request_kwargs(messages, tools, max_tokens, timeout)
-            )
-        except (anthropic.AnthropicError, httpx.HTTPError) as exc:
-            raise self._mapped(exc, started) from exc
-        latency_s = time.perf_counter() - started
-
-        return self._build_result(response, latency_s)
+        return await self._acall(self._chat_request_kwargs(messages, tools, max_tokens, timeout))
 
     async def aclose(self) -> None:
         await self._async_client.aclose()

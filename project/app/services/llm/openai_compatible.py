@@ -118,18 +118,24 @@ class OpenAICompatibleClient(LLMClient):
             provider=self.provider_name,
         )
 
-    def _request(self, prompt, max_tokens):
+    def _post(self, body):
+        """One request body, addressed and authenticated: ``(url, kwargs)``."""
         return f"{self.base_url}/chat/completions", {
             "headers": {
                 "Authorization": f"Bearer {self._api_key()}",
                 "Content-Type": "application/json",
             },
-            "json": {
+            "json": body,
+        }
+
+    def _request(self, prompt, max_tokens):
+        return self._post(
+            {
                 "model": self.model,
                 "max_tokens": max_tokens or self.default_max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
-            },
-        }
+            }
+        )
 
     def _chat_request(self, messages, tools, max_tokens):
         """Chat-shaped counterpart of :meth:`_request` (MUS-29).
@@ -156,13 +162,7 @@ class OpenAICompatibleClient(LLMClient):
                 }
                 for t in tools
             ]
-        return f"{self.base_url}/chat/completions", {
-            "headers": {
-                "Authorization": f"Bearer {self._api_key()}",
-                "Content-Type": "application/json",
-            },
-            "json": body,
-        }
+        return self._post(body)
 
     # -- the two call paths -------------------------------------------------
 
@@ -190,8 +190,15 @@ class OpenAICompatibleClient(LLMClient):
 
         return self._build_result(data, latency_s)
 
-    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
-        url, kwargs = self._request(prompt, max_tokens)
+    async def _apost(self, url, kwargs, timeout) -> LLMResult:
+        """Send one already-built request on the async client.
+
+        The whole async path — client, timing, status check, error mapping —
+        lives here once, so the completion and chat entry points differ only in
+        which builder produced ``(url, kwargs)``. They were byte-for-byte
+        copies of each other before MUS-66, which is one place too many for the
+        next fix to the latency clock or the error taxonomy to land.
+        """
         # The default timeout lives on the AsyncClient, so it is only repeated
         # here when this one call is overriding it.
         if timeout is not None:
@@ -210,6 +217,10 @@ class OpenAICompatibleClient(LLMClient):
 
         return self._build_result(data, latency_s)
 
+    async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
+        url, kwargs = self._request(prompt, max_tokens)
+        return await self._apost(url, kwargs, timeout)
+
     async def agenerate_chat(
         self,
         messages: Sequence[Message],
@@ -221,21 +232,7 @@ class OpenAICompatibleClient(LLMClient):
         # Mirrors agenerate: same client, timeout, and error mapping — only the
         # request body differs. Async-only by design; see the base class.
         url, kwargs = self._chat_request(messages, tools, max_tokens)
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        client = self._async_client.get()
-        started = time.perf_counter()
-        try:
-            response = await client.post(url, **kwargs)
-            latency_s = time.perf_counter() - started
-            response.raise_for_status()
-            data = response.json()
-        except _REQUEST_ERRORS as exc:
-            raise map_httpx_error(exc, self.provider_name).with_latency(
-                time.perf_counter() - started
-            ) from exc
-
-        return self._build_result(data, latency_s)
+        return await self._apost(url, kwargs, timeout)
 
     async def aclose(self) -> None:
         await self._async_client.aclose()
