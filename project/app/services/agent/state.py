@@ -166,6 +166,41 @@ def create_lead_runs(trace_run_id: str, lead_ids: Sequence[str]) -> dict[str, in
     return pks
 
 
+def reopen_unfinalized_runs(trace_run_id: str, lead_ids: Sequence[str]) -> int:
+    """Return this run's terminal-but-unfinalized rows to ``pending``; count them.
+
+    Sync, called from phase 2 after :func:`create_lead_runs`. ``failed`` and
+    ``exhausted`` are outside ``NON_TERMINAL_STATUSES``, so the claim CAS refuses
+    them — correct while a run is finishing, wrong forever afterwards: a run that
+    checkpointed one of them and then died before finalize wrote its
+    ``OutreachAction`` can never be claimed again, and no worker will ever write
+    the row the loser of a claim is entitled to assume someone else writes.
+
+    Conditioned on owing a row, not on being terminal. A terminal run that *did*
+    finalize is finished work; reopening it would re-bill the provider for a row
+    the idempotent finalize would then discard. The step log is untouched either
+    way, so a reopened run keeps the trace of why it failed — only the
+    denormalized status moves, and a retry that fails again restores it.
+
+    Deliberately *not* a change to ``_claim_sync``'s status filter: the refusal
+    is what makes a contested claim safe, and it stays. The reopen lives one
+    layer up, where "this attempt is over and owes a row" is knowable.
+    """
+    from project.app.models import AgentLeadRun, OutreachAction
+
+    return int(
+        AgentLeadRun.objects.filter(
+            trace_run_id=trace_run_id,
+            lead_id__in=lead_ids,
+            status__in=(AgentLeadRun.STATUS_FAILED, AgentLeadRun.STATUS_EXHAUSTED),
+        )
+        .exclude(
+            lead_id__in=OutreachAction.objects.filter(trace_run_id=trace_run_id).values("lead_id")
+        )
+        .update(status=AgentLeadRun.STATUS_PENDING)
+    )
+
+
 def load_prior_steps(lead_run_pk: int) -> tuple[StepRecord, ...]:
     """Read a run's persisted steps in ``seq`` order. Sync, called from phase 2."""
     from project.app.models import AgentStep

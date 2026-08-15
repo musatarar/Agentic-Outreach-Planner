@@ -2359,6 +2359,11 @@ def plan_outreach(resume_run_id: str | None = None):
                     }
                 )
             run_pks = agent_state.create_lead_runs(run.run_id, lead_ids)
+            # Before any step is read, hand back the runs a previous attempt
+            # left terminal without finalizing: the claim CAS refuses `failed`
+            # and `exhausted`, so without this a lead whose run checkpointed one
+            # of them before the crash is dropped by every resume, forever.
+            agent_state.reopen_unfinalized_runs(run.run_id, lead_ids)
             # One Checkpoint per run on purpose: its lock binds to the event
             # loop phase 3 runs on, and its connection borrow captures THIS
             # thread's wrapper — both are per-worker-per-loop facts, and this
