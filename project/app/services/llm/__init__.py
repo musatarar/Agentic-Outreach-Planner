@@ -33,6 +33,7 @@ from .deepseek import DeepSeekClient
 from .errors import (
     LLMAuthError,
     LLMBadRequestError,
+    LLMEmptyCompletionError,
     LLMError,
     LLMMalformedResponseError,
     LLMRateLimitError,
@@ -130,6 +131,7 @@ __all__ = [
     "LLMAuthError",
     "LLMBadRequestError",
     "LLMMalformedResponseError",
+    "LLMEmptyCompletionError",
     "LLMUnexpectedError",
     "wrap_unexpected",
 ]

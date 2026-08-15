@@ -857,6 +857,48 @@ def output_ref(run_id: str, lead_id: str) -> str:
     return f"outreach_action:{run_id}:{lead_id}"
 
 
+@contextmanager
+def tool_span(
+    name: str, *, args_sha256: str | None = None
+) -> Iterator[Callable[[str | None], None]]:
+    """One agent tool execution: ``execute_tool {name}``, kind INTERNAL (MUS-29).
+
+    INTERNAL because the tool is a pure function over an in-process snapshot —
+    nothing leaves the process. Yields a setter for the result's sha256; the
+    span carries content *references* only (``outreach.input.sha256`` for the
+    arguments, ``outreach.output.sha256`` for the rendered result), never the
+    payloads themselves — a tool result is CRM free-text, exactly what the
+    content-reference policy exists to keep out of the trace backend. The same
+    hashes land on the ``AgentStep`` row, so span and step cross-reference.
+    """
+    active = get_tracer()
+    attributes: dict[str, Any] = {
+        sc.GEN_AI_OPERATION_NAME: sc.OPERATION_EXECUTE_TOOL,
+        sc.GEN_AI_TOOL_NAME: name,
+        sc.OPENINFERENCE_SPAN_KIND: sc.OPENINFERENCE_KIND_TOOL,
+    }
+    if args_sha256:
+        attributes[sc.INPUT_SHA256] = args_sha256
+    with active.start_as_current_span(
+        f"{sc.OPERATION_EXECUTE_TOOL} {name}",
+        kind=SpanKind.INTERNAL,
+        record_exception=False,
+        set_status_on_exception=False,
+        attributes=attributes,
+    ) as span:
+
+        def set_result_sha256(result_sha256: str | None) -> None:
+            if result_sha256:
+                span.set_attribute(sc.OUTPUT_SHA256, result_sha256)
+
+        try:
+            yield set_result_sha256
+        except BaseException as exc:
+            span.set_attribute(sc.ERROR_TYPE, error_type(exc))
+            span.set_status(Status(StatusCode.ERROR, error_type(exc)))
+            raise
+
+
 def _add_run_usage(result: "LLMResult") -> None:
     """Fold one call's usage into the enclosing run, if there is one."""
     run = _current_run.get()
@@ -992,5 +1034,6 @@ __all__ = [
     "provider_call_scope",
     "run_span",
     "sha256_of",
+    "tool_span",
     "verify_outcome",
 ]

@@ -229,16 +229,19 @@ class ResolvedKeyAndTimeoutTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def _httpx_response(status_code, headers=None):
+def _httpx_response(status_code, headers=None, content=None):
     """A real httpx.Response, not a Mock.
 
-    The mappers read ``.status_code`` and ``.headers``; a Mock would satisfy
-    those reads with values httpx itself would never produce, so the table
-    below would be testing our test doubles rather than the mapping. (Mocks are
-    still used further down where the *body* is the thing under test.)
+    The mappers read ``.status_code``, ``.headers`` and — for the error detail a
+    reviewer reads — ``.text``; a Mock would satisfy those reads with values
+    httpx itself would never produce, so the table below would be testing our
+    test doubles rather than the mapping. (Mocks are still used further down
+    where the *body* is the thing under test.)
     """
     request = httpx.Request("POST", "https://example.test/v1/chat/completions")
-    return httpx.Response(status_code, headers=headers or {}, request=request)
+    return httpx.Response(
+        status_code, headers=headers or {}, request=request, content=content or b""
+    )
 
 
 def _anthropic_status_error(cls, status_code, headers=None):
@@ -330,6 +333,48 @@ class HttpxErrorMappingTests(unittest.TestCase):
                 self.assertEqual(mapped.provider, "groq")
                 self.assertIs(mapped.cause, exc)
                 self.assertEqual(mapped.retryable, retryable)
+
+    def test_the_providers_own_error_message_survives_into_the_mapped_error(self):
+        """A 400 used to reach the review queue as httpx's canned "Client error
+        '400 Bad Request' for url '…' For more information check: <MDN link>",
+        which names the status code an engineer already had and throws away the
+        one field that says *why*. The body is where every OpenAI-compatible
+        provider puts its actual error.
+        """
+        response = _httpx_response(
+            400,
+            content=json.dumps(
+                {"error": {"message": "Failed to call a function.", "code": "tool_use_failed"}}
+            ),
+        )
+        exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+        mapped = errors.map_httpx_error(exc, "groq")
+        self.assertIn("Failed to call a function.", str(mapped))
+        self.assertIsInstance(mapped, errors.LLMBadRequestError)
+
+    def test_an_oversized_body_is_truncated_rather_than_persisted_whole(self):
+        """`further_action` is a TextField rendered to a reviewer. A proxy or
+        WAF answering with a 200KB HTML error page must not land in it once per
+        lead."""
+        response = _httpx_response(502, content="<html>" + "x" * 50_000 + "</html>")
+        exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+        mapped = errors.map_httpx_error(exc, "groq")
+        self.assertLess(len(str(mapped)), 1_000)
+
+    def test_an_unreadable_body_degrades_instead_of_raising(self):
+        """The mappers are pure and must stay total: a streaming response has
+        not been read, and `.text` raises `ResponseNotRead` on it. Turning a
+        provider's error into our own traceback is the one outcome worse than
+        losing the detail."""
+        response = httpx.Response(
+            503,
+            request=httpx.Request("POST", "https://example.test/v1/chat/completions"),
+            stream=httpx.ByteStream(b"unread"),
+        )
+        exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
+        mapped = errors.map_httpx_error(exc, "groq")
+        self.assertIsInstance(mapped, errors.LLMTransientError)
+        self.assertIn("boom", str(mapped))
 
     def test_non_error_status_falls_back_to_the_base_class(self):
         # raise_for_status() never produces a 3xx, but the mapper takes whatever

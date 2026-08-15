@@ -28,14 +28,35 @@ from project.app.services.llm import config as llm_config
 
 
 class OutreachRunView(APIView):
-    """POST /api/outreach/run/ — run the planner and return created actions."""
+    """POST /api/outreach/run/ — run the planner and return created actions.
+
+    An optional JSON body ``{"resume_run_id": "<uuid>"}`` re-enters a crashed
+    agent run (MUS-29). Two ways it is refused, both 400 and both decided by
+    ``plan_outreach`` itself rather than here: ``unknown_run`` when no
+    ``AgentLeadRun`` row carries that id (a typo'd id would otherwise start a
+    silently fresh run, re-billing every call the resume existed to save), and
+    ``agent_disabled`` when ``OUTREACH_AGENT_ENABLED`` is off (the resume
+    machinery all sits inside the flag, so the run would re-plan every lead
+    single-shot while still stamping the resumed run's id on every row).
+
+    The guard lives at the mechanism because this view is not the only caller
+    reaching it — scripts and tests call ``plan_outreach`` directly.
+    """
 
     def post(self, request, *args, **kwargs):
         # Imported inside the method so the view module loads even before the
         # service module exists (it's built by another agent in parallel).
-        from project.app.services.outreach import plan_outreach
+        from project.app.services.outreach import AgentDisabled, UnknownRun, plan_outreach
 
-        actions = plan_outreach()
+        data = request.data if isinstance(request.data, dict) else {}
+        resume_run_id = str(data.get("resume_run_id") or "") or None
+
+        try:
+            actions = plan_outreach(resume_run_id=resume_run_id)
+        except UnknownRun:
+            return Response({"error": "unknown_run"}, status=status.HTTP_400_BAD_REQUEST)
+        except AgentDisabled:
+            return Response({"error": "agent_disabled"}, status=status.HTTP_400_BAD_REQUEST)
         actions = sorted(actions, key=lambda a: (a.priority, a.lead_id))
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -76,7 +97,15 @@ class ReviewQueueView(APIView):
     """GET /api/review-queue/ — needs_human actions awaiting a decision."""
 
     def get(self, request, *args, **kwargs):
-        decided_ids = set(ReviewDecision.objects.values_list("outreach_action_id", flat=True))
+        # Resolution kinds only (MUS-29): a send decision (approve_send /
+        # reject_send) answers "may this go out?", not "is the unknown
+        # resolved?", so it must never hide a needs_human row still awaiting
+        # triage.
+        decided_ids = set(
+            ReviewDecision.objects.filter(kind__in=ReviewDecision.RESOLUTION_KINDS).values_list(
+                "outreach_action_id", flat=True
+            )
+        )
 
         latest = OutreachAction.objects.select_related("lead").order_by(
             "lead_id", "-created_at", "-id"

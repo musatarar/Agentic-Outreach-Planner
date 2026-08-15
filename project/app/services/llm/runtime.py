@@ -50,6 +50,15 @@ DEFAULT_MAX_IN_FLIGHT = 8
 DEFAULT_REQUEST_TIMEOUT_S = 60.0
 DEFAULT_PER_LEAD_TIMEOUT_S = 150.0
 
+# Agentic copy step (MUS-29). Off by default: merged agent code is inert until
+# a deployment opts in. The agent per-lead budget is separate from
+# DEFAULT_PER_LEAD_TIMEOUT_S because an agent lead is several provider calls
+# plus tool executions, not one retried call.
+DEFAULT_AGENT_ENABLED = False
+DEFAULT_AGENT_MAX_STEPS = 6
+DEFAULT_AGENT_MAX_TOOL_CALLS = 8
+DEFAULT_AGENT_PER_LEAD_TIMEOUT_S = 300.0
+
 # Sanity ceiling on the pool. Not a capacity limit -- it is a typo guard. `>= 1`
 # only bounds one end of the range, and `80000` for `8` would have the planner
 # open eighty thousand outstanding provider calls, which is a self-inflicted
@@ -64,6 +73,10 @@ SETTING_MAX_BACKOFF_S = "OUTREACH_MAX_BACKOFF_S"
 SETTING_BACKOFF_MULTIPLIER = "OUTREACH_BACKOFF_MULTIPLIER"
 SETTING_REQUEST_TIMEOUT_S = "OUTREACH_REQUEST_TIMEOUT_S"
 SETTING_PER_LEAD_TIMEOUT_S = "OUTREACH_PER_LEAD_TIMEOUT_S"
+SETTING_AGENT_ENABLED = "OUTREACH_AGENT_ENABLED"
+SETTING_AGENT_MAX_STEPS = "OUTREACH_AGENT_MAX_STEPS"
+SETTING_AGENT_MAX_TOOL_CALLS = "OUTREACH_AGENT_MAX_TOOL_CALLS"
+SETTING_AGENT_PER_LEAD_TIMEOUT_S = "OUTREACH_AGENT_PER_LEAD_TIMEOUT_S"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +139,13 @@ class PlannerRuntime:
     max_in_flight: int
     retry: RetryPolicy
     timeouts: Timeouts
+    # Agentic copy step (MUS-29): gate plus the three budgets bounding one
+    # lead's loop — provider calls, tool executions, wall-clock seconds.
+    # Defaulted so every existing construction site stays valid.
+    agent_enabled: bool = DEFAULT_AGENT_ENABLED
+    agent_max_steps: int = DEFAULT_AGENT_MAX_STEPS
+    agent_max_tool_calls: int = DEFAULT_AGENT_MAX_TOOL_CALLS
+    agent_per_lead_s: float = DEFAULT_AGENT_PER_LEAD_TIMEOUT_S
 
 
 def _setting(name: str, default: Any) -> Any:
@@ -150,6 +170,15 @@ def _as_float(name: str, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise _bad(name, value, "a number")
     return float(value)
+
+
+def _as_bool(name: str, default: bool) -> bool:
+    # settings.py already folds the env string to a bool; a custom settings
+    # module writing "true" (the string) would otherwise be truthy-on-accident.
+    value = _setting(name, default)
+    if not isinstance(value, bool):
+        raise _bad(name, value, "a boolean")
+    return value
 
 
 def _bad(name: str, value: Any, expected: str) -> "ImproperlyConfigured":
@@ -233,10 +262,37 @@ def get_planner_runtime() -> PlannerRuntime:
     ``manage.py check`` failure instead of a 500 for whoever clicked "Run
     Outreach Plan".
     """
+    timeouts = get_timeouts()
+
+    agent_enabled = _as_bool(SETTING_AGENT_ENABLED, DEFAULT_AGENT_ENABLED)
+    agent_max_steps = _as_int(SETTING_AGENT_MAX_STEPS, DEFAULT_AGENT_MAX_STEPS)
+    agent_max_tool_calls = _as_int(SETTING_AGENT_MAX_TOOL_CALLS, DEFAULT_AGENT_MAX_TOOL_CALLS)
+    agent_per_lead_s = _as_float(SETTING_AGENT_PER_LEAD_TIMEOUT_S, DEFAULT_AGENT_PER_LEAD_TIMEOUT_S)
+    _require(agent_max_steps >= 1, SETTING_AGENT_MAX_STEPS, agent_max_steps, "at least 1")
+    _require(
+        agent_max_tool_calls >= 0,
+        SETTING_AGENT_MAX_TOOL_CALLS,
+        agent_max_tool_calls,
+        "non-negative",
+    )
+    # Same nesting argument as Timeouts: the agent per-lead budget wraps whole
+    # provider calls, so a value shorter than one attempt fails every lead.
+    _require(
+        agent_per_lead_s >= timeouts.request_s,
+        SETTING_AGENT_PER_LEAD_TIMEOUT_S,
+        agent_per_lead_s,
+        f"at least {SETTING_REQUEST_TIMEOUT_S} ({timeouts.request_s}) -- an agent "
+        "per-lead budget shorter than one attempt fails every lead",
+    )
+
     return PlannerRuntime(
         max_in_flight=get_max_in_flight(),
         retry=get_retry_policy(),
-        timeouts=get_timeouts(),
+        timeouts=timeouts,
+        agent_enabled=agent_enabled,
+        agent_max_steps=agent_max_steps,
+        agent_max_tool_calls=agent_max_tool_calls,
+        agent_per_lead_s=agent_per_lead_s,
     )
 
 
@@ -247,6 +303,10 @@ __all__ = [
     "DEFAULT_MAX_IN_FLIGHT",
     "DEFAULT_REQUEST_TIMEOUT_S",
     "DEFAULT_PER_LEAD_TIMEOUT_S",
+    "DEFAULT_AGENT_ENABLED",
+    "DEFAULT_AGENT_MAX_STEPS",
+    "DEFAULT_AGENT_MAX_TOOL_CALLS",
+    "DEFAULT_AGENT_PER_LEAD_TIMEOUT_S",
     "MAX_IN_FLIGHT_CEILING",
     "get_retry_policy",
     "get_timeouts",

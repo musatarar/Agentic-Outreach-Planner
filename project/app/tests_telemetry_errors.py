@@ -42,6 +42,10 @@ TAXONOMY = [
     (errors.LLMAuthError, "LLMAuthError", errors.FAULT_CONFIGURATION, False),
     (errors.LLMBadRequestError, "LLMBadRequestError", errors.FAULT_CONFIGURATION, False),
     (errors.LLMMalformedResponseError, "LLMMalformedResponseError", errors.FAULT_CONTRACT, False),
+    # A degenerate sample, not a wire format we cannot read: the provider's, and
+    # worth another roll of the dice. Subclasses the row above, which keeps
+    # every existing `except LLMMalformedResponseError` site catching it.
+    (errors.LLMEmptyCompletionError, "LLMEmptyCompletionError", errors.FAULT_PROVIDER, True),
 ]
 
 
