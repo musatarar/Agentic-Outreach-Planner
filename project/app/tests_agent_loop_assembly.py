@@ -225,6 +225,74 @@ class CrashResumeTests(TestCase):
             OutreachAction.objects.filter(trace_run_id=run_id, lead_id="lead_001").count(), 1
         )
 
+    def test_resume_recovers_a_run_checkpointed_terminal_before_the_crash(self):
+        """MB2: `failed` and `exhausted` are outside NON_TERMINAL_STATUSES, so
+        the claim CAS matches zero rows for a run that checkpointed one of them
+        and then died before finalize wrote its `OutreachAction`. That surfaces
+        as AgentClaimLost, which phase 5 drops — and nothing ever resets a
+        terminal run, so the lead is lost from this resume and every later one.
+
+        The contract defines AgentClaimLost as "another worker won ... whose own
+        finalize writes this lead's row". Here no worker ever writes it, and the
+        lead would have produced a needs_human row in the non-crash flow.
+        """
+        self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
+        client = self._fake_chat(crash_after=0)  # every call dies: runs exist, no steps
+        with mock.patch.object(outreach, "get_llm_client", return_value=client):
+            with self.assertRaises(RuntimeError):
+                outreach.plan_outreach()
+        run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 0)
+
+        # The durable checkpoints that committed before the process died: one
+        # lead's provider call failed, another ran out of its step budget.
+        # Neither reached phase 5, so neither has a row to show for it.
+        app_models.AgentLeadRun.objects.filter(trace_run_id=run_id, lead_id="lead_000").update(
+            status=app_models.AgentLeadRun.STATUS_FAILED
+        )
+        app_models.AgentLeadRun.objects.filter(trace_run_id=run_id, lead_id="lead_001").update(
+            status=app_models.AgentLeadRun.STATUS_EXHAUSTED
+        )
+
+        resumed = self._fake_chat()
+        with mock.patch.object(outreach, "get_llm_client", return_value=resumed):
+            outreach.plan_outreach(resume_run_id=run_id)
+
+        # Every lead comes back — none silently vanishes from the resume:
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 3)
+        for lead_id in ("lead_000", "lead_001", "lead_002"):
+            with self.subTest(lead_id=lead_id):
+                self.assertEqual(
+                    OutreachAction.objects.filter(trace_run_id=run_id, lead_id=lead_id).count(), 1
+                )
+
+    def test_resume_leaves_a_terminal_run_that_already_finalized_alone(self):
+        """The reset is conditioned on having no row, not on being terminal:
+        a run that did reach phase 5 is finished work, and re-running it would
+        re-bill the provider for a row the resume must not write twice."""
+        self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
+        client = self._fake_chat()
+        with mock.patch.object(outreach, "get_llm_client", return_value=client):
+            outreach.plan_outreach()
+        run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 3)
+        # A run that finalized and was *then* marked failed (a checkpoint that
+        # lost a race with its own finalize) still has nothing owed to it.
+        app_models.AgentLeadRun.objects.filter(trace_run_id=run_id, lead_id="lead_000").update(
+            status=app_models.AgentLeadRun.STATUS_FAILED
+        )
+
+        resumed = self._fake_chat()
+        with mock.patch.object(outreach, "get_llm_client", return_value=resumed):
+            outreach.plan_outreach(resume_run_id=run_id)
+
+        self.assertEqual(resumed.chat_calls, [])  # nothing re-billed
+        self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 3)
+        self.assertEqual(
+            app_models.AgentLeadRun.objects.get(trace_run_id=run_id, lead_id="lead_000").status,
+            app_models.AgentLeadRun.STATUS_FAILED,  # left exactly as found
+        )
+
     def test_agent_outcome_cannot_override_the_rules(self):
         self.assertIn(
             "resume_run_id", inspect.signature(outreach.plan_outreach).parameters
