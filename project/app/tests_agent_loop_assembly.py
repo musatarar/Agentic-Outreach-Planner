@@ -376,7 +376,7 @@ class ResumeValidationTests(TestCase):
         self.assertEqual(OutreachAction.objects.filter(trace_run_id="no-such-run").count(), 0)
 
     def test_plan_outreach_refuses_a_resume_when_the_agent_is_disabled(self):
-        client = self._crashed_run()
+        self._crashed_run()
         run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
         single_shot = _SingleShotClient()
         with (

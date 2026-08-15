@@ -1219,6 +1219,32 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     return client.complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
 
+class ResumeRefused(RuntimeError):
+    """A resume was asked for and cannot be honoured; nothing was planned.
+
+    Raised before the run span opens, so a refused resume writes no row, opens
+    no span and makes no provider call. The two subclasses are what the API
+    layer maps to its ``error`` codes; callers that do not care which can catch
+    this base and know only that the run did not start.
+    """
+
+
+class UnknownRun(ResumeRefused):
+    """No ``AgentLeadRun`` carries this ``trace_run_id`` (a typo, or a run id
+    from a different database). Adopting it would mint fresh rows under it and
+    bill a full run — the exact cost the resume existed to avoid."""
+
+
+class AgentDisabled(ResumeRefused):
+    """``OUTREACH_AGENT_ENABLED`` is off, so there is no resume machinery in
+    this process to resume with.
+
+    Every part of it — run lookup, prior steps, claims, the already-finalized
+    filter — lives inside the flag, while the run id is reused by the telemetry
+    layer regardless. Running anyway would re-bill every lead single-shot and
+    stamp the crashed agent run's id on drafts the agent never wrote."""
+
+
 class CopyGenerationGaveUp(RuntimeError):
     """The provider call failed for good, plus what the attempt cost.
 
@@ -2242,6 +2268,33 @@ def plan_outreach(resume_run_id: str | None = None):
     from project.app.services import queue_copy
     from project.app.services.telemetry import genai
 
+    # The knobs are resolved once, ahead of the run span rather than inside
+    # phase 3: they describe this run (the span records `max_in_flight`, and a
+    # per-lead latency reading is uninterpretable without it), and 200 leads
+    # each re-reading Django settings would be 200 chances for a mid-run
+    # configuration change to make half a run behave differently from the
+    # other half.
+    runtime = llm_runtime.get_planner_runtime()
+
+    # Resume is validated here, at the mechanism, and not only in the one view
+    # that happens to reach it: `plan_outreach` is importable and scriptable,
+    # and a guard only the view enforces is a guard the next caller does not
+    # get. Ahead of every read and every span, so a refused resume costs a
+    # single query and leaves no trace of a run that never started.
+    if resume_run_id is not None:
+        from project.app.models import AgentLeadRun
+
+        # Unknown before disabled: "is this a real run" is a fact about the
+        # request, "can this process resume it" is a fact about configuration,
+        # and a typo is the more useful thing to be told about first.
+        if not AgentLeadRun.objects.filter(trace_run_id=resume_run_id).exists():
+            raise UnknownRun(f"no agent run carries the id {resume_run_id!r}")
+        if not runtime.agent_enabled:
+            raise AgentDisabled(
+                "OUTREACH_AGENT_ENABLED is off; a resume would re-plan every "
+                "lead single-shot under the resumed run's id"
+            )
+
     # Copy grounding strictness (off | standard | strict); see verify.py.
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
 
@@ -2289,14 +2342,6 @@ def plan_outreach(resume_run_id: str | None = None):
     # day beside a `rule_trace` computed on the next, which is exactly the
     # contradiction the snapshot exists to prevent.
     today = datetime.date.today()
-
-    # The knobs are resolved once, ahead of the run span rather than inside
-    # phase 3: they describe this run (the span records `max_in_flight`, and a
-    # per-lead latency reading is uninterpretable without it), and 200 leads
-    # each re-reading Django settings would be 200 chances for a mid-run
-    # configuration change to make half a run behave differently from the
-    # other half.
-    runtime = llm_runtime.get_planner_runtime()
 
     with genai.run_span(
         verify_level=level, max_in_flight=runtime.max_in_flight, run_id=resume_run_id
