@@ -41,7 +41,7 @@ merged into `feat/run-composer`. `master` is only touched by MUS-66.
 | # | Branch `feat/run-composer--…` | Test artifact | Depends on |
 | --- | --- | --- | --- |
 | 0 | ~~MUS-66~~ — **landed on `master` as `b80f3a5` (#96)** | `tests_llm_tool_call_parsing.py` | — |
-| S | `skeleton` | all artifacts, planted red | — |
+| S | *(the branch base — `f7af1a8`, not a PR)* | all artifacts, planted red | — |
 | 1 | `models` | `tests_compose_models.py` | S |
 | 2 | `scope` | `tests_compose_scope.py` | 1 |
 | 3 | `phases` | `tests_compose_phases.py` | S |
