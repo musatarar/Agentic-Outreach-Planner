@@ -17,6 +17,24 @@ from project.app.views_auth import (
     AuthMeView,
     AuthRequestLinkView,
 )
+from project.app.views_compose import (
+    RunActiveView,
+    RunClassifyView,
+    RunCloseView,
+    RunDetailView,
+    RunDiscardView,
+    RunEstimateView,
+    RunGenerateView,
+    RunListCreateView,
+    RunPreviewCountView,
+    RunReadView,
+    RunSelectView,
+    ScopeDetailView,
+    ScopeFieldsView,
+    ScopeListCreateView,
+    SuggestionAcceptView,
+    SuggestionRejectView,
+)
 from project.app.views_queue import (
     QueueApproveView,
     QueueDetailView,
@@ -55,6 +73,33 @@ urlpatterns = [
     path("queue/<int:pk>/snooze/", QueueSnoozeView.as_view(), name="queue-snooze"),
     path("queue/<int:pk>/dismiss/", QueueDismissView.as_view(), name="queue-dismiss"),
     path("queue/<int:pk>/undo/", QueueUndoView.as_view(), name="queue-undo"),
+    # --- run composer (MUS-47) ---
+    # The two literal segments MUST precede `runs/<int:pk>/`, and `scopes/fields/` must
+    # precede `scopes/<int:pk>/` -- same defensive ordering as `queue/done/` above.
+    path("runs/active/", RunActiveView.as_view(), name="run-active"),
+    path("runs/preview-count/", RunPreviewCountView.as_view(), name="run-preview-count"),
+    path("runs/", RunListCreateView.as_view(), name="run-list-create"),
+    path("runs/<int:pk>/", RunDetailView.as_view(), name="run-detail"),
+    path("runs/<int:pk>/classify/", RunClassifyView.as_view(), name="run-classify"),
+    path("runs/<int:pk>/close/", RunCloseView.as_view(), name="run-close"),
+    path("runs/<int:pk>/discard/", RunDiscardView.as_view(), name="run-discard"),
+    path("runs/<int:pk>/estimate/", RunEstimateView.as_view(), name="run-estimate"),
+    path("runs/<int:pk>/read/", RunReadView.as_view(), name="run-read"),
+    path("runs/<int:pk>/select/", RunSelectView.as_view(), name="run-select"),
+    path("runs/<int:pk>/generate/", RunGenerateView.as_view(), name="run-generate"),
+    path(
+        "runs/<int:pk>/suggestions/<str:lead_id>/accept/",
+        SuggestionAcceptView.as_view(),
+        name="run-suggestion-accept",
+    ),
+    path(
+        "runs/<int:pk>/suggestions/<str:lead_id>/reject/",
+        SuggestionRejectView.as_view(),
+        name="run-suggestion-reject",
+    ),
+    path("scopes/fields/", ScopeFieldsView.as_view(), name="scope-fields"),
+    path("scopes/", ScopeListCreateView.as_view(), name="scope-list-create"),
+    path("scopes/<int:pk>/", ScopeDetailView.as_view(), name="scope-detail"),
     # --- existing ---
     path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
     path("outreach/<int:pk>/trace/", OutreachTraceView.as_view(), name="outreach-trace"),

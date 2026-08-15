@@ -456,3 +456,145 @@ export interface AgentTrace {
   tool_calls_used: number;
   steps: AgentTraceStep[];
 }
+
+// --- Run Composer (MUS-47) ---------------------------------------------------
+// The /compose funnel: scope (free) -> classify (free) -> read (paid, optional)
+// -> generate (paid). Wire shapes are frozen in docs/contracts/run-composer.md.
+//
+// MONEY IS A STRING. DRF serializes DecimalField as a JSON string by default and
+// this project does not override COERCE_DECIMAL_TO_STRING, so every USD field
+// arrives as e.g. "0.1372". Parse with Number() at the edge; never assume a float.
+
+export type RunStatus =
+  | 'draft'
+  | 'classified'
+  | 'read'
+  | 'generated'
+  | 'completed'
+  | 'discarded';
+
+export type StageName = 'scope' | 'classify' | 'read' | 'generate';
+
+export type EstimateStage = 'read' | 'generate';
+
+export type SuggestionState = 'none' | 'proposed' | 'accepted' | 'rejected';
+
+export type SuggestionKind = 'raise' | 'lower' | 'action_change' | 'none';
+
+/** How a filter's value binds to its field. Drives chip rendering. */
+export type FilterBound = 'gte' | 'lte' | 'exact' | 'days' | 'bool';
+
+export type FilterKind = 'select' | 'int' | 'days' | 'bool';
+
+/** One entry from GET /api/scopes/fields/. `key` is unique; `label` is NOT —
+ *  book_min and book_max deliberately share the noun "book", and `bound` is what
+ *  makes the chip read `book >= $50,000`. */
+export interface ScopeField {
+  key: string;
+  label: string;
+  bound: FilterBound;
+  kind: FilterKind;
+  choices: string[];
+}
+
+/** The filter set itself, as stored on a run and posted to preview-count. */
+export type Scope = Record<string, string | number | boolean>;
+
+export interface Chip {
+  key: string;
+  display: string; // mono; a machine predicate, e.g. "last_contacted > 14d"
+  value: string | number | boolean;
+}
+
+export interface SuggestionEvidence {
+  source: 'note' | 'event';
+  quote: string; // the model's ORIGINAL text, not the normalized comparison form
+}
+
+/** All five keys are always present — placeholders, never absent keys, so no
+ *  reader has to branch on `in`. */
+export interface Suggestion {
+  suggestion: SuggestionKind;
+  proposed_priority: number | null;
+  proposed_action: string;
+  rationale: string;
+  evidence: SuggestionEvidence[];
+}
+
+export interface RunLeadRow {
+  lead_id: string;
+  agency_name: string;
+  contact_name: string;
+  rules_priority: number;
+  rules_action: string;
+  rules_reason: string;
+  effective_priority: number;
+  effective_action: string;
+  effective_reason: string;
+  rule_trace: RuleTrace;
+  already_queued: boolean;
+  selected: boolean;
+  suggestion: Suggestion | Record<string, never>; // {} when none was ever proposed
+  suggestion_state: SuggestionState;
+  suggestion_decided_at: string | null;
+  suggestion_decided_by: string;
+  generated_action_id: number | null;
+  generation_error: string;
+}
+
+export interface RunDetail {
+  id: number;
+  status: RunStatus;
+  scope: Scope;
+  /** Rows in the run. THE zero-lead gate — status alone does not tell you. */
+  lead_count: number;
+  spread: Record<string, number> | null; // null until classified
+  classify_ms: number | null;
+  discarded_suggestions: number;
+  read_provider: string;
+  read_model: string;
+  generate_provider: string;
+  generate_model: string;
+  read_cost_estimate_usd: string | null;
+  read_cost_actual_usd: string | null;
+  generate_cost_estimate_usd: string | null;
+  generate_cost_actual_usd: string | null;
+  created_at: string;
+  created_by: string;
+  finished_at: string | null;
+  run_leads?: RunLeadRow[]; // only on GET /api/runs/{id}/ and /classify/
+}
+
+export interface Estimate {
+  stage: EstimateStage;
+  provider: string;
+  model: string;
+  /** Rows this stage will actually bill for: every row for a read, only the
+   *  selected-and-not-already-queued rows for a generate. The two are different
+   *  numbers, which is why formatEstimate is stage-aware. */
+  lead_count: number;
+  tokens_in_est: number;
+  tokens_out_est: number;
+  usd_est: string;
+  is_estimate: boolean;
+}
+
+export interface GenerateResult {
+  generated: number;
+  failed: number;
+  skipped: number;
+  actual_usd: string;
+}
+
+export interface PreviewCount {
+  count: number;
+  total: number;
+}
+
+export interface SavedScope {
+  id: number;
+  name: string;
+  filters: Scope;
+  created_at: string;
+  created_by: string;
+}
