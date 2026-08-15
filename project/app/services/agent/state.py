@@ -166,6 +166,41 @@ def create_lead_runs(trace_run_id: str, lead_ids: Sequence[str]) -> dict[str, in
     return pks
 
 
+def reopen_runs(trace_run_id: str, lead_ids: Sequence[str]) -> int:
+    """Return the named leads' terminal runs to ``pending``; count them.
+
+    Sync, called from phase 2 after :func:`create_lead_runs`. ``failed`` and
+    ``exhausted`` are outside ``NON_TERMINAL_STATUSES``, so the claim CAS refuses
+    them — correct while a run is finishing, wrong forever afterwards: a run that
+    checkpointed one of them can never be claimed again, and the lead is dropped
+    from the rows to write on this resume and on every later one.
+
+    *Which* leads owe another attempt is the caller's decision, not this
+    function's: "does this lead still have a row a reviewer can act on" is a
+    planner-level question about `failed_generation_filter` and the phase-5
+    supersede, and answering it here would drag that policy into state-keeping.
+
+    The step log is untouched, so a reopened run keeps the trace of why it
+    failed — only the denormalized status moves, and a retry that fails again
+    restores it.
+
+    Deliberately *not* a change to ``_claim_sync``'s status filter: the refusal
+    is what makes a contested claim safe, and it stays. The reopen lives one
+    layer up, where "this attempt is over" is knowable.
+    """
+    from project.app.models import AgentLeadRun
+
+    if not lead_ids:
+        return 0
+    return int(
+        AgentLeadRun.objects.filter(
+            trace_run_id=trace_run_id,
+            lead_id__in=lead_ids,
+            status__in=(AgentLeadRun.STATUS_FAILED, AgentLeadRun.STATUS_EXHAUSTED),
+        ).update(status=AgentLeadRun.STATUS_PENDING)
+    )
+
+
 def load_prior_steps(lead_run_pk: int) -> tuple[StepRecord, ...]:
     """Read a run's persisted steps in ``seq`` order. Sync, called from phase 2."""
     from project.app.models import AgentStep

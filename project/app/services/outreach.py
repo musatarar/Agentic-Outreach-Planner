@@ -2359,6 +2359,38 @@ def plan_outreach(resume_run_id: str | None = None):
                     }
                 )
             run_pks = agent_state.create_lead_runs(run.run_id, lead_ids)
+            # Before any step is read, hand back the runs a previous attempt left
+            # terminal while still owing this run a row. The claim CAS refuses
+            # `failed` and `exhausted`, so without this the lead is dropped from
+            # the rows to write on this resume and on every later one.
+            #
+            # "Owes a row" is not "has no row": a row recording a *failed
+            # generation* is one the supersede below deletes on purpose, because
+            # its own message tells the reviewer to re-run the planner once the
+            # provider recovers. Counting it as finished work is worse than
+            # doing nothing — the delete lands, the lead is dropped, and it
+            # leaves the queue entirely. So the leads to keep are exactly the
+            # ones phase 5 will *not* supersede, and the condition below mirrors
+            # that DELETE clause for clause.
+            from django.db.models import Q
+
+            keep = set(
+                OutreachAction.objects.filter(trace_run_id=run.run_id)
+                .exclude(
+                    Q(dedupe_key__in=[item.dedupe_key for item in work])
+                    & Q(
+                        status__in=(
+                            OutreachAction.STATUS_PENDING,
+                            OutreachAction.STATUS_SNOOZED,
+                        )
+                    )
+                    & failed_generation_filter()
+                )
+                .values_list("lead_id", flat=True)
+            )
+            agent_state.reopen_runs(
+                run.run_id, [lead_id for lead_id in lead_ids if lead_id not in keep]
+            )
             # One Checkpoint per run on purpose: its lock binds to the event
             # loop phase 3 runs on, and its connection borrow captures THIS
             # thread's wrapper — both are per-worker-per-loop facts, and this
