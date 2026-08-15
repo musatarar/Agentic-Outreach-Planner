@@ -677,7 +677,6 @@ class RunEndpointTests(AuthenticatedAPITestCase):
                 self.assertTrue(resp.data["detail"])
                 self.assertNotIn("error", resp.data)
 
-    @unittest.expectedFailure
     def test_run_endpoints_are_401_when_anonymous(self):
         """401 exactly, not 403 -- MUS-38's route guard redirects on 401 and does
         nothing on 403. Worth its own test here in particular: the composer is the

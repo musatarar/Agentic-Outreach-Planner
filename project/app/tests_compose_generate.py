@@ -1025,7 +1025,6 @@ class GenerateEndpointTests(AuthenticatedAPITestCase):
         self.assertNotIn("lead_002", queued)  # never selected, never drafted
         self.assertEqual(queued["lead_001"]["suggested_copy"], WELL_SHAPED_COPY)
 
-    @unittest.expectedFailure
     def test_select_and_generate_are_401_when_anonymous(self):
         """401 exactly, not 403 — MUS-38's route guard redirects on 401 and does
         nothing on 403. Worth its own test on this endpoint above all others:

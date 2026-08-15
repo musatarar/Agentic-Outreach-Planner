@@ -597,3 +597,255 @@ class OutboundSend(models.Model):
 
     def __str__(self):
         return f"send for action {self.outreach_action_id}"
+
+
+# --- Run Composer (MUS-47) ----------------------------------------------------
+
+
+class PlannerRun(models.Model):
+    """One operator-driven composer run: scope -> classify -> read -> generate.
+
+    Durable because the product's premise is that the person paying may stop
+    between stages, and the gaps are long enough that no session or
+    request-scoped object survives them. `GET /api/runs/active/` is what turns
+    "I closed the tab" into a resume, which is why "active" is a queryable
+    property of the row rather than something the client remembers.
+
+    See docs/adr/run-composer-state.md for why the single-active rule lives in
+    the schema and why there are six statuses rather than four.
+    """
+
+    STATUS_DRAFT = "draft"
+    STATUS_CLASSIFIED = "classified"
+    STATUS_READ = "read"
+    STATUS_GENERATED = "generated"
+    STATUS_COMPLETED = "completed"
+    STATUS_DISCARDED = "discarded"
+
+    # The partition the active slot reasons about: every status is in exactly
+    # one of these two, and `pr_sentinel_matches_status` below is the schema
+    # saying so. `generated` is deliberately ACTIVE -- failed rows stay
+    # selectable for retry, so generation cannot be the thing that ends a run.
+    # The human closes it.
+    ACTIVE_STATUSES = (STATUS_DRAFT, STATUS_CLASSIFIED, STATUS_READ, STATUS_GENERATED)
+    TERMINAL_STATUSES = (STATUS_COMPLETED, STATUS_DISCARDED)
+
+    # A working run may re-enter the stage it is in -- re-classify after a scope
+    # edit, re-read after a provider change, re-generate after selecting more
+    # leads -- or move forward, never back. Discard is reachable from every
+    # working stage; only a `generated` run may complete. Terminal runs accept
+    # nothing, their own status included: reopening one would need the active
+    # slot back, and nothing hands it back.
+    ALLOWED_TRANSITIONS = {
+        STATUS_DRAFT: (STATUS_CLASSIFIED, STATUS_DISCARDED),
+        STATUS_CLASSIFIED: (STATUS_CLASSIFIED, STATUS_READ, STATUS_GENERATED, STATUS_DISCARDED),
+        STATUS_READ: (STATUS_READ, STATUS_GENERATED, STATUS_DISCARDED),
+        STATUS_GENERATED: (STATUS_GENERATED, STATUS_COMPLETED, STATUS_DISCARDED),
+        STATUS_COMPLETED: (),
+        STATUS_DISCARDED: (),
+    }
+
+    status = models.CharField(max_length=16, default=STATUS_DRAFT, db_index=True)
+    scope = models.JSONField(default=dict)  # validated through compose.scope.validate_scope
+
+    # True while the run is active, NULL once it is terminal -- two-valued, never
+    # False. NULLs are distinct from each other in a unique index on both
+    # backends, so `pr_one_active_run` below admits unbounded finished history
+    # under NULL while at most one row can hold True. A `False` row would sit
+    # outside the partial index entirely: invisible to the exclusion it is
+    # supposed to obey, which is why the check constraint rejects it.
+    active_sentinel = models.BooleanField(null=True, default=True)
+
+    created_by = models.EmailField(blank=True, default="")  # audit only, never authorization
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True, default=None)
+    finished_by = models.EmailField(blank=True, default="")
+
+    # Minted at generate and stamped on every OutreachAction the run writes, so
+    # a composer run joins to its rows exactly the way a planner run does.
+    trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
+    classify_ms = models.IntegerField(null=True, blank=True, default=None)
+
+    # The provider/model each paid stage actually ran on -- recorded per stage
+    # because a run may read on a cheap model and generate on a flagship one.
+    read_provider = models.CharField(max_length=32, blank=True, default="")
+    read_model = models.CharField(max_length=128, blank=True, default="")
+    generate_provider = models.CharField(max_length=32, blank=True, default="")
+    generate_model = models.CharField(max_length=128, blank=True, default="")
+
+    # Money is Decimal, never float. NULL rather than 0 is load-bearing: "not
+    # priced yet" and "priced at zero" are different answers and the estimate
+    # view renders them differently.
+    read_cost_estimate_usd = models.DecimalField(
+        max_digits=10, decimal_places=4, null=True, blank=True
+    )
+    read_cost_actual_usd = models.DecimalField(
+        max_digits=10, decimal_places=4, null=True, blank=True
+    )
+    generate_cost_estimate_usd = models.DecimalField(
+        max_digits=10, decimal_places=4, null=True, blank=True
+    )
+    generate_cost_actual_usd = models.DecimalField(
+        max_digits=10, decimal_places=4, null=True, blank=True
+    )
+
+    # Suggestions `validate_suggestion` threw away, counted so the read summary
+    # can say how much of what was paid for did not survive validation.
+    discarded_suggestions = models.IntegerField(default=0)
+
+    def can_transition_to(self, new_status):
+        """True when `new_status` is a legal next state from the current one.
+
+        `.get(..., ())` rather than `[...]`: a row can carry a status this build
+        does not know about (downgrade, hand-edited data), and the failure mode
+        there has to be "nothing is legal", not a 500.
+        """
+        return new_status in self.ALLOWED_TRANSITIONS.get(self.status, ())
+
+    class Meta:
+        constraints = [
+            # THE single-active rule, as a fact about the database rather than a
+            # convention in services/compose/runs.py. `create_run` inserts
+            # unconditionally and turns the IntegrityError into a 409 carrying
+            # the active run's id; the read-then-write it replaces is the exact
+            # race `plan_outreach`'s open_keys and `LoginToken` consume were
+            # already bitten by.
+            models.UniqueConstraint(
+                fields=["active_sentinel"],
+                condition=Q(active_sentinel=True),
+                name="pr_one_active_run",
+            ),
+            # Rules out the half-written close: status moved but the sentinel
+            # left set (a finished run still holding the slot, which wedges the
+            # product with no UI path out), or its mirror, a NULL-sentinel run
+            # still reporting itself active to every stage guard while a second
+            # run is created alongside it.
+            #
+            # `active_sentinel__isnull=False` is load-bearing, not redundant.
+            # Without it the first disjunct evaluates to NULL for a NULL
+            # sentinel, `NULL OR FALSE` is NULL, and SQL rejects a row only when
+            # a CHECK is FALSE -- so the mirror half would not exist at all.
+            #
+            # Statuses are spelled out: Meta cannot see the enclosing class
+            # namespace (same reason ReviewDecision's constraints inline their
+            # kind strings).
+            CheckConstraint(
+                check=(
+                    Q(
+                        active_sentinel=True,
+                        active_sentinel__isnull=False,
+                        status__in=("draft", "classified", "read", "generated"),
+                    )
+                    | Q(active_sentinel__isnull=True, status__in=("completed", "discarded"))
+                ),
+                name="pr_sentinel_matches_status",
+            ),
+        ]
+
+    def __str__(self):
+        return f"run {self.pk} [{self.status}]"
+
+
+class RunLead(models.Model):
+    """One lead's row inside a run: what the rules said, beside what stuck.
+
+    The rules/effective split is the feature, not a normalization accident.
+    `rules_*` is written once by classify and never again, so the audit answer
+    this product owes -- what the deterministic rules decided, next to what a
+    human approved on top of it -- survives every later decision. Deriving
+    `effective_priority` from `rules_priority` would make an accepted
+    suggestion unrepresentable.
+    """
+
+    SUGGESTION_NONE = "none"
+    SUGGESTION_PROPOSED = "proposed"
+    SUGGESTION_ACCEPTED = "accepted"
+    SUGGESTION_REJECTED = "rejected"
+
+    run = models.ForeignKey(PlannerRun, on_delete=models.CASCADE, related_name="run_leads")
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="+")
+
+    # ---- Written once, at classify. Never written again (pinned by a test) ---
+    rules_priority = models.IntegerField()
+    rules_action = models.CharField(max_length=64)
+    rules_reason = models.TextField()
+    # `outreach.explain()`'s schema-v1 envelope -- a mapping, the same shape
+    # OutreachAction.rule_trace holds, which is what lets MUS-40's RuleTrace
+    # component render a composer row unchanged. `default=dict`, not list.
+    rule_trace = models.JSONField(default=dict)
+    dedupe_key = models.CharField(max_length=128, db_index=True)
+
+    # ---- The rules values, unless a human accepted a suggestion -------------
+    effective_priority = models.IntegerField()
+    effective_action = models.CharField(max_length=64)
+    effective_reason = models.TextField()
+
+    # An open OutreachAction already shares this dedupe_key, so generating again
+    # would double-queue the same recommendation.
+    already_queued = models.BooleanField(default=False)
+    selected = models.BooleanField(default=False)
+    generated_action = models.OneToOneField(
+        OutreachAction,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="run_lead",
+    )
+    # outreach.failure_kind. Set on a lead whose generation failed; the row
+    # stays selectable so retry is a re-run, not a re-classify.
+    generation_error = models.CharField(max_length=64, blank=True, default="")
+
+    # The validated suggestion shape, or {} when nothing was ever proposed.
+    suggestion = models.JSONField(default=dict, blank=True)
+    # A state string, never Python None: a lead the read never reached, one
+    # whose provider call failed, and one whose suggestion was discarded all
+    # land in "none", so no reader branches three ways on a two-way fact.
+    suggestion_state = models.CharField(max_length=16, default=SUGGESTION_NONE)
+    suggestion_decided_at = models.DateTimeField(null=True, blank=True, default=None)
+    suggestion_decided_by = models.EmailField(blank=True, default="")
+
+    class Meta:
+        constraints = [
+            # Per (run, lead), NOT per lead: the same lead appearing in this
+            # week's run and last week's is the normal case. Re-classify is
+            # specified to REPLACE a run's rows rather than add to them, and
+            # selection counts, estimates and the generate loop all assume one
+            # row per lead -- a duplicate would bill the operator twice for one
+            # lead.
+            models.UniqueConstraint(fields=["run", "lead"], name="rl_one_row_per_lead_per_run"),
+        ]
+        indexes = [
+            # The one query every stage after classify runs: this run's rows,
+            # priority 1 first, tie-broken by lead so the selection table is
+            # stable between polls. Same column shape `oa_queue_order` gives the
+            # triage queue. `run` leads or the index is no use as a prefix for
+            # the per-run filter, and the sort key is `effective_priority`
+            # because an accepted suggestion moves a lead and the order follows.
+            models.Index(fields=["run", "effective_priority", "lead"], name="rl_selection_order"),
+        ]
+
+    def __str__(self):
+        return f"run {self.run_id}/{self.lead_id} (p{self.effective_priority})"
+
+
+class SavedScope(models.Model):
+    """A named lead filter an operator can re-select when starting a run.
+
+    `filters` goes through `compose.scope.validate_scope` on write, so a stored
+    scope cannot smuggle an unknown key past the validator later.
+    """
+
+    # The handle the frontend saves and re-selects by, so two rows called
+    # "Dormant CA" would make "load my saved scope" ambiguous with no tiebreak
+    # the user can see.
+    name = models.CharField(max_length=64, unique=True)
+    filters = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.EmailField(blank=True, default="")
+
+    class Meta:
+        # Keeps the picker stable without every view remembering to sort.
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
