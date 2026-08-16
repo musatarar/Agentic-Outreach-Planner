@@ -1,0 +1,289 @@
+name: Preview (phone-testable tunnel)
+
+# Runs the app on a GitHub runner and puts it behind a public https URL so a
+# branch can be opened from a phone -- no local machine, no deploy target.
+#
+# Dispatch it from the branch you want to try (the Actions UI's "Use workflow
+# from" picker, or `gh workflow run preview.yml --ref <branch>`); it serves
+# THAT ref. The run posts the URL and a ready-to-tap sign-in link to the run
+# summary, then holds the tunnel open for `minutes` before shutting down.
+# Cancelling the run closes it immediately.
+#
+# What this is not: a deployment. The database is a throwaway SQLite file on
+# the runner, seeded with the same demo pipeline as `populate_demo_data.py`,
+# and it disappears with the runner. Nothing here touches real infrastructure.
+#
+# Security posture, since the URL is public while the run is alive:
+#   * Every API endpoint is IsAuthenticated (settings.REST_FRAMEWORK), and the
+#     only way in is a magic link for an address on LOGIN_ALLOWED_EMAILS --
+#     which this workflow sets to exactly one address, the one you pass in.
+#   * DJANGO_DEBUG is left off, so a traceback can never render settings or
+#     environment to a stranger who guesses the hostname. `runserver
+#     --insecure` is what keeps static files served with DEBUG=False.
+#   * The secret key is generated per run and dies with it, so a session
+#     cookie minted here is worthless anywhere else.
+#   * No provider keys are injected -- the LLM copy step is not exercised
+#     here. Rules, triage queue, and the whole UI are.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to hold the tunnel open (5-350)"
+        type: string
+        default: "60"
+      login_email:
+        description: "Address the sign-in link is minted for (blank = the PREVIEW_LOGIN_EMAIL repo variable)"
+        type: string
+        default: ""
+      seed_demo_data:
+        description: "Seed the demo pipeline (off = empty database, LLM catalog only)"
+        type: boolean
+        default: true
+
+# One preview at a time per branch: a second dispatch replaces the first
+# rather than leaving two tunnels serving the same ref.
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Preview ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    # Hard ceiling above the 350-minute input cap, so a hung step can never
+    # hold a runner (and a public URL) open indefinitely.
+    timeout-minutes: 360
+    env:
+      DJANGO_SETTINGS_MODULE: project.settings
+      SERVER_PORT: "8000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Runtime deps only -- nothing here lints or tests. The React bundle is
+      # committed under project/app/static/frontend/ and CI fails when it goes
+      # stale, so there is deliberately no npm build step: what this serves is
+      # exactly what the branch would serve in production.
+      - run: pip install -r requirements.txt
+
+      - name: Resolve inputs
+        env:
+          # Both are untrusted strings from the dispatch form; keep them in the
+          # environment rather than interpolating them into the shell.
+          RAW_MINUTES: ${{ inputs.minutes }}
+          RAW_EMAIL: ${{ inputs.login_email }}
+          FALLBACK_EMAIL: ${{ vars.PREVIEW_LOGIN_EMAIL }}
+        run: |
+          set -euo pipefail
+
+          email="${RAW_EMAIL:-$FALLBACK_EMAIL}"
+          if [ -z "$email" ]; then
+            echo "::error::No sign-in address. Pass login_email when dispatching, or set a PREVIEW_LOGIN_EMAIL repository variable. Without one nobody can sign in and the preview is a login page and nothing else."
+            exit 1
+          fi
+          # Deliberately strict, and not really about valid addresses: this
+          # value is written to $GITHUB_ENV, where anything containing a
+          # newline would define extra variables of the writer's choosing.
+          if ! printf '%s' "$email" | grep -qE '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; then
+            echo "::error::login_email is not a plain email address: $email"
+            exit 1
+          fi
+
+          # Clamp rather than reject: a fat-fingered "600" from a phone should
+          # still get a preview, just a shorter one.
+          case "$RAW_MINUTES" in
+            ''|*[!0-9]*) minutes=60 ;;
+            *) minutes=$RAW_MINUTES ;;
+          esac
+          if [ "$minutes" -lt 5 ]; then minutes=5; fi
+          if [ "$minutes" -gt 350 ]; then minutes=350; fi
+
+          {
+            echo "PREVIEW_MINUTES=$minutes"
+            echo "LOGIN_ALLOWED_EMAILS=$email"
+            echo "PREVIEW_EMAIL=$email"
+            # The link has to outlive the wait, or a preview you open 20
+            # minutes in hands you an expired token.
+            echo "LOGIN_TOKEN_TTL_SECONDS=$((minutes * 60))"
+            # Ephemeral and per-run: sessions signed here are void the moment
+            # the runner is reclaimed.
+            echo "DJANGO_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+          } >> "$GITHUB_ENV"
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-delay 2 \
+            -o "$RUNNER_TEMP/cloudflared.deb" \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i "$RUNNER_TEMP/cloudflared.deb"
+          cloudflared --version
+
+      # The tunnel comes up BEFORE Django, because the hostname it hands back
+      # is an input to Django's config: ALLOWED_HOSTS decides whether the app
+      # answers for that Host at all, and CSRF_TRUSTED_ORIGINS decides whether
+      # anything can be POSTed once it does. Neither can be known in advance --
+      # a quick tunnel's name is assigned at connect time.
+      - name: Open the tunnel
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/preview"
+          log="$RUNNER_TEMP/preview/cloudflared.log"
+
+          # A quick tunnel: anonymous, no Cloudflare account or token, torn
+          # down when the process exits.
+          cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${SERVER_PORT}" \
+            > "$log" 2>&1 &
+          echo "TUNNEL_PID=$!" >> "$GITHUB_ENV"
+
+          url=""
+          for _ in $(seq 1 45); do
+            url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" | head -1 || true)"
+            [ -n "$url" ] && break
+            sleep 2
+          done
+          if [ -z "$url" ]; then
+            echo "::error::cloudflared never printed a tunnel hostname"
+            cat "$log"
+            exit 1
+          fi
+
+          {
+            echo "PREVIEW_URL=$url"
+            echo "DJANGO_ALLOWED_HOSTS=${url#https://},127.0.0.1,localhost"
+            echo "DJANGO_CSRF_TRUSTED_ORIGINS=$url"
+            # Absolute base for the magic link, which is minted server-side and
+            # must point at the tunnel rather than at the runner's localhost.
+            echo "LOGIN_LINK_BASE_URL=$url"
+          } >> "$GITHUB_ENV"
+          echo "Tunnel is up: $url"
+
+      - name: Migrate and seed
+        run: |
+          set -euo pipefail
+          python manage.py migrate --noinput
+          if [ "${{ inputs.seed_demo_data }}" = "true" ]; then
+            python scripts/populate_demo_data.py
+          else
+            # Still needed: the settings page resolves providers from the
+            # catalog, so an unseeded database renders an empty picker.
+            python manage.py seed_llm_catalog
+          fi
+
+      - name: Start the server
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/preview/server.log"
+          # --noreload: the autoreloader would fork a child this step cannot
+          # track. --insecure: serve static files even though DEBUG is off,
+          # which is the trade that keeps tracebacks off a public URL.
+          python manage.py runserver "0.0.0.0:${SERVER_PORT}" --noreload --insecure \
+            > "$log" 2>&1 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+
+          for _ in $(seq 1 30); do
+            # -fs, not -fsS: this loop expects to fail on the first tries and
+            # curl's connection-refused noise would read as a broken run.
+            if curl -fs -o /dev/null "http://127.0.0.1:${SERVER_PORT}/signin"; then
+              echo "Server is up."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::The server never answered on 127.0.0.1:${SERVER_PORT}"
+          cat "$log"
+          exit 1
+
+      # Minted here rather than requested from the phone: the console delivery
+      # channel prints the link to the server log, and reading a live job log
+      # on a phone to copy a token is exactly the friction this workflow is
+      # meant to remove. Same code path the /signin form uses.
+      - name: Mint a sign-in link and publish the summary
+        run: |
+          set -euo pipefail
+          link="$(python - <<'PY'
+          import os
+
+          import django
+
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
+          django.setup()
+
+          from project.app.services.login_links import issue_login_link
+
+          print(issue_login_link(os.environ["PREVIEW_EMAIL"]).link)
+          PY
+          )"
+
+          {
+            echo "## Preview is live"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA:0:7}\` |"
+            echo "| URL | ${PREVIEW_URL} |"
+            echo "| Open until | ${PREVIEW_MINUTES} minutes from the start of this run |"
+            echo
+            echo "### Tap to sign in"
+            echo
+            echo "[Sign in as ${PREVIEW_EMAIL}](${link})"
+            echo
+            echo "Single-use and valid for ${PREVIEW_MINUTES} minutes. Need another one?"
+            echo "Open [${PREVIEW_URL}/signin](${PREVIEW_URL}/signin), enter the same"
+            echo "address, and the link is printed in this run's live log."
+            echo
+            echo "Cancel the run to close the tunnel early. The database is a"
+            echo "throwaway SQLite file on the runner and is discarded with it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Not echoed to the log on purpose: the run summary is already
+          # visible to anyone who can read the run, but the log is noisier to
+          # scrub and gets uploaded as an artifact below.
+          echo "Sign-in link written to the run summary."
+
+      - name: Hold the tunnel open
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + PREVIEW_MINUTES * 60 ))
+
+          # Stream request logs into the job log so the phone session is
+          # debuggable live from the Actions view.
+          tail -f "$RUNNER_TEMP/preview/server.log" &
+          tail_pid=$!
+          trap 'kill "$tail_pid" 2>/dev/null || true' EXIT
+
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::The Django server exited early."
+              exit 1
+            fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              echo "::error::cloudflared exited early -- the URL is dead."
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "Preview window elapsed after ${PREVIEW_MINUTES} minutes; shutting down."
+
+      - name: Stop the server and the tunnel
+        if: always()
+        run: |
+          kill "${SERVER_PID:-}" "${TUNNEL_PID:-}" 2>/dev/null || true
+
+      # Server + tunnel logs, for working out why a preview misbehaved after it
+      # has shut down. Note that any link requested from /signin during the run
+      # is in server.log (console delivery), so the artifact is as sensitive as
+      # the run summary -- both are collaborator-only, and every token in them
+      # is expired by the time the run ends.
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/preview/
+          if-no-files-found: ignore

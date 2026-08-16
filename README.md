@@ -104,6 +104,51 @@ endpoint can't be used to find out who has an account. The one exception is the 
 field in the response body, which is populated only when `DJANGO_DEBUG=True` **and** delivery
 is `console` **and** the address is allowlisted.
 
+### Preview a branch from your phone
+
+[`.github/workflows/preview.yml`](.github/workflows/preview.yml) runs the app on a GitHub
+runner and puts it behind a public `https://…trycloudflare.com` URL, so a branch can be
+opened on a phone with no local machine and nothing deployed.
+
+Dispatch **Preview (phone-testable tunnel)** from the branch you want (Actions → *Run
+workflow* → *Use workflow from*, or `gh workflow run preview.yml --ref <branch>`), pass the
+address the sign-in link should be minted for — or set a `PREVIEW_LOGIN_EMAIL` repository
+variable once and leave the field blank — and the run summary comes back with the URL and a
+tap-to-sign-in link:
+
+```
+| URL        | https://kites-marble-bruce-drums.trycloudflare.com |
+| Open until | 60 minutes from the start of this run              |
+
+### Tap to sign in
+[Sign in as you@example.com](https://kites-marble-bruce-drums.trycloudflare.com/auth/consume?token=…)
+```
+
+The tunnel stays open for `minutes` (5–350, default 60) and closes when the run ends or is
+cancelled. Requests stream into the live job log, so a phone session is debuggable from the
+Actions view; needing a second link just means using `/signin` on the phone and reading it
+out of that same log.
+
+It is a preview, not a deployment: SQLite on the runner, seeded with the demo pipeline by
+`populate_demo_data.py`, discarded with the container. The React bundle is served straight
+from `project/app/static/frontend/` — committed and kept fresh by CI — so what you tap on is
+what the branch would actually serve.
+
+Since the URL is public while the run is alive, the run is deliberately narrow:
+
+| | |
+|---|---|
+| Who can get in | one address — the workflow sets `LOGIN_ALLOWED_EMAILS` to exactly the one you passed, and every API endpoint is `IsAuthenticated` |
+| Tracebacks | `DJANGO_DEBUG` stays off; `runserver --insecure` is what keeps static files served with `DEBUG=False` |
+| Session signing | `DJANGO_SECRET_KEY` is generated per run and dies with the runner |
+| LLM keys | none injected — rules, triage and the UI are exercised; the copy step is not |
+
+Reaching the app through a tunnel is also why `DJANGO_CSRF_TRUSTED_ORIGINS` exists (see
+`.env.example`): TLS terminates at the tunnel and plain http reaches `runserver`, so Django
+reads every POST as cross-origin — `https://…` from the browser against the `http://…` it
+believes it is serving — and rejects it until the public origin is named. `ALLOWED_HOSTS`
+alone is not enough; it only decides which `Host` values get answered at all.
+
 ## Architecture, 30 seconds
 
 | Layer | Where | What |
