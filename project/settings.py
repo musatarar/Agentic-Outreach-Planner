@@ -79,6 +79,17 @@ def _env_number(name, default, parse, expected):
         raise ImproperlyConfigured(f"{name} must be {expected}, got {raw!r}.") from None
 
 
+def _env_csv(name):
+    """Split a comma-separated env var into a list, ignoring blank entries.
+
+    Blank items are dropped rather than passed through: the values below are
+    frequently built by shell string interpolation (`"$HOST,127.0.0.1"` in
+    .github/workflows/preview.yml, `${VAR:-}` in docker-compose.yml), and an
+    empty host in ALLOWED_HOSTS is a host Django can never match anyway.
+    """
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
 def _env_int(name, default):
     return _env_number(name, default, int, "a whole number")
 
@@ -132,9 +143,19 @@ if not SECRET_KEY:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = [
-    host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
-]
+ALLOWED_HOSTS = _env_csv("DJANGO_ALLOWED_HOSTS")
+
+# Origins (scheme://host, no path) whose POSTs survive the CSRF check.
+#
+# Needed whenever the browser reaches the app under a name or scheme the
+# server itself never sees. Django compares the request's `Origin` header
+# against "scheme://" + request.get_host() as *it* observes the request, so a
+# proxy that terminates TLS and forwards plain http to `runserver` -- the
+# tunnel in .github/workflows/preview.yml, an ngrok/Cloudflare quick tunnel
+# you open by hand -- makes every POST look cross-origin (https vs http) and
+# fail. Naming the public origin here is the fix; ALLOWED_HOSTS alone is not
+# enough, it only governs which Host values are answered at all.
+CSRF_TRUSTED_ORIGINS = _env_csv("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 
 # Application definition
