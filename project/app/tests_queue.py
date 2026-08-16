@@ -49,6 +49,11 @@ GOOD_COPY = (
     "Best,\nDana"
 )
 
+# A midweek instant, for the one test whose assertion depends on which day it
+# runs. Wednesday because it is the furthest any weekday gets from making two
+# distinct snooze triggers collide.
+WEDNESDAY = datetime(2026, 8, 12, 12, 0, tzinfo=dt_timezone.utc)
+
 
 def make_lead(lead_id="lead_001", **overrides):
     defaults = dict(
@@ -962,11 +967,17 @@ class QueueSnoozeViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.data["code"], "invalid_snooze")
 
     def test_re_snoozing_refreshes_both_stamps(self):
-        self._snooze({"trigger": "tomorrow"})
-        self.action.refresh_from_db()
-        first = self.action.snooze_until
+        # Pinned to a Wednesday. "next_week" resolves to the FOLLOWING MONDAY,
+        # so on a Sunday it lands on the same instant as "tomorrow" and this
+        # test's premise -- that the two triggers disagree -- is simply false.
+        # The server is right to answer Monday there; the test was wrong to
+        # assume a calendar it never fixed, and it went red one day in seven.
+        with patch("project.app.views_queue.timezone.now", return_value=WEDNESDAY):
+            self._snooze({"trigger": "tomorrow"})
+            self.action.refresh_from_db()
+            first = self.action.snooze_until
 
-        resp = self._snooze({"trigger": "next_week"})
+            resp = self._snooze({"trigger": "next_week"})
 
         self.assertEqual(resp.status_code, 200)
         self.action.refresh_from_db()
