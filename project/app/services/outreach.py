@@ -11,6 +11,7 @@ import asyncio
 import datetime
 import re
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -2251,7 +2252,7 @@ def _review(item, outcome, level, today):
     )
 
 
-def plan_outreach(resume_run_id: str | None = None):
+def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | None = None):
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority.
 
@@ -2273,6 +2274,20 @@ def plan_outreach(resume_run_id: str | None = None):
     provider calls. Classification is *re-run*, not resumed: the rules are
     deterministic and cheap, and their authority over action/priority is the
     one thing the agent path must never checkpoint its way around.
+
+    ``lead_ids`` (MUS-68) narrows the run to the named clients — what the
+    per-client "assess next action" endpoint presses. ``None``, which is every
+    caller that predates it, plans the whole book exactly as before. The scoped
+    path is one extra filter in phase 2 and changes nothing else, so both share
+    one set of rules, one dedupe ledger, one pair of output gates and one writer
+    rather than drifting apart as a fork would.
+
+    A scoped run still *reads* every lead, on purpose. The read is plain SQL and
+    costs nothing; the expense is a provider call per lead, and that is exactly
+    what the scope prevents. Narrowing the read as well would quietly degrade
+    the agent's ``similar_won_deals`` tool, whose corpus is the whole book — a
+    single-client run would hand it a corpus of one and it would find nothing,
+    which is a worse answer rather than a cheaper one.
     """
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
@@ -2367,10 +2382,19 @@ def plan_outreach(resume_run_id: str | None = None):
         # is a query per lead. Two queries total instead of 1 + 4N.
         leads = list(Lead.objects.prefetch_related("events"))
 
+        # The clients this run plans for. `leads` above stays the FULL book
+        # because it is also the corpus the agent's similar-won-deals tool
+        # reasons over (see the docstring); this is the set that gets
+        # classified, prompted and written, and it is the only thing `lead_ids`
+        # changes. An id with no lead behind it simply matches nothing -- the
+        # run plans zero leads and writes zero rows, which is the same answer a
+        # dismissed recommendation gives and needs no branch of its own.
+        planned_leads = leads if lead_ids is None else [x for x in leads if x.id in set(lead_ids)]
+
         # 2. classify, apply the skip rules, and build prompts (the last phase
         #    before the provider call)
         work = []
-        for lead in leads:
+        for lead in planned_leads:
             item = _build_work_item(lead, suppressed, open_keys, today)
             if item is None:
                 continue

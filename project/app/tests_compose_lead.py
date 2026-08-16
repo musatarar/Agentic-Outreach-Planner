@@ -339,4 +339,4 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
     def test_the_endpoint_requires_a_session(self):
         self.client.logout()
         resp = self.client.post(self.url_for(self.bravo.id))
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
