@@ -34,7 +34,7 @@ from .tests_telemetry_support import RecordingTestCase, spans_named
 
 CALL = genai.ProviderCall(
     provider="groq",
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-20b",
     max_tokens=500,
     base_url="https://api.groq.com/openai/v1",
 )
@@ -42,8 +42,8 @@ CALL = genai.ProviderCall(
 RESULT = LLMResult(
     text="Subject: hello\n\nBody.",
     provider="groq",
-    model="llama-3.3-70b-versatile",
-    response_model="llama-3.3-70b-versatile-0125",
+    model="openai/gpt-oss-20b",
+    response_model="openai/gpt-oss-20b-0125",
     input_tokens=910,
     output_tokens=140,
     finish_reason="stop",
@@ -95,12 +95,12 @@ class ProviderCallTests(SimpleTestCase):
         self.assertNotIn(semconv.GEN_AI_PROVIDER_NAME, call.metric_attributes())
 
     def test_span_name_follows_the_spec_template(self):
-        self.assertEqual(CALL.span_name, "chat llama-3.3-70b-versatile")
+        self.assertEqual(CALL.span_name, "chat openai/gpt-oss-20b")
 
     def test_from_client_reads_the_adapter(self):
         client = mock.Mock(
             provider_name="groq",
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             base_url="https://api.groq.com/openai/v1",
             default_max_tokens=500,
         )
@@ -171,9 +171,9 @@ class SuccessfulCallSpanTests(_SpanTestCase):
             {
                 semconv.GEN_AI_OPERATION_NAME: "chat",
                 semconv.GEN_AI_PROVIDER_NAME: "groq",
-                semconv.GEN_AI_REQUEST_MODEL: "llama-3.3-70b-versatile",
+                semconv.GEN_AI_REQUEST_MODEL: "openai/gpt-oss-20b",
                 semconv.GEN_AI_REQUEST_MAX_TOKENS: 500,
-                semconv.GEN_AI_RESPONSE_MODEL: "llama-3.3-70b-versatile-0125",
+                semconv.GEN_AI_RESPONSE_MODEL: "openai/gpt-oss-20b-0125",
                 semconv.GEN_AI_RESPONSE_FINISH_REASONS: ("stop",),
                 semconv.GEN_AI_USAGE_INPUT_TOKENS: 910,
                 semconv.GEN_AI_USAGE_OUTPUT_TOKENS: 140,
@@ -181,7 +181,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
                 semconv.LLM_PROVIDER_CONFIGURED: "groq",
                 semconv.LLM_ATTEMPT: 1,
                 semconv.OPENINFERENCE_SPAN_KIND: "LLM",
-                semconv.LLM_MODEL_NAME: "llama-3.3-70b-versatile",
+                semconv.LLM_MODEL_NAME: "openai/gpt-oss-20b",
                 semconv.LLM_PROVIDER: "groq",
                 semconv.LLM_TOKEN_COUNT_PROMPT: 910,
                 semconv.LLM_TOKEN_COUNT_COMPLETION: 140,
@@ -209,7 +209,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
         unmapped = LLMResult(
             text="x",
             provider="groq",
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             finish_reason=None,
             raw_finish_reason="pause_turn",
         )
@@ -224,7 +224,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
     async def test_absent_usage_leaves_the_token_attributes_off(self):
         """Absent and zero mean different things, and only one of them is true
         of a provider that omitted ``usage`` entirely."""
-        no_usage = LLMResult(text="x", provider="groq", model="llama-3.3-70b-versatile")
+        no_usage = LLMResult(text="x", provider="groq", model="openai/gpt-oss-20b")
 
         async def operation():
             return no_usage
@@ -242,7 +242,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
 
     async def test_the_total_is_absent_unless_both_counts_are_known(self):
         partial = LLMResult(
-            text="x", provider="groq", model="llama-3.3-70b-versatile", input_tokens=910
+            text="x", provider="groq", model="openai/gpt-oss-20b", input_tokens=910
         )
 
         async def operation():
@@ -396,7 +396,7 @@ class RetrySpanTests(_SpanTestCase):
         smuggled = LLMResult(
             text="x",
             provider="groq",
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             finish_reason=None,
             raw_finish_reason="stopped because " + "A" * 200,
         )
@@ -552,7 +552,7 @@ class MetricTests(unittest.IsolatedAsyncioTestCase):
         call cost nothing" that no later query could tell from the real thing."""
 
         async def operation():
-            return LLMResult(text="x", provider="groq", model="llama-3.3-70b-versatile")
+            return LLMResult(text="x", provider="groq", model="openai/gpt-oss-20b")
 
         await self._call(operation)
         self.assertNotIn(semconv.METRIC_TOKEN_USAGE, self._metrics_by_name())

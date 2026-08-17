@@ -1,0 +1,422 @@
+openapi: 3.0.3
+info:
+  title: Locked In API
+  version: 1.0.0
+paths:
+  /api/auth/consume/:
+    post:
+      operationId: auth_consume_create
+      description: |-
+        ``POST /api/auth/consume/`` -- redeem a link and establish the session.
+
+        ``expired`` and ``invalid`` are distinguished on purpose: the sign-in page
+        needs a third state that offers "send me a new one" instead of "that link
+        is wrong". It is safe because holding a token already implies a link was
+        once issued; it says nothing about which addresses exist.
+      tags:
+      - auth
+      security:
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/auth/logout/:
+    post:
+      operationId: auth_logout_create
+      description: |-
+        ``POST /api/auth/logout/`` -- flush the session.
+
+        POST rather than GET so CSRF applies: a GET logout is trivially triggered
+        by any third-party page embedding an image tag.
+      tags:
+      - auth
+      responses:
+        '200':
+          description: No response body
+  /api/auth/me/:
+    get:
+      operationId: auth_me_retrieve
+      description: |-
+        ``GET /api/auth/me/`` -- the route guard's one question.
+
+        ``AllowAny`` at the DRF level and raising the 401 by hand, so the frontend
+        can call it on every page load without the global 401 handler firing
+        recursively on its own probe.
+      tags:
+      - auth
+      security:
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/auth/request-link/:
+    post:
+      operationId: auth_request_link_create
+      description: |-
+        ``POST /api/auth/request-link/`` -- ask for a sign-in link.
+
+        Always 200 for a syntactically valid address. See the module docstring
+        for why that is not negotiable.
+      tags:
+      - auth
+      security:
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/leads/:
+    get:
+      operationId: leads_retrieve
+      description: GET /api/leads/ — all leads.
+      tags:
+      - leads
+      responses:
+        '200':
+          description: No response body
+  /api/leads/{lead_id}/compose/:
+    post:
+      operationId: leads_compose_create
+      description: |-
+        POST /api/leads/{lead_id}/compose/ — compose outreach for ONE client (MUS-68).
+
+        What the "assess next action" button presses. Deliberately the same planner
+        ``/api/outreach/run/`` calls, scoped to a single lead, rather than a second
+        implementation: the rules, the dedupe ledger, the shape and grounding gates
+        and the row writer are all things a fork would eventually disagree with.
+
+        Three answers, and the two refusals both cost nothing:
+
+        * **200** — the action just written, in the shape every other outreach
+          endpoint already emits, so the frontend needs no new type.
+        * **404** — no such lead. Checked here rather than inferred from an empty
+          plan, because "you asked for a client we do not have" and "this client has
+          nothing new to say" are different facts and a caller acts on them
+          differently.
+        * **409** — the planner declined: this lead already has an open
+          recommendation in the queue, or the recommendation was permanently
+          dismissed. Both are decided before a prompt is built, so neither reaches
+          a provider.
+      parameters:
+      - in: path
+        name: lead_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - leads
+      responses:
+        '200':
+          description: No response body
+  /api/llm/catalog/:
+    get:
+      operationId: llm_catalog_retrieve
+      description: |-
+        GET /api/llm/catalog/ — all enabled providers and their models.
+
+        Read-only reference data (seeded by ``manage.py seed_llm_catalog``).
+        Authenticated, same as the rest of this API since MUS-37.
+      tags:
+      - llm
+      responses:
+        '200':
+          description: No response body
+  /api/llm/config/:
+    get:
+      operationId: llm_config_retrieve
+      description: |-
+        GET/PUT /api/llm/config/ — the active provider/model/key selection.
+
+        This is the one place a stored provider API key can be written. Since
+        MUS-37 it sits behind the same magic-link session as everything else --
+        see SECURITY.md; the separate Basic Auth credential is retired.
+      tags:
+      - llm
+      responses:
+        '200':
+          description: No response body
+    put:
+      operationId: llm_config_update
+      description: |-
+        GET/PUT /api/llm/config/ — the active provider/model/key selection.
+
+        This is the one place a stored provider API key can be written. Since
+        MUS-37 it sits behind the same magic-link session as everything else --
+        see SECURITY.md; the separate Basic Auth credential is retired.
+      tags:
+      - llm
+      responses:
+        '200':
+          description: No response body
+  /api/llm/config/test/:
+    post:
+      operationId: llm_config_test_create
+      description: |-
+        POST /api/llm/config/test/ — one minimal completion to verify a
+        provider/model/key combination actually works.
+
+        Accepts an optional candidate body in the same shape as ``PUT
+        /api/llm/config/`` (``provider``, ``model``, ``max_tokens``, optional
+        ``api_key``) so a user can test a key *before* saving it. ``api_key``
+        omitted (not just blank) falls back to whatever key is currently
+        resolvable for that candidate provider (stored DB key if it's the active
+        provider, else that provider's env var) -- the same "omit = don't
+        change" semantics as PUT. A body with no ``provider`` at all falls back
+        to testing the already-saved configuration, preserving the previous
+        no-body behavior.
+      tags:
+      - llm
+      responses:
+        '200':
+          description: No response body
+  /api/outreach/:
+    get:
+      operationId: outreach_retrieve
+      description: GET /api/outreach/ — most recent action per lead, ordered by priority.
+      tags:
+      - outreach
+      responses:
+        '200':
+          description: No response body
+  /api/outreach/{id}/trace/:
+    get:
+      operationId: outreach_trace_retrieve
+      description: Serve the persisted ``AgentStep`` trace for one ``OutreachAction``.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - outreach
+      responses:
+        '200':
+          description: No response body
+  /api/outreach/run/:
+    post:
+      operationId: outreach_run_create
+      description: |-
+        POST /api/outreach/run/ — run the planner and return created actions.
+
+        An optional JSON body ``{"resume_run_id": "<uuid>"}`` re-enters a crashed
+        agent run (MUS-29). Two ways it is refused, both 400 and both decided by
+        ``plan_outreach`` itself rather than here: ``unknown_run`` when no
+        ``AgentLeadRun`` row carries that id (a typo'd id would otherwise start a
+        silently fresh run, re-billing every call the resume existed to save), and
+        ``agent_disabled`` when ``OUTREACH_AGENT_ENABLED`` is off (the resume
+        machinery all sits inside the flag, so the run would re-plan every lead
+        single-shot while still stamping the resumed run's id on every row).
+
+        The guard lives at the mechanism because this view is not the only caller
+        reaching it — scripts and tests call ``plan_outreach`` directly.
+      tags:
+      - outreach
+      responses:
+        '200':
+          description: No response body
+  /api/queue/:
+    get:
+      operationId: queue_retrieve
+      description: GET /api/queue/ -- every pending item, complete, in one call.
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/:
+    get:
+      operationId: queue_retrieve_2
+      description: GET /api/queue/{id}/ -- refresh-after-mutation and deep links.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/approve/:
+    post:
+      operationId: queue_approve_create
+      description: |-
+        POST /api/queue/{id}/approve/ -- ship it.
+
+        The copy in play is already persisted via /edit/, so the body is empty.
+        Blocked, server-side, when the copy makes a claim the lead record does not
+        support: the frontend disables the affordance from `can_approve` and the
+        server independently returns 409.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/dismiss/:
+    post:
+      operationId: queue_dismiss_create
+      description: |-
+        POST /api/queue/{id}/dismiss/ -- gone, and it does not come back.
+
+        Writes the suppression ledger row in the same transaction as the status
+        change, so a later plan_outreach() run cannot resurrect the recommendation
+        (and does not spend an LLM call discovering that).
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/edit/:
+    post:
+      operationId: queue_edit_create
+      description: |-
+        POST /api/queue/{id}/edit/ -- persist a reviewer's edit of the copy.
+
+        ``suggested_copy`` is never written. The edit lands in ``edited_copy`` and
+        an OutreachEdit row records the before/after pair: that diff is the copy
+        eval corpus, and it only exists if the original survives.
+
+        ``{"copy": null}`` is "revert to original" -- it clears ``edited_copy`` and
+        still writes an OutreachEdit, because reverting is itself a judgement worth
+        keeping.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/snooze/:
+    post:
+      operationId: queue_snooze_create
+      description: |-
+        POST /api/queue/{id}/snooze/ -- not skip.
+
+        Snooze carries a judgement about *when* the lead should come back, which is
+        the thing a reviewer actually wants to express and usually cannot.
+        Re-snoozing an already-snoozed item is allowed and refreshes both stamps.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/undo/:
+    post:
+      operationId: queue_undo_create
+      description: |-
+        POST /api/queue/{id}/undo/ -- reverse the last decision.
+
+        Undoing a DISMISS also revokes the suppression, in the same transaction.
+        Without that the row goes back to pending and the UI looks perfectly
+        correct, while the ledger keeps suppressing -- so the next plan_outreach()
+        run, days later, quietly drops the lead (section 9.7).
+
+        Un-snoozing is deliberately NOT time-boxed. Capping it at the undo window
+        would leave `/done` showing an un-snooze control that is dead for every row
+        snoozed more than five minutes ago -- which, on a view that lists a whole
+        day's decisions, is nearly all of them.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/{id}/verify/:
+    post:
+      operationId: queue_verify_create
+      description: |-
+        POST /api/queue/{id}/verify/ -- a DRY RUN over candidate copy.
+
+        Nothing is persisted and no OutreachEdit is written; this backs live
+        re-verification while the reviewer types. The response echoes the exact
+        copy it verified so a debounced out-of-order reply can be discarded rather
+        than rendered over newer text (section 9.2).
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/queue/done/:
+    get:
+      operationId: queue_done_retrieve
+      description: GET /api/queue/done/ -- everything decided today, newest first.
+      tags:
+      - queue
+      responses:
+        '200':
+          description: No response body
+  /api/reports/:
+    get:
+      operationId: reports_retrieve
+      description: GET /api/reports/ — full outreach action history, newest first.
+      tags:
+      - reports
+      responses:
+        '200':
+          description: No response body
+  /api/review-decisions/:
+    get:
+      operationId: review_decisions_retrieve
+      description: GET/POST /api/review-decisions/.
+      tags:
+      - review-decisions
+      responses:
+        '200':
+          description: No response body
+    post:
+      operationId: review_decisions_create
+      description: GET/POST /api/review-decisions/.
+      tags:
+      - review-decisions
+      responses:
+        '200':
+          description: No response body
+  /api/review-queue/:
+    get:
+      operationId: review_queue_retrieve
+      description: GET /api/review-queue/ — needs_human actions awaiting a decision.
+      tags:
+      - review-queue
+      responses:
+        '200':
+          description: No response body
+components: {}
+servers:
+- url: http://localhost:8000
+  description: local
+- url: https://api.example.com
+  description: prod

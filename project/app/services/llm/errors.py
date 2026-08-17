@@ -194,7 +194,7 @@ class LLMEmptyCompletionError(LLMMalformedResponseError):
     format genuinely disagrees, and the next request will disagree identically.
     It is wrong about a *degenerate sample*: the format was fine, the sampler
     produced nothing usable this time, and the same request very often succeeds
-    on the next roll. Observed on groq/llama-3.1-8b-instant, where three of nine
+    on the next roll. Observed on groq/openai/gpt-oss-20b, where three of nine
     leads in one run drew an empty completion while the rest of the run, on the
     same model and the same prompt shape, drew perfectly good drafts.
 

@@ -193,7 +193,7 @@ class OpenAICompatibleToolCallTests(SimpleTestCase):
 class DegenerateCompletionTests(SimpleTestCase):
     """A turn the provider says was a tool call, carrying no readable tool call.
 
-    Observed against groq/llama-3.1-8b-instant: the persisted trace holds
+    Observed against groq/openai/gpt-oss-20b: the persisted trace holds
     ``finish_reason: "tool_calls"`` with an empty ``tool_calls`` array and the
     model's own planning prose in ``content`` ("To write a tailored outreach
     email, I should start by gathering more context…"). The agent loop's

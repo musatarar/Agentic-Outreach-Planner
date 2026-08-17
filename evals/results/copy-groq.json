@@ -1,7 +1,7 @@
 {
   "provider": "groq",
   "judge_provider": "groq",
-  "model": "llama-3.3-70b-versatile",
+  "model": "openai/gpt-oss-20b",
   "generated_at": "2026-07-26T18:55:59+00:00",
   "today": "2026-06-12",
   "n": 38,
