@@ -61,6 +61,14 @@ An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]*
    implementation plan (ticket plan, multi-PR breakdown, ADR), invoke the
    `planning-discipline` skill and hold the plan to it.
 
+## Comments & docstrings
+
+- **Verbosity != clarity** [convention]. Assume the reader understands the code
+  generally. Module/class docstrings state purpose in 1–3 lines; test docstrings pin
+  the behavior in one line; non-obvious or security-critical facts survive as
+  compressed one-liners (point at SECURITY.md rather than re-arguing it). No design
+  history, no alternatives considered, no restating what the code shows.
+
 ## Testing & database
 
 - **Fixtures, not live edits**: tests use `setUpTestData()`/fixtures. Never modify
