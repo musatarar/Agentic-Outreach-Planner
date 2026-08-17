@@ -327,7 +327,7 @@ class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
 
 def _chat_body(content="Generated copy"):
     return {
-        "model": "llama-3.3-70b-versatile-0000",
+        "model": "openai/gpt-oss-20b-0000",
         "usage": {"prompt_tokens": 900, "completion_tokens": 120},
         "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
     }

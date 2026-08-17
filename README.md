@@ -361,7 +361,7 @@ interface returns text only); latency is measured wall-clock. Over the ~38 golde
 <!-- COPY-EVAL-TABLE -->
 | Provider | Model | Judge (1-5) | facts | tone | CTA | Checks | est. $/email | Latency (med) |
 |---|---|--:|--:|--:|--:|--:|--:|--:|
-| groq | `llama-3.3-70b-versatile` | 4.68 | 4.1 | 5.0 | 5.0 | 89% | $0 | 1.87s |
+| groq | `openai/gpt-oss-20b` | 4.68 | 4.1 | 5.0 | 5.0 | 89% | $0 | 1.87s |
 <!-- /COPY-EVAL-TABLE -->
 
 Add a row by running `--provider <name> --update-baseline` for any configured provider (needs

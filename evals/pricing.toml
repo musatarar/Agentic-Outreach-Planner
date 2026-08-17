@@ -25,6 +25,6 @@ output_per_1m = 1.10
 
 # Groq free tier (no credit card) -> $0. Set real rates here if you move to a
 # paid Groq plan.
-[models."llama-3.3-70b-versatile"]
+[models."openai/gpt-oss-20b"]
 input_per_1m = 0.0
 output_per_1m = 0.0

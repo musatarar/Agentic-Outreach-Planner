@@ -908,7 +908,7 @@ class OpenAICompatibleResultTests(unittest.TestCase):
     def test_extracts_usage_model_and_finish_reason(self):
         result = self._generate(
             {
-                "model": "llama-3.3-70b-versatile-0000",
+                "model": "openai/gpt-oss-20b-0000",
                 "usage": {"prompt_tokens": 980, "completion_tokens": 142},
                 "choices": [
                     {"message": {"content": "Generated copy"}, "finish_reason": "stop"},
@@ -918,7 +918,7 @@ class OpenAICompatibleResultTests(unittest.TestCase):
         self.assertEqual(result.text, "Generated copy")
         self.assertEqual(result.provider, "groq")
         self.assertEqual(result.model, "some-model")
-        self.assertEqual(result.response_model, "llama-3.3-70b-versatile-0000")
+        self.assertEqual(result.response_model, "openai/gpt-oss-20b-0000")
         self.assertEqual(result.input_tokens, 980)
         self.assertEqual(result.output_tokens, 142)
         self.assertEqual(result.raw_finish_reason, "stop")

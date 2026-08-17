@@ -6,7 +6,7 @@ very fast inference. Get a key at https://console.groq.com and set GROQ_API_KEY.
 
 from .openai_compatible import DEFAULT_TIMEOUT_SECONDS, OpenAICompatibleClient
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
 
 
 class GroqClient(OpenAICompatibleClient):

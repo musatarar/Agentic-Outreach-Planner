@@ -2,7 +2,7 @@
   "_comment": "Baseline for evals/run_copy_eval.py (MUS-21), keyed by provider. Quality only -- latency/cost live in evals/results/ and are not gated. LLM output is non-deterministic, so the gate uses tolerance bands (see run_copy_eval.py). Regenerate a provider with `python evals/run_copy_eval.py --provider <p> --update-baseline` after an intended change.",
   "providers": {
     "groq": {
-      "model": "llama-3.3-70b-versatile",
+      "model": "openai/gpt-oss-20b",
       "n": 38,
       "deterministic": {
         "subject": 1.0,

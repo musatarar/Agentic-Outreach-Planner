@@ -132,7 +132,7 @@ PROVIDERS = [
         "sort_order": 4,
         "models": [
             {
-                "model_id": "llama-3.1-8b-instant",
+                "model_id": "openai/gpt-oss-20b",
                 "label": "Llama 3.1 8B Instant",
                 "context_window": 131_072,
                 "default_max_tokens": 500,

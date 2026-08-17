@@ -317,7 +317,7 @@ class ClaudeToolResultFoldTests(TestCase):
 def _narrating_tool_call_turn():
     """A tool-call turn whose text is the model narrating its way to the call.
 
-    Observed against groq/llama-3.1-8b-instant: literal function-call markers
+    Observed against groq/openai/gpt-oss-20b: literal function-call markers
     naming each agent tool, then a partial draft — the provider labels the turn
     a tool-call turn and the prose is a preamble, not an email.
     """
