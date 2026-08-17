@@ -1,6 +1,7 @@
 from django.urls import path
 
 from project.app.views import (
+    LeadComposeView,
     LeadListView,
     LLMCatalogView,
     LLMConfigTestView,
@@ -34,6 +35,7 @@ from project.app.views_trace import OutreachTraceView
 #   POST api/auth/request-link/  POST api/auth/consume/
 #   POST api/auth/logout/  GET api/auth/me/
 #   POST api/outreach/run/  GET api/outreach/  GET api/leads/
+#   POST api/leads/{lead_id}/compose/
 #   GET api/llm/catalog/  GET|PUT api/llm/config/  POST api/llm/config/test/
 #   GET api/queue/  GET api/queue/done/  GET api/queue/{id}/
 urlpatterns = [
@@ -60,6 +62,8 @@ urlpatterns = [
     path("outreach/<int:pk>/trace/", OutreachTraceView.as_view(), name="outreach-trace"),
     path("outreach/", OutreachListView.as_view(), name="outreach-list"),
     path("leads/", LeadListView.as_view(), name="lead-list"),
+    # --- per-client composition (MUS-68) ---
+    path("leads/<str:lead_id>/compose/", LeadComposeView.as_view(), name="lead-compose"),
     path("reports/", OutreachReportView.as_view(), name="outreach-reports"),
     path("review-queue/", ReviewQueueView.as_view(), name="review-queue"),
     path(

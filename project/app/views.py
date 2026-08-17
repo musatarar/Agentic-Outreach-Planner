@@ -180,6 +180,45 @@ class LeadListView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class LeadComposeView(APIView):
+    """POST /api/leads/{lead_id}/compose/ — compose outreach for ONE client (MUS-68).
+
+    What the "assess next action" button presses. Deliberately the same planner
+    ``/api/outreach/run/`` calls, scoped to a single lead, rather than a second
+    implementation: the rules, the dedupe ledger, the shape and grounding gates
+    and the row writer are all things a fork would eventually disagree with.
+
+    Three answers, and the two refusals both cost nothing:
+
+    * **200** — the action just written, in the shape every other outreach
+      endpoint already emits, so the frontend needs no new type.
+    * **404** — no such lead. Checked here rather than inferred from an empty
+      plan, because "you asked for a client we do not have" and "this client has
+      nothing new to say" are different facts and a caller acts on them
+      differently.
+    * **409** — the planner declined: this lead already has an open
+      recommendation in the queue, or the recommendation was permanently
+      dismissed. Both are decided before a prompt is built, so neither reaches
+      a provider.
+    """
+
+    def post(self, request, lead_id, *args, **kwargs):
+        # Imported inside the method for the same reason OutreachRunView's is.
+        from project.app.services.outreach import plan_outreach
+
+        if not Lead.objects.filter(pk=lead_id).exists():
+            return Response({"error": "unknown_lead"}, status=status.HTTP_404_NOT_FOUND)
+
+        planned = plan_outreach(lead_ids=[lead_id])
+        if not planned:
+            return Response({"error": "no_new_recommendation"}, status=status.HTTP_409_CONFLICT)
+
+        # Exactly one row: the planner writes at most one action per lead per
+        # run, and this run is scoped to one lead.
+        serializer = OutreachActionSerializer(planned[0])
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 # ---------------------------------------------------------------------------
 # LLM configuration (MUS-32). Authenticated by session like everything above.
 # ---------------------------------------------------------------------------
