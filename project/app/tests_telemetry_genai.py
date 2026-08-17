@@ -241,9 +241,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
             self.assertNotIn(key, span.attributes)
 
     async def test_the_total_is_absent_unless_both_counts_are_known(self):
-        partial = LLMResult(
-            text="x", provider="groq", model="openai/gpt-oss-20b", input_tokens=910
-        )
+        partial = LLMResult(text="x", provider="groq", model="openai/gpt-oss-20b", input_tokens=910)
 
         async def operation():
             return partial
