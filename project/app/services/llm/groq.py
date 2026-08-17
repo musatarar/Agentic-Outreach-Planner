@@ -1,7 +1,4 @@
-"""Groq adapter (OpenAI Chat Completions-compatible).
-
-Recommended free, zero-cost provider: generous free tier, no credit card, and
-very fast inference. Get a key at https://console.groq.com and set GROQ_API_KEY.
+"""Groq adapter (OpenAI Chat Completions-compatible)
 """
 
 from .openai_compatible import DEFAULT_TIMEOUT_SECONDS, OpenAICompatibleClient
