@@ -1,16 +1,7 @@
 /**
- * The Locked In mark: four corner brackets closing in on a single square.
- *
- * Drawn inline rather than shipped as an asset so the brackets can take
- * `currentColor` and the square `--color-accent` — the mark inverts with the
- * theme for free, and Vite never has to hash a file that `spa_base.html` would
- * then need a manifest to find. Using the accent token rather than the literal
- * logo orange keeps the no-hex-outside-tokens.css rule intact, and is what
- * makes the square legible on the dark canvas.
- *
- * The standalone copy at project/app/static/brand/favicon.svg is this same
- * geometry with the colours hardcoded, because a favicon has no cascade to
- * read tokens from; change one and change the other.
+ * The Locked In mark. Inline SVG so it can take `currentColor` and
+ * `--color-accent` and invert with the theme. The same geometry is duplicated
+ * with hardcoded colours in project/app/static/brand/favicon.svg — change both.
  */
 export function BrandMark({ size = 18 }: { size?: number }) {
   return (

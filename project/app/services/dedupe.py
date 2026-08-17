@@ -16,17 +16,10 @@ def dedupe_key(lead_id: str, action_type: str) -> str:
 
     KEY = sha256("v1|{lead_id}|{action_type}").hexdigest()
 
-    Deliberately scoped to (lead, action_type) and NOT to the reason text or
-    the rule trace. The product promise is "dismiss is permanent": if a
-    reviewer says "stop asking me to nudge this lead's usage", a re-run that
-    computes a marginally different reason string must not resurrect it.
-
-    It is scoped to action_type (rather than lead alone) so a genuinely
-    different situation still surfaces: dismissing `nudge_usage` for lead_007
-    does not suppress a later `reengage_dormant` for the same lead.
-
-    Bumping DEDUPE_VERSION intentionally un-suppresses everything and is a
-    deliberate, reviewed act -- never a side effect.
+    Deliberately scoped to (lead, action_type), never the reason text: "dismiss
+    is permanent" must survive re-runs, while a different action type for the
+    same lead still surfaces. Bumping DEDUPE_VERSION un-suppresses everything —
+    a deliberate act, never a side effect.
     """
     raw = f"{DEDUPE_VERSION}|{lead_id}|{action_type}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

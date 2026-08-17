@@ -1,11 +1,9 @@
 """Four read-only tools the agent loop may call (MUS-29).
 
-Tools execute as pure functions over a phase-2-built :class:`ToolContext`
-snapshot — they never touch the ORM, and ``lead_id`` is never a model-supplied
-argument: the executor is bound server-side to the current lead's context, so a
-model-chosen ``lead_id`` has no lever. Every free-text field is
-``sanitize_untrusted()``-cleaned at snapshot time and every rendered result is
-capped at :data:`MAX_TOOL_RESULT_CHARS` at execution time.
+Pure functions over a phase-2-built :class:`ToolContext` snapshot: no ORM, and
+``lead_id`` is bound server-side rather than model-supplied. Free-text fields
+are ``sanitize_untrusted()``-cleaned at snapshot time; rendered results are
+capped at :data:`MAX_TOOL_RESULT_CHARS`.
 """
 
 from __future__ import annotations
@@ -20,15 +18,13 @@ from project.app.services import sanitize
 from project.app.services.agent.product_catalog import PRODUCT_CATALOG
 from project.app.services.llm.chat_types import ToolSpec
 
-#: Hard cap applied to every rendered tool result at execution time, on top of
-#: the per-field sanitization already applied at context build.
+#: Hard cap applied to every rendered tool result at execution time.
 MAX_TOOL_RESULT_CHARS = 2000
 
 _TRUNCATION_SUFFIX = " …[truncated]"
 
 #: All four tools take no arguments: everything they read is bound server-side
-#: into the ToolContext, so there is nothing legitimate for the model to pass.
-#: Argument validation drops any key not present in a spec's ``properties``.
+#: into the ToolContext. Keys outside a spec's ``properties`` are dropped.
 _NO_ARGUMENTS: Mapping[str, Any] = {
     "type": "object",
     "properties": {},
@@ -80,8 +76,7 @@ class UnknownTool(ValueError):
 class ToolContext:
     """Per-lead snapshot every tool reads from, built in phase 2.
 
-    Frozen because phase 3 shares it across the whole loop for one lead: a tool
-    reading yesterday's snapshot is fine, a tool mutating it is not.
+    Frozen: phase 3 shares one instance across the whole loop for a lead.
     """
 
     lead_id: str
@@ -101,8 +96,8 @@ def _band(value: float, edges: Sequence[float]) -> int:
 def similar_won_deals_for(lead: Any, all_leads: Sequence[Any]) -> tuple[dict[str, Any], ...]:
     """Deterministic top-3 closed-deal look-alikes for ``lead``.
 
-    Similarity is banded, not continuous, so a one-dollar book-size difference
-    cannot reorder results between runs; ties break on agency name.
+    Similarity is banded rather than continuous so results cannot reorder
+    between runs; ties break on agency name.
     """
     scored: list[dict[str, Any]] = []
     for other in all_leads:
@@ -139,7 +134,7 @@ def similar_won_deals_for(lead: Any, all_leads: Sequence[Any]) -> tuple[dict[str
 
 def _sanitized_mapping(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Sanitize every string value, not just known free-text keys, so a new
-    meta key added upstream cannot slip attacker text past the snapshot."""
+    meta key upstream cannot slip attacker text past the snapshot."""
     return {
         key: sanitize.sanitize_untrusted(value) if isinstance(value, str) else value
         for key, value in entry.items()
@@ -174,9 +169,8 @@ def build_tool_context(
 ) -> ToolContext:
     """Snapshot one lead's tool-visible state, sanitizing every free-text field.
 
-    Unlike the copy prompt's six-event window, history carries all events of
-    all 13 types (the five the rules ignore included) — surfacing more context
-    than the prompt is the point of the tool; the render-time cap bounds it.
+    History carries every event type, not the copy prompt's six-event window;
+    the render-time cap is what bounds it.
     """
     events = sorted(lead.events.all(), key=lambda e: e.timestamp, reverse=True)
     history = [_history_entry(event) for event in events]
@@ -228,9 +222,8 @@ def execute_tool(name: str, arguments: Mapping[str, Any], context: ToolContext) 
     spec = _SPECS_BY_NAME.get(name)
     if spec is None:
         raise UnknownTool(f"unknown tool: {name!r}")
-    # Drop any argument key the spec's schema does not declare. Today every
-    # schema declares none, so in particular a model-supplied ``lead_id`` is
-    # discarded here — the context is already bound to the current lead.
+    # Drop any argument key the spec's schema does not declare; every schema
+    # declares none, so a model-supplied ``lead_id`` is discarded here.
     properties = spec.parameters.get("properties") or {}
     allowed = {key: value for key, value in arguments.items() if key in properties}
     rendered = json.dumps(_RENDERERS[name](context, allowed), default=str)

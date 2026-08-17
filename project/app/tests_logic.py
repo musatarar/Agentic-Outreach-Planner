@@ -1,8 +1,5 @@
-"""Pure-Python tests for the outreach business logic.
-
-No Django, no database: leads are SimpleNamespace stubs mirroring the real
-data in `raw_data/leads.json` + `events.json`, and the
-anthropic client is mocked.
+"""Pure-Python tests for the outreach business logic -- no Django, no database;
+leads are SimpleNamespace stubs mirroring `raw_data/`, the LLM client mocked.
 
 Run standalone:
     ./venv/bin/python -m unittest project.app.tests_logic
@@ -378,10 +375,8 @@ class DetermineActionTests(unittest.TestCase):
 # Copy generation (LLM provider boundary mocked)
 # ---------------------------------------------------------------------------
 #
-# generate_copy is now provider-agnostic: it builds the prompt and delegates to
-# the configured LLM client. We mock get_llm_client so these tests stay
-# independent of which provider the database-backed LLMConfiguration selects.
-# Provider adapters (Claude / OpenAI-compatible) are tested in tests_llm.py.
+# get_llm_client is mocked so these stay independent of the configured
+# provider; the provider adapters themselves are tested in tests_llm.py.
 
 
 class GenerateCopyTests(unittest.TestCase):
@@ -408,8 +403,7 @@ class GenerateCopyTests(unittest.TestCase):
         self.assertIn("volume pricing", prompt)  # event note text
 
     def test_generate_copy_accepts_a_prebuilt_prompt_and_skips_the_lead(self):
-        # The planner path: the prompt is built a phase earlier, so phase 3
-        # holds no ORM handle and passes no lead at all.
+        # Planner path: the prompt is built a phase earlier, so no lead is passed.
         fake_client = mock.Mock()
         fake_client.complete.return_value = "Subject: Prebuilt\n\nBody"
 
@@ -422,8 +416,7 @@ class GenerateCopyTests(unittest.TestCase):
         self.assertEqual(fake_client.complete.call_args.args[0], "a prebuilt prompt")
 
     def test_generate_copy_without_a_lead_or_a_prompt_is_a_loud_error(self):
-        # Every lead attribute has a getattr default, so a None lead would
-        # otherwise render a prompt full of blanks and send it to the provider.
+        # getattr defaults mean a None lead would render a prompt full of blanks.
         with self.assertRaises(ValueError):
             outreach.generate_copy(None, actions.NUDGE_USAGE, "reason")
 

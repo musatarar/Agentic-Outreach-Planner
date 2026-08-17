@@ -11,7 +11,6 @@ const OPTIONS: MenuOption<SnoozeTrigger>[] = [
   {
     value: 'on_activity',
     label: 'When they do something',
-    // The option this whole picker exists for.
     hint: 'Wakes on their next login, quote or deal',
   },
 ];
@@ -24,17 +23,9 @@ export interface SnoozePopoverProps {
 }
 
 /**
- * The snooze picker.
- *
- * Four of the five options are ordinary time arithmetic. The fifth,
- * `on_activity`, is the judgement a human most wants to express — "come back
- * when they actually log in" — and can almost never express in tools like
- * this, so it is spelled out in plain language rather than hidden behind a
- * jargon label.
- *
- * The server converts every trigger into a concrete timestamp, including a
- * 14-day backstop on `on_activity`, so a lead that never does anything
- * still resurfaces rather than quietly becoming a dismissal nobody chose.
+ * The snooze picker. The server converts every trigger into a concrete
+ * timestamp, including a 14-day backstop on `on_activity` so a lead that never
+ * does anything still resurfaces.
  */
 export function SnoozePopover({ queueDate, onSnooze, onClose }: SnoozePopoverProps) {
   const [customDate, setCustomDate] = useState('');
@@ -50,9 +41,7 @@ export function SnoozePopover({ queueDate, onSnooze, onClose }: SnoozePopoverPro
 
   function submitCustom() {
     if (!customDate) return;
-    // 09:00 UTC matches the hour the server uses for its own relative
-    // triggers, so a hand-picked date lands in the same morning slot as
-    // "tomorrow" rather than at midnight.
+    // 09:00 UTC matches the hour the server uses for its relative triggers.
     onSnooze({ trigger: 'custom', until: `${customDate}T09:00:00Z` });
   }
 
@@ -62,11 +51,10 @@ export function SnoozePopover({ queueDate, onSnooze, onClose }: SnoozePopoverPro
 
       {picking ? (
         <div className="popover__form">
-          {/* The Input primitive takes no `min` and may not be forked,
-              so the floor is stated rather than enforced client-side. The
-              server rejects a past date with 400 `invalid_snooze` and is the
-              authority either way. The date shown is the queue's, never the
-              browser's clock. */}
+          {/* The Input primitive takes no `min`, so the floor is stated
+              rather than enforced; the server rejects a past date with 400
+              `invalid_snooze`. The date shown is the queue's, not the
+              browser's. */}
           <Input
             label={`Date (after ${queueDate})`}
             id="snooze-date"

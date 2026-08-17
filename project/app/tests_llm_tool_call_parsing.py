@@ -1,23 +1,5 @@
-"""Adapter tool-call parsing: the shapes no existing test constructs (MUS-66).
-
-Every tool-call response the MUS-29 suite builds is a *single* call carrying
-empty-object arguments — the one shape that happens to work. That leaves four
-defects structurally untested, all of them reachable from a well-formed provider
-response:
-
-1. a turn the provider marked as a tool-call turn whose text gets promoted to
-   the final draft (``run_agent_lead``);
-2. zero-argument calls whose ``arguments`` arrive as ``""`` rather than ``"{}"``
-   — what several OpenAI-compatible servers emit, and all four agent tools take
-   zero arguments;
-3. entries missing an id or a name, dropped with no error and no log line, so
-   the loop proceeds with fewer calls than the model asked for;
-4. Claude's fold emitting one user message per tool result instead of one
-   message carrying every result block.
-
-The module is deliberately separate from ``tests_agent_loop_llm_tools.py``: that
-one is a pinned MUS-29 component artifact, and none of its cases change here.
-"""
+"""Adapter tool-call parsing: the shapes no existing test constructs (MUS-66) --
+blank arguments, parallel calls, unreadable entries, and the tool-result fold."""
 
 import asyncio
 from unittest import mock
@@ -86,13 +68,7 @@ def _oa_entry(call_id="call_1", name="get_lead_history", arguments="{}"):
 
 
 class OpenAIBlankArgumentsTests(TestCase):
-    """Defect 2: a zero-argument call is a call, however the server spells it.
-
-    Several OpenAI-compatible servers emit ``"arguments": ""`` (or omit the key)
-    for a tool that takes no arguments. ``json.loads("")`` raises, which becomes
-    a non-retryable ``LLMMalformedResponseError``, which fails the run and sends
-    the lead to needs-human — a correct provider response ending the run.
-    """
+    """A zero-argument call is a call, however the server spells it."""
 
     def _client(self):
         client = oa_mod.OpenAICompatibleClient.__new__(oa_mod.OpenAICompatibleClient)
@@ -124,7 +100,7 @@ class OpenAIBlankArgumentsTests(TestCase):
 
 
 class OpenAIMultiCallTests(TestCase):
-    """Defect 3's other half: nothing in the suite parses more than one call."""
+    """Parallel calls in one response parse, in order."""
 
     def _client(self):
         client = oa_mod.OpenAICompatibleClient.__new__(oa_mod.OpenAICompatibleClient)
@@ -160,12 +136,7 @@ class OpenAIMultiCallTests(TestCase):
 
 
 class OpenAIDroppedEntryTests(TestCase):
-    """Defect 3: an unreadable entry must be an error, not a silent omission.
-
-    Dropping it leaves the loop executing fewer calls than the model asked for —
-    no error, no log line — and, when every entry drops, promotes the model's
-    narration to the draft.
-    """
+    """An unreadable entry must be an error, not a silent omission."""
 
     def _client(self):
         client = oa_mod.OpenAICompatibleClient.__new__(oa_mod.OpenAICompatibleClient)
@@ -176,8 +147,7 @@ class OpenAIDroppedEntryTests(TestCase):
     def _assert_raises_structural(self, body):
         with self.assertRaises(LLMMalformedResponseError) as caught:
             self._client()._build_result(body, 0.1)
-        # Structural breakage keeps the non-retryable parent: retrying a wire
-        # format we cannot read just spends the budget again.
+        # Structural breakage stays non-retryable: a re-read won't parse either.
         self.assertNotIsInstance(caught.exception, LLMEmptyCompletionError)
         self.assertFalse(caught.exception.retryable)
         return caught.exception
@@ -192,7 +162,7 @@ class OpenAIDroppedEntryTests(TestCase):
         self._assert_raises_structural(_oa_body([_oa_entry(arguments="[1, 2]")]))
 
     def test_one_unreadable_entry_among_good_ones_raises(self):
-        """The dangerous shape: two-thirds of the model's plan executing silently."""
+        """One bad entry fails the batch rather than executing the rest."""
         body = _oa_body(
             [
                 _oa_entry(call_id="call_1"),
@@ -204,7 +174,7 @@ class OpenAIDroppedEntryTests(TestCase):
 
 
 class ClaudeToolUseBlockTests(TestCase):
-    """Defect 3 on the Anthropic side: the same silent drop, same fix."""
+    """The same parsing contract on the Anthropic side."""
 
     def _client_returning(self, response):
         async def fake_create(**kwargs):
@@ -265,13 +235,7 @@ class ClaudeToolUseBlockTests(TestCase):
 
 
 class ClaudeToolResultFoldTests(TestCase):
-    """Defect 4: parallel results belong in one user message, not one each.
-
-    Anthropic's tool-use contract puts every ``tool_result`` block for an
-    assistant turn in a single user message; splitting them degrades parallel
-    tool use. The API merges consecutive user turns, so the split never 400s —
-    it just quietly sends a shape the docs warn against.
-    """
+    """Anthropic's contract: parallel tool results ride in one user message."""
 
     def _kwargs_for(self, messages):
         client = claude_mod.ClaudeClient.__new__(claude_mod.ClaudeClient)
@@ -315,12 +279,7 @@ class ClaudeToolResultFoldTests(TestCase):
 
 
 def _narrating_tool_call_turn():
-    """A tool-call turn whose text is the model narrating its way to the call.
-
-    Observed against groq/openai/gpt-oss-20b: literal function-call markers
-    naming each agent tool, then a partial draft — the provider labels the turn
-    a tool-call turn and the prose is a preamble, not an email.
-    """
+    """A tool-call turn whose text is the model narrating its way to the call."""
     return LLMResult(
         text="<function=get_lead_history{}></function> Subject: Checking in",
         provider="fake",
@@ -332,8 +291,7 @@ def _narrating_tool_call_turn():
 
 
 class _FakeChatClient(LLMClient):
-    """Scripted chat client. A local copy: the agent test modules each carry one
-    (see the shared-builders cleanup noted in the PR 88 triage)."""
+    """Scripted chat client (each agent test module carries its own copy)."""
 
     provider_name = "fake"
 
@@ -350,16 +308,8 @@ class _FakeChatClient(LLMClient):
 
 
 class LoopFinishReasonTests(TestCase):
-    """Defect 1: the loop finalizes on the presence of text alone.
-
-    ``finish_reason`` never reaches the decision, so a turn the provider marked
-    as a tool-call turn degrades into a final made of the model's narration —
-    which is what put four literal function-call markers in front of a reviewer
-    as Suggested Copy. The forced-final turn is where it still bites after the
-    adapter-side guard that landed with MUS-29: tools are not offered, so the
-    response's calls are discarded, and the preamble that rode along with them
-    becomes the draft.
-    """
+    """A tool-call turn's text must never become the final draft, including on
+    the forced-final turn where tools are not offered."""
 
     @classmethod
     def setUpTestData(cls):
@@ -401,8 +351,7 @@ class LoopFinishReasonTests(TestCase):
             raw_finish_reason="tool_calls",
             tool_calls=(ToolCallRequest(id="c1", name="get_lead_history", arguments={}),),
         )
-        # Five tool turns spend the step budget; the sixth call is the forced
-        # final, and the model answers it with a preamble plus a tool call.
+        # Five tool turns spend the step budget; the sixth is the forced final.
         outcome, client, pk = self._run([tool_turn] * 5 + [_narrating_tool_call_turn()])
         self.assertEqual(client.chat_calls[-1]["tools"], ())  # forced final, no tools offered
         self.assertEqual(outcome.draft_text, "")

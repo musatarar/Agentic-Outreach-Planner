@@ -8,14 +8,7 @@ export interface NothingDoneYetProps {
   timeZone: string;
 }
 
-/**
- * `summary.total === 0`. Not a failure state and not a celebration: the day
- * simply has not started. So it stays quiet, and its whole job is to point at
- * the one place where something can happen.
- *
- * The shortcut chips are here rather than only on the inbox because nobody
- * learns a keyboard interface from a screen they are about to leave.
- */
+/** `summary.total === 0` — the day has not started yet. */
 export function NothingDoneYet({ date, timeZone }: NothingDoneYetProps) {
   const navigate = useNavigate();
 
@@ -32,8 +25,7 @@ export function NothingDoneYet({ date, timeZone }: NothingDoneYetProps) {
           for a few minutes after. Until then, this page is empty on purpose.
         </p>
         <div className="done-blank__actions">
-          {/* The one accent fill on this page. /done spends no accent
-              anywhere else. */}
+          {/* The one accent fill on this page. */}
           <Button variant="primary" onClick={() => navigate('/inbox')}>
             Open the inbox
           </Button>

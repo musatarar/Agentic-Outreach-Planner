@@ -1,13 +1,8 @@
 import { useTheme } from '../../hooks/useTheme';
 
 /**
- * The dark/light control for the app shell. Not one of the five frozen UI
- * primitives, but it is the only consumer of useTheme and it has to live
- * somewhere every shell can import it from, so it ships beside them and is
- * exported from the same barrel.
- *
- * Flipping the attribute on <html> re-resolves every token at once, so the
- * whole app changes in a single paint with no transition to wait on.
+ * The dark/light control for the app shell. Flipping the attribute on <html>
+ * re-resolves every token at once, so the app changes in a single paint.
  */
 export function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();

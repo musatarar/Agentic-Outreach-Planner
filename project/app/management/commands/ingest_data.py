@@ -13,9 +13,8 @@ DEFAULT_LEADS = "raw_data/leads.json"
 DEFAULT_EVENTS = "raw_data/events.json"
 
 # Synthetic AE calendar backing the agent loop's `check_ae_calendar` tool
-# (MUS-29). Fixed names and a fixed anchor keep the seed deterministic; the
-# anchor is the Monday after the newest demo event (2026-06-18), so slots sit
-# in the demo's frozen date-space rather than drifting with the wall clock.
+# (MUS-29). The fixed anchor keeps slots in the demo's frozen date-space
+# rather than drifting with the wall clock.
 SYNTHETIC_AES = (
     ("Avery Collins", "avery.collins@lockedin.example"),
     ("Jordan Reyes", "jordan.reyes@lockedin.example"),
@@ -123,9 +122,11 @@ class Command(BaseCommand):
         )
 
     def _seed_ae_slots(self):
-        """Seed the synthetic AE calendar: one 30-minute slot per AE per
-        weekday of the anchor week. Idempotent by delete-and-recreate of
-        `synthetic=True` rows — never touches a manually created slot."""
+        """Seed one 30-minute slot per AE per weekday of the anchor week.
+
+        Delete-and-recreate of `synthetic=True` rows only -- never touches a
+        manually created slot.
+        """
         AEAvailabilitySlot.objects.filter(synthetic=True).delete()
         slots = []
         for day_offset in range(5):

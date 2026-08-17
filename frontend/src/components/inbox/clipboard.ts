@@ -1,14 +1,7 @@
 /**
- * Writing the approved draft to the clipboard.
- *
- * The user's literal next action is always paste-into-Gmail, so an approve that
- * does not hand them the text is a broken loop — the keystroke would look like
- * it worked and leave them to select the email by hand.
- *
- * `CopyButton` covers the ordinary click-to-copy affordance and is reused
- * as-is. This exists because the approve path cannot: it has to write the
- * clipboard **synchronously inside the keydown handler**, before any `await`,
- * or Safari and Firefox drop the user-gesture that authorises the write.
+ * Writes the approved draft to the clipboard. Separate from `CopyButton`
+ * because the approve path must write synchronously inside the keydown
+ * handler, before any `await`, or Safari and Firefox drop the user gesture.
  */
 export async function writeToClipboard(text: string): Promise<boolean> {
   try {
@@ -20,8 +13,7 @@ export async function writeToClipboard(text: string): Promise<boolean> {
     // Denied permission, or a non-secure context. Fall through.
   }
 
-  // The pre-async-clipboard path. Still the only thing that works over plain
-  // HTTP, which is exactly how this app is demoed on a LAN address.
+  // Legacy path — still the only one that works over plain HTTP.
   try {
     const staging = document.createElement('textarea');
     staging.value = text;

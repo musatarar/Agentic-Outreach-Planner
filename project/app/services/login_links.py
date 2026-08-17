@@ -1,25 +1,10 @@
 """Issue and consume magic-link login tokens (MUS-37).
 
-Two operations, and the security of the whole sign-in flow lives in them:
-
-* :func:`issue_login_link` mints ``secrets.token_urlsafe(32)`` (256 bits of
-  CSPRNG output), persists only ``sha256(token).hexdigest()``, and returns the
-  raw token to the caller exactly once. Storing a hash rather than the token
-  is the same reasoning as password storage: a database read must not hand an
-  attacker a working credential. A plain SHA-256 rather than a slow KDF is
-  correct here -- there is no dictionary to attack against 256 random bits,
-  and the verify path has to stay cheap enough that it can be *rate limited*
-  rather than turned into a DoS amplifier.
-
-* :func:`consume_login_token` redeems a token with a single conditional
-  ``UPDATE`` (contract MUS-35 section 5.1), never a read-then-write. Two
-  concurrent redemptions of the same link therefore race in the database and
-  exactly one wins; the loser gets ``INVALID`` and no session.
-
-Delivery is deliberately stubbed: ``LOGIN_LINK_DELIVERY=console`` (the
-default, and the demo path) writes the link to the server log, while
-``email`` hands it to Django's configured email backend. Nothing in the demo
-path requires SMTP.
+Only ``sha256(token)`` is stored — a database read must not hand out a working
+credential (plain SHA-256 is fine: no dictionary attacks 256 random bits).
+Redemption is a single conditional ``UPDATE``, so concurrent redemptions race
+in the database and exactly one wins. Delivery defaults to console; nothing in
+the demo path requires SMTP.
 """
 
 from __future__ import annotations
@@ -63,10 +48,9 @@ _EMAIL_BODY = (
 class ConsumeOutcome(str, Enum):
     """Result of attempting to redeem a raw token.
 
-    ``EXPIRED`` is distinguished from ``INVALID`` on purpose: the sign-in page
-    needs a third state that says "ask for a new link" rather than "that link
-    is wrong". It leaks only that *some* link for *some* address once existed,
-    which whoever is holding the token already knows.
+    ``EXPIRED`` vs ``INVALID`` is deliberate: the sign-in page needs an
+    "ask for a new link" state, and it leaks nothing the token holder
+    doesn't already know.
     """
 
     OK = "ok"
@@ -100,12 +84,9 @@ def normalize_email(email: str) -> str:
 
 
 def is_allowed(email: str) -> bool:
-    """True when ``email`` may be sent a link at all.
-
-    There is no signup flow, so an allowlist is what decides who can ask for
-    one. The caller must NOT vary its response on this -- see
-    ``views_auth.AuthRequestLinkView`` and contract section 9.18.
-    """
+    """True when ``email`` may be sent a link at all (no signup flow; the
+    allowlist decides). The caller must NOT vary its response on this -- see
+    ``views_auth.AuthRequestLinkView``."""
     return normalize_email(email) in settings.LOGIN_ALLOWED_EMAILS
 
 
@@ -118,9 +99,8 @@ def build_link(raw_token: str) -> str:
 def burn_discard_token() -> str:
     """Generate and hash a token that is thrown away.
 
-    Called on the non-allowlisted branch of ``request-link`` so that the
-    wall-clock cost of "we sent you a link" matches the cost of "we did
-    nothing", and response timing cannot be used to enumerate the allowlist.
+    Called on the non-allowlisted branch of ``request-link`` so response
+    timing cannot be used to enumerate the allowlist.
     """
     discard = generate_raw_token()
     return hash_token(discard)
@@ -153,10 +133,8 @@ def issue_login_link(
 def deliver_login_link(issued: IssuedLink) -> None:
     """Hand ``issued`` to the configured delivery channel.
 
-    ``console`` logs it (the demo path -- no SMTP anywhere). ``email`` uses
-    Django's email backend. Delivery failures are logged, never raised: a
-    bounced link must not turn into a different HTTP response, because that
-    would re-open the enumeration oracle the identical-response rule closes.
+    Delivery failures are logged, never raised: a different HTTP response
+    would re-open the enumeration oracle.
     """
     if settings.LOGIN_LINK_DELIVERY == DELIVERY_EMAIL:
         minutes = max(1, int(settings.LOGIN_TOKEN_TTL_SECONDS) // 60)
@@ -184,11 +162,8 @@ def deliver_login_link(issued: IssuedLink) -> None:
 def consume_login_token(raw_token: str) -> tuple[ConsumeOutcome, LoginToken | None]:
     """Redeem ``raw_token`` exactly once.
 
-    The redemption is a single conditional ``UPDATE`` -- ``filter(unconsumed,
-    unexpired).update(consumed_at=now)`` -- so the database, not application
-    logic, decides the winner when the same link is opened twice at once.
-    ``updated`` is the row count: 1 means this caller redeemed it, 0 means
-    someone (or something) else did, or it never existed, or it had expired.
+    A single conditional ``UPDATE``: the database, not application logic,
+    decides the winner when the same link is opened twice at once.
     """
     digest = hash_token(raw_token)
     now = timezone.now()
@@ -196,9 +171,8 @@ def consume_login_token(raw_token: str) -> tuple[ConsumeOutcome, LoginToken | No
         token_hash=digest, consumed_at__isnull=True, expires_at__gt=now
     ).update(consumed_at=now)
     if updated != 1:
-        # Distinguish "expired" from "unknown / already used" for the /signin
-        # expired state. An unconsumed row that is merely past its TTL is the
-        # only case that earns the friendlier message.
+        # Only an unconsumed row merely past its TTL earns the friendlier
+        # "expired" message.
         expired = LoginToken.objects.filter(
             token_hash=digest, consumed_at__isnull=True, expires_at__lte=now
         ).exists()

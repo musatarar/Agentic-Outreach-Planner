@@ -1,8 +1,6 @@
 """Encrypt/decrypt LLM provider API keys stored in the database.
 
-Uses Fernet (symmetric, authenticated encryption) from the ``cryptography``
-package. The encryption key comes from its own env var,
-``LLM_KEY_ENCRYPTION_KEY`` -- deliberately NOT derived from
+Fernet, keyed by ``LLM_KEY_ENCRYPTION_KEY`` -- deliberately NOT derived from
 ``DJANGO_SECRET_KEY``, so rotating one never silently breaks the other.
 
 Generate a key with:
@@ -39,8 +37,7 @@ def _fernet() -> Fernet:
 
 
 def encrypt_key(plaintext: str) -> bytes:
-    """Encrypt a provider API key for storage in
-    ``LLMConfiguration.encrypted_api_key``."""
+    """Encrypt a provider API key for ``LLMConfiguration.encrypted_api_key``."""
     return _fernet().encrypt(plaintext.encode("utf-8"))
 
 

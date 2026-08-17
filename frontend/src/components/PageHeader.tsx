@@ -13,18 +13,15 @@ interface Props {
 }
 
 export function PageHeader({ current, title, subtitle, children }: Props) {
-  // Django's shell templates set the right <title> on first paint; keep it in
-  // sync when React handles navigation client-side.
+  // Django sets <title> on first paint; keep it in sync on client-side nav.
   useEffect(() => {
     document.title = documentTitle(title);
   }, [title]);
 
   return (
     <header>
-      {/* The theme control lives in the shell, so it is reachable from every
-          page rather than buried in settings. The lock-up sits on its own row
-          above the nav: dropping it inline would have made the six-link row
-          wrap on a laptop width, and the mark is chrome, not navigation. */}
+      {/* The lock-up gets its own row: inline, it wrapped the nav at laptop
+          widths. */}
       <div className="brand-bar">
         <span className="brand-lockup">
           <BrandMark />

@@ -1,22 +1,15 @@
 /**
- * Where to land after signing in. A *path*, never a credential.
- *
- * The session cookie is the only credential in this app and the server sets it;
- * nothing auth-related is ever written to browser storage. sessionStorage holds
- * the destination rather than router state because the magic link arrives as a
- * fresh page load — often from a mail client, in a new tab — and
- * `location.state` does not survive that.
- *
- * Deliberately free of React and of any API import, so it stays a pair of pure
- * functions over one storage key and can be tested as such.
+ * Where to land after signing in. A *path*, never a credential. sessionStorage
+ * rather than router state because the magic link arrives as a fresh page load
+ * (often a new tab), which `location.state` does not survive.
  */
 
 const DESTINATION_KEY = 'auth:destination';
 const DEFAULT_DESTINATION = '/inbox';
 
 /**
- * Same-origin absolute paths only. `startsWith('/')` on its own is not enough:
- * `//evil.example` is a protocol-relative URL and would be an open redirect.
+ * Same-origin absolute paths only. `//evil.example` is protocol-relative and
+ * would be an open redirect, so `startsWith('/')` alone is not enough.
  */
 function isSafePath(value: string): boolean {
   return value.startsWith('/') && !value.startsWith('//');
@@ -36,8 +29,7 @@ export function takeDestination(): string {
   try {
     const stored = sessionStorage.getItem(DESTINATION_KEY);
     sessionStorage.removeItem(DESTINATION_KEY);
-    // Checked on the way out as well as in: storage is writable by any script
-    // on the origin, so the value read back is not necessarily the one stored.
+    // Re-checked on read: any script on the origin can write storage.
     if (stored && isSafePath(stored)) return stored;
   } catch {
     // Fall through to the default.

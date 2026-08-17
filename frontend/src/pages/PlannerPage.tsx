@@ -62,8 +62,7 @@ export function PlannerPage() {
   const [error, setError] = useState<string | null>(null);
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
 
-  // Show whatever the last run produced. A failure here is non-fatal — the
-  // page still offers the Run button, matching the old template's behaviour.
+  // Show whatever the last run produced; a failure here is non-fatal.
   useEffect(() => {
     let active = true;
     fetchOutreach()
@@ -78,8 +77,7 @@ export function PlannerPage() {
     };
   }, []);
 
-  // Non-fatal: if this fails, Run stays enabled and just relies on the
-  // backend to error out per-lead as before.
+  // Non-fatal: on failure Run stays enabled and the backend errors per-lead.
   useEffect(() => {
     let active = true;
     fetchLLMConfig()

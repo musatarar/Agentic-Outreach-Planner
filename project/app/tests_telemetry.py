@@ -1,21 +1,5 @@
-"""Tests for the OpenTelemetry bootstrap (MUS-25, 25-a).
-
-The claim under test is the one the rest of the instrumentation is built on:
-**instrumented code does not know whether telemetry is switched on.** So the
-important tests here are not "does it export" but "what happens when it
-doesn't" — no endpoint must produce a ``NonRecordingSpan`` and no installed
-provider, along the same statements the demo runs.
-
-Two conventions keep these tests from fighting the OTel API's process-global
-provider:
-
-* every test that exercises :func:`configure`'s decision logic patches
-  ``trace.set_tracer_provider``, so it asserts on the decision without mutating
-  the process;
-* every one of them restores the idempotence flag on the way out, so
-  ``tests_telemetry_support`` can still install the shared in-memory provider
-  whatever order the suite runs in.
-"""
+"""Tests for the OpenTelemetry bootstrap (MUS-25, 25-a): instrumented code
+must not know whether telemetry is switched on."""
 
 import os
 import subprocess
@@ -32,11 +16,8 @@ from project.app.services.telemetry import setup
 
 from .tests_telemetry_support import RecordingTestCase, spans_named
 
-# Every environment variable that can switch telemetry on, cleared together. A
-# test that clears only some of them passes for the wrong reason on a machine
-# where the others are exported -- and the metrics ones matter most, because a
-# leaked OTEL_EXPORTER_OTLP_METRICS_ENDPOINT would have the suite construct a
-# real network exporter.
+# Every env var that can switch telemetry on, cleared together — a leaked
+# metrics endpoint would have the suite construct a real network exporter.
 _TRACING_ENV = {
     name: ""
     for name in (
@@ -48,18 +29,9 @@ _TRACING_ENV = {
 
 
 class _ConfigureTestCase(SimpleTestCase):
-    """Base for tests that call ``configure``/``configure_from_env``.
-
-    Patches out the global provider install and always restores the idempotence
-    flag, so these tests can run in any order relative to the ones that want
-    real recorded spans.
-
-    Both halves of the API's provider accessor are patched, not just the setter.
-    ``configure`` verifies its install by reading the provider back — a real
-    behaviour, because ``set_tracer_provider`` silently refuses a second
-    registration — so a stub setter with a live getter would make every install
-    here look refused.
-    """
+    """Base for ``configure`` tests: patches both halves of the provider
+    accessor (``configure`` reads the provider back to verify its install) and
+    restores the idempotence flag."""
 
     def setUp(self):
         super().setUp()
@@ -77,10 +49,8 @@ class _ConfigureTestCase(SimpleTestCase):
         self.build_processor = self.enterContext(
             mock.patch.object(setup, "_build_otlp_span_processor", autospec=True)
         )
-        # A neutral argv. The real one is `manage.py test ...`, which
-        # `configure_from_env` refuses outright -- so without this every test
-        # below would pass or fail for that reason instead of its own. Classes
-        # that care about argv (autoreload, test runner) patch it themselves.
+        # Neutral argv: the real one is `manage.py test`, which
+        # `configure_from_env` refuses outright.
         self.enterContext(mock.patch.object(sys, "argv", ["manage.py", "migrate"]))
         setup._reset_for_tests()
         self.addCleanup(setup._reset_for_tests)
@@ -94,13 +64,9 @@ class NoEndpointTests(_ConfigureTestCase):
             self.assertFalse(telemetry.configure_from_env())
         self.assertFalse(setup.is_installed())
         self.set_provider.assert_not_called()
-        # The exporter is not merely unused -- it is never constructed, so an
-        # unreachable collector host cannot cost startup a DNS timeout.
         self.build_processor.assert_not_called()
 
     def test_a_whitespace_only_endpoint_counts_as_unset(self):
-        # `OTEL_EXPORTER_OTLP_ENDPOINT=` in a .env file is how an operator says
-        # "off"; reading it as a hostname would be a startup crash on a blank line.
         with mock.patch.dict(os.environ, {"OTEL_EXPORTER_OTLP_ENDPOINT": "   "}, clear=False):
             self.assertIsNone(telemetry.otlp_endpoint())
             self.assertFalse(telemetry.configure_from_env())
@@ -113,14 +79,7 @@ class NoEndpointTests(_ConfigureTestCase):
                     self.assertEqual(telemetry.otlp_endpoint(), "http://phoenix:6006")
 
     def test_a_no_op_provider_still_supports_the_whole_span_protocol(self):
-        """The library guarantee the no-branching design rests on.
-
-        A tracer from the API's no-op provider supports every span call --
-        ``set_attribute`` and ``set_status`` are empty method bodies rather than
-        errors -- which is why the planner can open spans and set attributes
-        unconditionally. Asserting it here means a future OTel upgrade that
-        changed it would be caught by name.
-        """
+        """A no-op tracer supports the whole span protocol, so instrumented code never branches."""
         tracer = trace.get_tracer(__name__, tracer_provider=trace.NoOpTracerProvider())
         with tracer.start_as_current_span("chat some-model") as span:
             self.assertIsInstance(span, trace.NonRecordingSpan)
@@ -132,15 +91,8 @@ class NoEndpointTests(_ConfigureTestCase):
 
 
 class PristineProcessTests(SimpleTestCase):
-    """The claim that can only be tested in a process nothing has touched.
-
-    ``get_tracer()`` reads a *process-global* provider, and this suite installs
-    an in-memory one. So "with no endpoint, our own ``get_tracer()`` yields a
-    ``NonRecordingSpan``" is not assertable in-process at all — asserting it
-    against a hand-built ``NoOpTracerProvider`` would be testing OpenTelemetry,
-    not us. A subprocess is the only honest way to make the claim, so it is
-    worth the second or so it costs.
-    """
+    """With no endpoint, ``get_tracer()`` is a no-op — only assertable in a
+    subprocess, because this suite installs a process-global provider."""
 
     def test_with_no_endpoint_get_tracer_is_a_no_op(self):
         script = textwrap.dedent(
@@ -192,12 +144,7 @@ class ConfigureTests(_ConfigureTestCase):
         self.set_provider.assert_called_once()
 
     def test_a_second_configure_installs_nothing(self):
-        """``AppConfig.ready()`` can fire more than once per process.
-
-        Two live ``BatchSpanProcessor``s would each hold an exporter and each
-        register an ``atexit`` shutdown, so the second call has to be a no-op
-        rather than a second install.
-        """
+        """A second ``configure`` is a no-op — ``AppConfig.ready()`` can fire more than once."""
         first = telemetry.configure(mock.Mock())
         second = telemetry.configure(mock.Mock())
         self.assertTrue(first)
@@ -209,25 +156,18 @@ class ConfigureTests(_ConfigureTestCase):
         telemetry.configure(processor)
         self.build_processor.assert_not_called()
         provider = self.set_provider.call_args.args[0]
-        # add_span_processor is real here (the provider is a real SDK object);
-        # asserting the processor is wired means the injection seam the tests
-        # below depend on is genuinely the production one.
+        # The provider is a real SDK object, so this exercises the production injection seam.
         self.assertIn(processor, provider._active_span_processor._span_processors)
 
     def test_a_refused_registration_is_reported_as_a_refusal(self):
-        """``set_tracer_provider`` does not raise when one is already
-        registered -- it logs and keeps the old one. Believing our own flag over
-        that would let ``is_installed()`` say ``True`` while ``get_tracer()``
-        resolved against something else entirely, and would leave an
-        unreachable provider holding an ``atexit`` handler."""
+        """``set_tracer_provider`` silently keeps an incumbent; ``configure`` must report that as a refusal."""
         incumbent = object()
         with mock.patch.object(trace, "get_tracer_provider", return_value=incumbent):
             self.assertFalse(telemetry.configure(mock.Mock()))
         self.assertFalse(setup.is_installed())
 
     def test_the_discarded_provider_is_shut_down(self):
-        """It owns a span processor. Dropping the reference without shutting it
-        down leaks whatever thread and buffer that processor started."""
+        """A refused provider is shut down so its processor's thread and buffer don't leak."""
         incumbent = object()
         processor = mock.Mock()
         with mock.patch.object(trace, "get_tracer_provider", return_value=incumbent):
@@ -235,8 +175,7 @@ class ConfigureTests(_ConfigureTestCase):
         processor.shutdown.assert_called_once()
 
     def test_the_provider_does_not_register_its_own_atexit_handler(self):
-        """One handler, registered here beside its reasoning -- not two, one of
-        which is the SDK's and invisible from this file."""
+        """The SDK's own atexit handler stays off; shutdown is registered once, by us."""
         telemetry.configure(mock.Mock())
         provider = self.set_provider.call_args.args[0]
         self.assertIsNone(provider._atexit_handler)
@@ -250,18 +189,14 @@ class ConfigurationFailureTests(_ConfigureTestCase):
         self.env = dict(_TRACING_ENV, OTEL_EXPORTER_OTLP_ENDPOINT="http://phoenix:6006")
 
     def test_a_broken_exporter_configuration_does_not_stop_the_app(self):
-        """``OTEL_EXPORTER_OTLP_TIMEOUT=10s`` is a natural thing to write and is
-        parsed as a float by the exporter's constructor. Unhandled, it takes
-        down ``manage.py check``, ``migrate`` and ``runserver`` alike -- and the
-        Docker entrypoint runs all three, so the container never boots."""
+        """A broken exporter configuration (e.g. ``OTEL_EXPORTER_OTLP_TIMEOUT=10s``) must not stop boot."""
         self.build_processor.side_effect = ValueError("could not convert string to float: '10s'")
         with mock.patch.dict(os.environ, self.env, clear=False):
             self.assertFalse(telemetry.configure_from_env())
         self.assertFalse(setup.is_installed())
 
     def test_configure_itself_still_raises(self):
-        """The rescue lives on the boot path only. ``configure()`` stays strict
-        so a test that breaks the exporter sees the breakage."""
+        """The rescue lives on the boot path only; ``configure()`` stays strict."""
         self.build_processor.side_effect = ValueError("boom")
         with self.assertRaises(ValueError):
             telemetry.configure()
@@ -278,8 +213,7 @@ class ResourceTests(_ConfigureTestCase):
         self.assertEqual(resource.attributes["service.name"], telemetry.DEFAULT_SERVICE_NAME)
 
     def test_otel_service_name_wins_over_the_default(self):
-        """Passing ``service.name`` unconditionally would silently override the
-        operator's ``OTEL_SERVICE_NAME``, which the SDK reads for itself."""
+        """The operator's ``OTEL_SERVICE_NAME`` wins over our default."""
         with mock.patch.dict(os.environ, {"OTEL_SERVICE_NAME": "outreach-staging"}, clear=False):
             resource = self._installed_resource()
         self.assertEqual(resource.attributes["service.name"], "outreach-staging")
@@ -308,9 +242,7 @@ class AutoreloadTests(_ConfigureTestCase):
         self.assertTrue(self._configure(["manage.py", "runserver", "--noreload"]))
 
     def test_other_entrypoints_install_without_run_main(self):
-        """The trap this guard has to avoid: ``RUN_MAIN`` is unset for gunicorn,
-        ``manage.py migrate`` and every management command, so keying on it
-        alone would disable telemetry everywhere except ``runserver``."""
+        """``RUN_MAIN`` is unset for gunicorn and management commands — they must still install."""
         for argv in (
             ["gunicorn", "project.wsgi"],
             ["manage.py", "shell"],
@@ -322,16 +254,8 @@ class AutoreloadTests(_ConfigureTestCase):
 
 
 class TestRunnerTests(_ConfigureTestCase):
-    """``manage.py test`` must never install a live exporter.
-
-    ``ready()`` runs for the test runner like every other entrypoint. A
-    developer with ``OTEL_EXPORTER_OTLP_ENDPOINT`` exported -- exactly what
-    ``docker compose up`` teaches them to set -- would otherwise have the suite
-    ship every test span, lead ids and content digests included, to whatever
-    backend their shell happens to point at. It would also break the suite,
-    because the tests install their own in-memory provider and the API refuses
-    the second registration.
-    """
+    """``manage.py test`` must never install a live exporter, even with an
+    OTLP endpoint exported in the developer's shell."""
 
     def _configure(self, argv):
         env = dict(_TRACING_ENV, OTEL_EXPORTER_OTLP_ENDPOINT="http://phoenix:6006")
@@ -344,8 +268,7 @@ class TestRunnerTests(_ConfigureTestCase):
         self.build_processor.assert_not_called()
 
     def test_an_app_label_containing_test_does_not_switch_telemetry_off(self):
-        """Matched at the command position, not anywhere in argv -- otherwise
-        `gunicorn --config test.py` would silently lose tracing in production."""
+        """The test-runner guard matches at the command position, not anywhere in argv."""
         self.assertTrue(self._configure(["gunicorn", "--config", "test_settings.py"]))
 
 

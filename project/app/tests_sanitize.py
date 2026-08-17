@@ -1,12 +1,5 @@
 """Unit tests for the input-isolation layer and shape validation (MUS-23).
-
-``sanitize`` is pure stdlib (no Django), so these exercise it directly. The
-adversarial *red-team* coverage (does the end-to-end planner resist a crafted
-note?) is MUS-24's job; here we just pin the building blocks.
-
-Run standalone:
-    ./venv/bin/python -m unittest project.app.tests_sanitize
-"""
+End-to-end adversarial coverage lives in ``tests_redteam.py``."""
 
 import unittest
 

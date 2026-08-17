@@ -4,14 +4,8 @@ import { fetchDone, fetchQueue } from '../api/endpoints';
 import type { DoneSummary, QueueCounts, QueueItem } from '../api/types';
 
 /**
- * The triage queue, prefetched once.
- *
- * `GET /api/queue/` returns *complete* QueueItems — rule trace,
- * verification report, effective copy and lead detail all in one payload — so
- * moving between leads is a state change and nothing else. Every navigation
- * helper below (`select`, `next`, `previous`) and `settle` performs **zero**
- * network requests. That is the whole reason the sub-120ms advance is
- * achievable, and it is why nothing here refetches on index change.
+ * The triage queue, prefetched once. `GET /api/queue/` returns complete
+ * QueueItems, so navigation and `settle` perform zero network requests.
  */
 
 export type QueueOutcome = 'approved' | 'snoozed' | 'dismissed';
@@ -25,10 +19,7 @@ export interface SettledItem {
 export interface UseQueueResult {
   loading: boolean;
   error: string | null;
-  /**
-   * The server's "today", in settings.TRIAGE_TIMEZONE. The frontend never
-   * calls new Date() to decide which day it is.
-   */
+  /** The server's "today" (settings.TRIAGE_TIMEZONE); never local new Date(). */
   date: string;
   timezone: string;
   counts: QueueCounts;
@@ -66,8 +57,7 @@ export function useQueue(): UseQueueResult {
   const [error, setError] = useState<string | null>(null);
   const [date, setDate] = useState('');
   const [timezone, setTimezone] = useState('');
-  // The counts as the server last reported them. Held separately from the
-  // adjustments below so a reload always resets to server truth.
+  // Server-reported baseline, held apart so a reload resets to server truth.
   const [baseCounts, setBaseCounts] = useState<QueueCounts>(EMPTY_COUNTS);
   const [items, setItems] = useState<QueueItem[]>([]);
   const [index, setIndex] = useState(0);
@@ -95,8 +85,7 @@ export function useQueue(): UseQueueResult {
     }
   }, []);
 
-  // StrictMode double-invokes effects in dev; the guard keeps that from
-  // firing two identical prefetches.
+  // Guard against StrictMode's dev double-invoke firing two prefetches.
   const started = useRef(false);
   useEffect(() => {
     if (started.current) return;
@@ -106,9 +95,8 @@ export function useQueue(): UseQueueResult {
 
   const cleared = !loading && error === null && items.length === 0;
 
-  // The one request the empty state needs. /api/queue/done/ is the authority on
-  // pipeline value and elapsed time — deriving them from local
-  // session state would disagree with /done the moment a tab was reloaded.
+  // /api/queue/done/ is the authority on pipeline value and elapsed time;
+  // deriving them locally would disagree with /done after a tab reload.
   useEffect(() => {
     if (!cleared) return;
     let live = true;
@@ -124,11 +112,8 @@ export function useQueue(): UseQueueResult {
     };
   }, [cleared]);
 
-  /**
-   * Mutations return a QueueItem, not fresh counts, so the header is kept live
-   * by adjusting the server's baseline by what this session has resolved.
-   * `remaining` is the working set itself, which is exact by construction.
-   */
+  // Mutations return a QueueItem, not fresh counts, so adjust the server
+  // baseline by what this session has resolved.
   const counts = useMemo<QueueCounts>(() => {
     const by = (outcome: QueueOutcome) =>
       settled.filter((entry) => entry.outcome === outcome).length;
@@ -151,8 +136,7 @@ export function useQueue(): UseQueueResult {
     [lastIndex],
   );
 
-  // Clamped rather than wrapping: holding J past the end should rest on the
-  // last lead, not silently teleport back to the top of the queue.
+  // Clamped, not wrapping: holding J rests on the last lead.
   const next = useCallback(() => {
     setIndex((current) => Math.min(current + 1, lastIndex));
   }, [lastIndex]);
@@ -171,8 +155,7 @@ export function useQueue(): UseQueueResult {
     setSettled((current) => [...current, { item, outcome }]);
     setItems((current) => {
       const remaining = current.filter((entry) => entry.id !== item.id);
-      // Hold the position: the next lead slides up into the slot just vacated,
-      // so a run of A-A-A never moves the user's eye.
+      // Hold position: the next lead slides into the vacated slot.
       setIndex((currentIndex) =>
         Math.min(currentIndex, Math.max(0, remaining.length - 1)),
       );
@@ -180,8 +163,7 @@ export function useQueue(): UseQueueResult {
     });
   }, []);
 
-  // Clamp defensively rather than indexing past the end during the render that
-  // follows a settle.
+  // Clamp defensively during the render that follows a settle.
   const safeIndex = items.length === 0 ? 0 : Math.min(index, items.length - 1);
   const current = items[safeIndex] ?? null;
 

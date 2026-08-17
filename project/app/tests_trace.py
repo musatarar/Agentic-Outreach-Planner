@@ -1,13 +1,7 @@
 """Structured rule-trace tests (MUS-42).
 
-The trace is an *instrumentation* layer over the two rule functions the whole
-product rests on. These tests exist to prove the instrumentation changed
-nothing: same arity, same classifications, byte-identical prose reasons, and a
-golden eval that still passes against an unregenerated baseline.
-
-Pure Python — no Django, no database. Run standalone::
-
-    ./.venv/bin/python -m unittest project.app.tests_trace
+Prove the trace instrumentation changed nothing: same arity, same classifications,
+byte-identical reasons, and an unregenerated golden baseline. Pure Python, no Django.
 """
 
 import datetime
@@ -26,8 +20,7 @@ PARITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "reason_parity.j
 
 TODAY = rules_eval.TODAY  # datetime.date(2026, 6, 12)
 
-# Every condition/group id the trace envelope pins. A pinned id that
-# no golden record produces means a missing `_cond()` call.
+# A pinned id no golden record produces means a missing `_cond()` call.
 PINNED_CONDITION_IDS = frozenset(
     {
         "book_size_very_large",
@@ -80,8 +73,7 @@ _SOURCES = {"lead", "events", "notes", "derived"}
 
 
 def _golden_leads():
-    """(record, duck-typed lead) for every golden record, built exactly as the
-    eval harness builds them."""
+    """(record, duck-typed lead) per golden record, built as the eval harness builds them."""
     return [
         (rec, rules_eval.build_lead(rec)) for rec in rules_eval.load_golden(rules_eval.GOLDEN_PATH)
     ]
@@ -143,11 +135,7 @@ class ArityTests(unittest.TestCase):
 
 
 class TraceNeutralityTests(unittest.TestCase):
-    """the test that catches a botched ``if``-transform.
-
-    If any branch were taken on a re-evaluated expression rather than on the
-    recorded ``Condition.passed``, the traced and untraced calls could diverge.
-    """
+    """Traced and untraced calls return identical results."""
 
     def test_determine_action_is_identical_with_and_without_a_trace(self):
         for rec, lead in _golden_leads():
@@ -181,11 +169,8 @@ class TraceNeutralityTests(unittest.TestCase):
 
 
 class ReasonParityTests(unittest.TestCase):
-    """``reason`` is displayed *and* fed to ``generate_copy``.
-
-    The fixture was captured from the pre-transform code; a whitespace change
-    here silently perturbs the copy eval.
-    """
+    """``reason`` strings stay byte-identical to the pre-transform fixture — they are
+    displayed and fed to ``generate_copy``."""
 
     @classmethod
     def setUpClass(cls):
@@ -275,8 +260,7 @@ class EnvelopeShapeTests(unittest.TestCase):
                 self.assertEqual(
                     (action["rule_id"], action["rule_label"]), outreach.ACTION_RULES[index]
                 )
-                # Rejected rules are exactly the rules evaluated *before* the
-                # match, in order — nothing after it was ever evaluated.
+                # Rejected rules are exactly those evaluated before the match, in order.
                 self.assertEqual(
                     [r["rule_id"] for r in action["rejected_rules"]], PINNED_RULE_IDS[:index]
                 )
@@ -350,10 +334,7 @@ class EnvelopeShapeTests(unittest.TestCase):
 
 
 class WorkedExampleTests(unittest.TestCase):
-    """The worked example, pinned line for line.
-
-    Four other branches consume these exact strings; MUS-40 snapshots them.
-    """
+    """The worked example, pinned line for line."""
 
     def _priya(self):
         lead = SimpleNamespace(

@@ -151,14 +151,8 @@ class GetLLMClientTests(unittest.TestCase):
 
 
 class ResolvedKeyAndTimeoutTests(unittest.TestCase):
-    """The two things the database-backed config layer asks of an adapter.
-
-    MUS-32 moved key resolution into the database and gave ``complete()`` a
-    per-call ``timeout`` so the config "test connection" endpoint can fail fast
-    instead of hanging. ``complete()`` is now a wrapper over ``generate()``, so
-    both travel one hop further than they used to; these pin that neither got
-    dropped on the way. The async half lives in ``tests_llm_async.py``.
-    """
+    """Resolved key and per-call timeout survive complete()'s hop through
+    generate() (MUS-32; async half in tests_llm_async.py)."""
 
     def _ok_post(self):
         response = mock.Mock()
@@ -208,10 +202,8 @@ class ResolvedKeyAndTimeoutTests(unittest.TestCase):
         self.assertEqual(mock_cls.call_args.kwargs["api_key"], "db-key")
 
     def test_claude_carries_a_per_call_timeout_on_the_request_only_when_given(self):
-        # It has to ride on the request rather than the client, because the
-        # client is now built once. Passing it unconditionally would override
-        # the client-level timeout with None on every ordinary call and restore
-        # the SDK's 600-second default by accident.
+        # Passing timeout unconditionally would override the client-level
+        # timeout with None and restore the SDK's 600s default by accident.
         with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
             client = mock_cls.return_value
             client.messages.create.return_value = mock.Mock(
@@ -230,14 +222,7 @@ class ResolvedKeyAndTimeoutTests(unittest.TestCase):
 
 
 def _httpx_response(status_code, headers=None, content=None):
-    """A real httpx.Response, not a Mock.
-
-    The mappers read ``.status_code``, ``.headers`` and — for the error detail a
-    reviewer reads — ``.text``; a Mock would satisfy those reads with values
-    httpx itself would never produce, so the table below would be testing our
-    test doubles rather than the mapping. (Mocks are still used further down
-    where the *body* is the thing under test.)
-    """
+    """A real httpx.Response, not a Mock — the mappers read fields a Mock would fake."""
     request = httpx.Request("POST", "https://example.test/v1/chat/completions")
     return httpx.Response(
         status_code, headers=headers or {}, request=request, content=content or b""
@@ -250,10 +235,8 @@ def _anthropic_status_error(cls, status_code, headers=None):
     return cls("boom", response=response, body=None)
 
 
-# (status_code, expected LLMError subclass, retryable) -- the table both mappers
-# share. `retryable` is spelled out per row rather than derived from the class,
-# so the row is an independent statement of intent and not a restatement of the
-# class attribute it is meant to check.
+# (status_code, expected LLMError subclass, retryable) -- shared by both mappers.
+# `retryable` is spelled per row on purpose, not derived from the class.
 STATUS_TABLE = (
     (400, errors.LLMBadRequestError, False),
     (401, errors.LLMAuthError, False),
@@ -282,9 +265,7 @@ class ErrorTaxonomyTests(unittest.TestCase):
     """Shape of the taxonomy itself, independent of any mapping."""
 
     def test_llm_error_is_a_runtime_error(self):
-        # Load-bearing: openai_compatible's missing-key raise becomes
-        # LLMAuthError and every existing `assertRaises(RuntimeError)` caller
-        # keeps working. If this ever fails, the base class is wrong.
+        # Keeps every existing `assertRaises(RuntimeError)` caller working.
         self.assertTrue(issubclass(errors.LLMError, RuntimeError))
 
     def test_retryability_is_declared_per_class(self):
@@ -335,12 +316,7 @@ class HttpxErrorMappingTests(unittest.TestCase):
                 self.assertEqual(mapped.retryable, retryable)
 
     def test_the_providers_own_error_message_survives_into_the_mapped_error(self):
-        """A 400 used to reach the review queue as httpx's canned "Client error
-        '400 Bad Request' for url '…' For more information check: <MDN link>",
-        which names the status code an engineer already had and throws away the
-        one field that says *why*. The body is where every OpenAI-compatible
-        provider puts its actual error.
-        """
+        """The provider's error body survives into the mapped error's message."""
         response = _httpx_response(
             400,
             content=json.dumps(
@@ -353,19 +329,14 @@ class HttpxErrorMappingTests(unittest.TestCase):
         self.assertIsInstance(mapped, errors.LLMBadRequestError)
 
     def test_an_oversized_body_is_truncated_rather_than_persisted_whole(self):
-        """`further_action` is a TextField rendered to a reviewer. A proxy or
-        WAF answering with a 200KB HTML error page must not land in it once per
-        lead."""
+        """A 200KB proxy error page must not land in the reviewer-facing TextField."""
         response = _httpx_response(502, content="<html>" + "x" * 50_000 + "</html>")
         exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
         mapped = errors.map_httpx_error(exc, "groq")
         self.assertLess(len(str(mapped)), 1_000)
 
     def test_an_unreadable_body_degrades_instead_of_raising(self):
-        """The mappers are pure and must stay total: a streaming response has
-        not been read, and `.text` raises `ResponseNotRead` on it. Turning a
-        provider's error into our own traceback is the one outcome worse than
-        losing the detail."""
+        """An unread streaming body (`.text` raises) degrades instead of raising."""
         response = httpx.Response(
             503,
             request=httpx.Request("POST", "https://example.test/v1/chat/completions"),
@@ -377,8 +348,7 @@ class HttpxErrorMappingTests(unittest.TestCase):
         self.assertIn("boom", str(mapped))
 
     def test_non_error_status_falls_back_to_the_base_class(self):
-        # raise_for_status() never produces a 3xx, but the mapper takes whatever
-        # it is handed and must not silently call a redirect "transient".
+        # The mapper must not silently call a redirect "transient".
         response = _httpx_response(304)
         exc = httpx.HTTPStatusError("boom", request=response.request, response=response)
         mapped = errors.map_httpx_error(exc, "groq")
@@ -407,16 +377,14 @@ class HttpxErrorMappingTests(unittest.TestCase):
         return httpx.HTTPStatusError("boom", request=response.request, response=response)
 
     def test_unusable_retry_after_values_are_ignored(self):
-        # A date-form (legal per RFC 9110, never sent by an LLM provider) or a
-        # negative value must degrade to "no guidance", not to a bad sleep().
+        # Date-form or negative values degrade to "no guidance", not a bad sleep().
         for raw in ("Wed, 21 Oct 2015 07:28:00 GMT", "-5", "", "soon", "nan", "inf"):
             with self.subTest(raw=raw):
                 exc = self._rate_limited(raw)
                 self.assertIsNone(errors.map_httpx_error(exc, "groq").retry_after)
 
     def test_absurd_retry_after_is_clamped(self):
-        # base_url is operator-configurable, so a proxy answering with a
-        # millennium must not be able to park a worker for one.
+        # base_url is operator-configurable; a proxy must not park a worker.
         mapped = errors.map_httpx_error(self._rate_limited("86400000"), "groq")
         self.assertEqual(mapped.retry_after, errors.MAX_RETRY_AFTER_SECONDS)
 
@@ -497,8 +465,7 @@ class AnthropicErrorMappingTests(unittest.TestCase):
                 self.assertEqual(mapped.retryable, isinstance(mapped, RETRYABLE_CLASSES))
 
     def test_unnamed_api_status_error_falls_back_to_the_status_code(self):
-        # A future SDK release adding a subclass we don't enumerate must still
-        # land in the right bucket -- RequestTooLargeError arrived that way.
+        # A future SDK subclass we don't enumerate must land in the right bucket.
         for status_code, expected, retryable in STATUS_TABLE:
             with self.subTest(status_code=status_code):
                 exc = _anthropic_status_error(anthropic.APIStatusError, status_code)
@@ -508,25 +475,20 @@ class AnthropicErrorMappingTests(unittest.TestCase):
                 self.assertEqual(mapped.retryable, retryable)
 
     def test_sdk_retryable_error_is_not_inverted(self):
-        # anthropic.RetryableError subclasses AnthropicError, not APIError, so
-        # without an explicit branch it lands on the non-retryable base -- the
-        # exact opposite of what its name promises.
+        # RetryableError subclasses AnthropicError, not APIError, so without an
+        # explicit branch it would land on the non-retryable base.
         mapped = errors.map_anthropic_error(anthropic.RetryableError("try again"), "claude")
         self.assertTrue(mapped.retryable)
 
     def test_non_anthropic_exception_is_the_non_retryable_base(self):
-        # The mapper is pure and takes BaseException; handing it something the
-        # SDK never raises must not blow up inside the mapper itself.
+        # The mapper takes BaseException and must not blow up on unknown types.
         mapped = errors.map_anthropic_error(TypeError("could not resolve auth"), "claude")
         self.assertIs(type(mapped), errors.LLMError)
         self.assertFalse(mapped.retryable)
 
     def test_timeout_maps_to_timeout_not_transient(self):
-        # REGRESSION GUARD: APITimeoutError subclasses APIConnectionError, so an
-        # isinstance chain in the wrong order silently classifies every timeout
-        # as a generic transient failure. Both are retryable, so nothing would
-        # break loudly -- we would just lose the distinction in traces and in
-        # the message a BD reviewer reads.
+        # REGRESSION GUARD: APITimeoutError subclasses APIConnectionError, so a
+        # wrong isinstance order silently classifies every timeout as transient.
         request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
         mapped = errors.map_anthropic_error(anthropic.APITimeoutError(request), "claude")
         self.assertIsInstance(mapped, errors.LLMTimeoutError)
@@ -561,9 +523,8 @@ class AnthropicErrorMappingTests(unittest.TestCase):
         self.assertFalse(mapped.retryable)
 
     def test_unreadable_headers_do_not_break_the_mapper(self):
-        # `headers` is read off the exception with getattr, so a test double or
-        # a future SDK could put anything there. A bad header must degrade to
-        # "no guidance", never to an exception raised from inside the mapper.
+        # `headers` is read with getattr; a bad value must degrade to "no
+        # guidance", never to an exception raised from inside the mapper.
         exc = anthropic.AnthropicError("odd")
         exc.response = types.SimpleNamespace(headers=object())
         self.assertIsNone(errors.map_anthropic_error(exc, "claude").retry_after)
@@ -616,16 +577,9 @@ class AdapterErrorTranslationTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {}, clear=True)
     def test_claude_missing_key_is_a_non_retryable_auth_error(self):
-        # anthropic==0.109.1 builds a keyless client without complaint and only
-        # fails at send time with a bare TypeError, which is not an
-        # AnthropicError. Without the up-front check that would be the one
-        # missing-key path in the repo that isn't an LLMAuthError.
-        #
-        # default_credentials() is patched off because clearing os.environ is
-        # not enough to make this test hermetic: the SDK also reads the active
-        # profile from disk, so on a developer machine that has ever logged in,
-        # the client would resolve a credential and this would fail for a reason
-        # that has nothing to do with the code under test.
+        # default_credentials() is patched off: clearing os.environ is not
+        # enough -- the SDK also reads the active profile from disk, so a
+        # logged-in developer machine would resolve a credential anyway.
         with (
             mock.patch.object(
                 claude_mod.anthropic._client, "default_credentials", return_value=None
@@ -639,10 +593,8 @@ class AdapterErrorTranslationTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_a_failed_call_still_reports_how_long_it_took(self):
-        # A failure has a duration too, and it is the same measurement
-        # LLMResult.latency_s records. Without it, anything wanting to time
-        # every attempt would have to re-time around the adapter and would end
-        # up including our parsing -- and later the backoff sleeps.
+        # A failure has a duration too -- the same measurement
+        # LLMResult.latency_s records.
         response = _httpx_response(503)
         with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
             post.return_value = response
@@ -652,8 +604,7 @@ class AdapterErrorTranslationTests(unittest.TestCase):
         self.assertGreaterEqual(ctx.exception.latency_s, 0.0)
 
     def test_unmeasured_error_latency_is_none(self):
-        # Errors raised before any call started (a missing key) must not claim
-        # a zero-second provider call.
+        # Errors raised before any call started must not claim a zero-second call.
         self.assertIsNone(errors.LLMAuthError("no key").latency_s)
 
     def test_claude_sdk_error_becomes_a_taxonomy_error(self):
@@ -668,8 +619,7 @@ class AdapterErrorTranslationTests(unittest.TestCase):
         self.assertTrue(ctx.exception.retryable)
 
     def test_claude_raw_httpx_error_is_still_typed(self):
-        # The SDK normally wraps transport failures into APIConnectionError.
-        # This pins the insurance branch for when it doesn't.
+        # Insurance branch: the SDK normally wraps transport failures itself.
         with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
             client = mock_cls.return_value
             client.messages.create.side_effect = httpx.ConnectError("refused")
@@ -712,9 +662,8 @@ class NormalizeFinishReasonTests(unittest.TestCase):
                 self.assertEqual(base.normalize_finish_reason(raw), expected)
 
     def test_unknown_reason_is_none_not_an_error(self):
-        # Anthropic shipped "pause_turn" after this map was written. A provider
-        # adding a legitimate new reason must not make healthy generations show
-        # up as errors on a dashboard -- the raw string is kept regardless.
+        # A provider's new reason (Anthropic shipped "pause_turn" post-map) must
+        # not read as an error; the raw string is kept regardless.
         for raw in ("pause_turn", "something_new", "", None, 7):
             with self.subTest(raw=raw):
                 self.assertIsNone(base.normalize_finish_reason(raw))
@@ -722,8 +671,7 @@ class NormalizeFinishReasonTests(unittest.TestCase):
 
 class CoerceTokenCountTests(unittest.TestCase):
     def test_real_counts_including_zero_are_preserved(self):
-        # A reported 0 is a measurement and must survive; it is only an OMITTED
-        # count that becomes None.
+        # A reported 0 is a measurement; only an OMITTED count becomes None.
         self.assertEqual(base.coerce_token_count(0), 0)
         self.assertEqual(base.coerce_token_count(1234), 1234)
 
@@ -740,13 +688,11 @@ class LLMResultTests(unittest.TestCase):
             result.text = "tampered"
 
     def test_unmeasured_latency_is_none_not_zero(self):
-        # Same argument as token counts: a caller-constructed result must not
-        # claim a real observation of a zero-second call.
+        # Must not claim a real observation of a zero-second call.
         self.assertIsNone(base.LLMResult(text="hi", provider="groq", model="m").latency_s)
 
     def test_complete_is_a_thin_text_wrapper_over_generate(self):
-        # The compatibility seam: complete() stays sync, keeps its name, and
-        # still returns a plain str -- it just gets it from generate() now.
+        # complete() stays sync and returns a plain str, sourced from generate().
         class _Stub(base.LLMClient):
             provider_name = "stub"
 
@@ -759,9 +705,7 @@ class LLMResultTests(unittest.TestCase):
         self.assertIsInstance(text, str)
 
     def test_base_agenerate_refuses_rather_than_faking_async(self):
-        # F-c gives the adapters native async clients. Until then the base must
-        # not quietly fall back to a thread pool, which would look like it
-        # worked while capping concurrency at the pool size.
+        # No silent thread-pool fallback -- it would cap concurrency at pool size.
         class _Stub(base.LLMClient):
             provider_name = "stub"
 
@@ -773,8 +717,7 @@ class LLMResultTests(unittest.TestCase):
         self.assertIn("_Stub", str(ctx.exception))
 
     def test_acomplete_is_the_text_only_wrapper_over_agenerate(self):
-        # Mirrors complete()/generate(). Pinned now so F-c's native async
-        # adapters inherit a wrapper whose contract is already asserted.
+        # Mirrors complete()/generate().
         class _AsyncStub(base.LLMClient):
             provider_name = "stub"
 
@@ -815,8 +758,7 @@ class ClaudeResultTests(unittest.TestCase):
         )
         self.assertEqual(result.text, "Subject: Hi\n\nBody")
         self.assertEqual(result.provider, "claude")
-        # What we asked for vs what the provider says it served: an alias
-        # resolving to a dated snapshot is exactly why both are kept.
+        # Requested model vs what the provider says it served -- both kept.
         self.assertEqual(result.model, "claude-requested")
         self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
         self.assertEqual(result.input_tokens, 1200)
@@ -838,19 +780,12 @@ class ClaudeResultTests(unittest.TestCase):
         self.assertIsNone(result.response_model)
         self.assertIsNone(result.finish_reason)
         self.assertIsNone(result.raw_finish_reason)
-        # The distinction that matters downstream: a token histogram must see
-        # "no observation" here, not an observation of zero.
+        # "No observation", not an observation of zero.
 
 
 class ClaudeSdkShapeTests(unittest.TestCase):
-    """Pin the extraction against the SDK's REAL response types.
-
-    Every other Claude test here builds a ``mock.Mock`` response, which asserts
-    that we read the attributes we think we read — but would stay green forever
-    if ``anthropic`` renamed ``Usage.input_tokens``, while production silently
-    reported ``None``. The SDK is a pinned dependency and already installed, so
-    one test against the genuine article closes that gap cheaply.
-    """
+    """Pin the extraction against the SDK's REAL response types — Mocks would
+    stay green if ``anthropic`` renamed ``Usage.input_tokens``."""
 
     def _message(self, **overrides):
         fields = {
@@ -885,8 +820,7 @@ class ClaudeSdkShapeTests(unittest.TestCase):
         self.assertEqual(result.latency_s, 0.25)
 
     def test_a_dumped_response_reads_identically(self):
-        # with_raw_response / model_dump() turn the SDK's models into plain
-        # dicts. read_field exists so that shape isn't silently zeroed.
+        # with_raw_response / model_dump() turn the SDK's models into plain dicts.
         dumped = self._message().model_dump()
         result = claude_mod.ClaudeClient(model="m")._build_result(dumped, latency_s=0.1)
         self.assertEqual(result.text, "Subject: Hi\n\nBody")
@@ -927,8 +861,7 @@ class OpenAICompatibleResultTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_missing_metadata_degrades_to_none_not_an_error(self):
-        # The minimal legal body -- exactly what the pre-existing adapter tests
-        # mock. Metadata is best-effort; only the text is contractual.
+        # The minimal legal body: metadata is best-effort, only the text is contractual.
         result = self._generate({"choices": [{"message": {"content": "Generated copy"}}]})
         self.assertEqual(result.text, "Generated copy")
         self.assertIsNone(result.input_tokens)
@@ -939,17 +872,15 @@ class OpenAICompatibleResultTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_unusable_metadata_shapes_do_not_break_a_good_completion(self):
-        # A null usage block and a "choices" that isn't a list: neither is a
-        # reason to throw away a valid email.
+        # Neither shape is a reason to throw away a valid email.
         for payload in (
             {
                 "usage": None,
                 "model": None,
                 "choices": [{"message": {"content": "Generated copy"}}],
             },
-            # "choices" as a mapping keyed by index rather than a list. Nothing
-            # sends this, but the text chain still resolves, so the metadata
-            # readers must not be the thing that fails.
+            # Mapping-keyed "choices": the text chain still resolves, so the
+            # metadata readers must not be the thing that fails.
             {"choices": {0: {"message": {"content": "Generated copy"}}}},
         ):
             with self.subTest(payload=payload):
@@ -960,8 +891,7 @@ class OpenAICompatibleResultTests(unittest.TestCase):
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_half_a_usage_block_keeps_the_half_that_is_there(self):
-        # The interesting direction: a partial block must not cost us the count
-        # the provider DID send.
+        # A partial block must not cost us the count the provider DID send.
         result = self._generate(
             {
                 "usage": {"completion_tokens": 12},
@@ -985,8 +915,8 @@ class OpenAICompatibleResultTests(unittest.TestCase):
             }
         )
         self.assertEqual(result.cache_read_tokens, 512)
-        # OpenAI-compatible providers count cached tokens WITHIN prompt_tokens,
-        # so the two are not additive here (unlike Anthropic's).
+        # OpenAI-compatible providers count cached tokens WITHIN prompt_tokens
+        # (unlike Anthropic's), so the two are not additive.
         self.assertEqual(result.input_tokens, 980)
         self.assertIsNone(result.cache_write_tokens)
 
@@ -1034,13 +964,11 @@ class CryptoRoundTripTests(unittest.TestCase):
         self.assertEqual(crypto.decrypt_key(blob), plaintext)
 
     def test_ciphertext_differs_across_saves(self):
-        # Fernet embeds a random IV + timestamp, so encrypting the same
-        # plaintext twice must never produce identical ciphertext.
+        # Fernet embeds a random IV, so identical plaintexts encrypt differently.
         plaintext = "sk-ant-abcdef1234567890"
         first = crypto.encrypt_key(plaintext)
         second = crypto.encrypt_key(plaintext)
         self.assertNotEqual(first, second)
-        # Both still decrypt back to the same plaintext.
         self.assertEqual(crypto.decrypt_key(first), plaintext)
         self.assertEqual(crypto.decrypt_key(second), plaintext)
 
@@ -1058,7 +986,7 @@ class CryptoRoundTripTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Cache invalidation regression (MUS-32 step 7): a config save must not leave
+# Cache invalidation regression (MUS-32): a config save must not leave
 # get_llm_client() serving a stale client for the same provider.
 # ---------------------------------------------------------------------------
 
@@ -1114,9 +1042,8 @@ class CacheInvalidationRegressionTests(TestCase):
         self.assertEqual(client_a.model, "model-a")
         self.assertEqual(client_a.api_key, "key-a")
 
-        # Configuration B: SAME provider, different model + key. The old
-        # bug (@lru_cache keyed only on the provider string) would have kept
-        # serving client_a here.
+        # Configuration B: SAME provider, different model + key. The old bug
+        # (@lru_cache keyed only on the provider string) kept serving client_a.
         cfg.model = self.model_a2
         cfg.encrypted_api_key = crypto.encrypt_key("key-b")
         cfg.key_last_four = "ey-b"[-4:]
@@ -1156,8 +1083,7 @@ class ConfigTestEndpointTests(AuthenticatedAPITestCase):
         )
 
     def test_no_stored_or_env_key_maps_to_auth_error_kind(self):
-        # No LLMConfiguration row's key AND no provider env var set -- the
-        # test endpoint should report this as an "auth" failure, not crash.
+        # No stored key AND no env var -- reported as "auth", not a crash.
         LLMConfiguration.load(provider=self.provider, model=self.model, max_tokens=500)
         with mock.patch.dict(os.environ, {}, clear=True):
             resp = self.client.post("/api/llm/config/test/")
@@ -1208,8 +1134,7 @@ class ConfigTestEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.data["error_kind"], "rate_limit")
 
     def test_candidate_body_tests_an_unsaved_key_not_the_saved_one(self):
-        # Nothing saved yet (fresh clone) -- a candidate body must still be
-        # testable, using the key from the request, not "no configuration".
+        # Fresh clone: the candidate key from the request body must be testable.
         with mock.patch.object(claude_mod.ClaudeClient, "complete", return_value="pong") as mocked:
             resp = self.client.post(
                 "/api/llm/config/test/",
@@ -1230,9 +1155,8 @@ class ConfigTestEndpointTests(AuthenticatedAPITestCase):
         self.assertNotIn("sk-ant-unsaved-candidate", resp.content.decode())
 
     def test_candidate_body_does_not_leak_previously_saved_key_for_a_different_provider(self):
-        # A saved Claude config exists, but the candidate body asks to test
-        # a *different* provider with no key of its own and no env var set --
-        # this must not fall back to Claude's saved key.
+        # A candidate for a *different* provider with no key of its own must
+        # not fall back to Claude's saved key.
         other_provider = LLMProvider.objects.create(
             key="groq",
             label="Groq",

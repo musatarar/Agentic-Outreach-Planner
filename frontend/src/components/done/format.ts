@@ -1,16 +1,7 @@
 /**
- * Display formatting for /done (MUS-41).
- *
- * the frontend never calls `new Date()` to decide what "today"
- * is. Everything here takes an already-server-decided ISO string plus the
- * server's `timezone` from the response envelope, and only renders it. The one
- * place a clock is read at all is the undo countdown, which is
- * a display of an absolute server timestamp and never gates a request.
- *
- * Every formatter is timezone-explicit for the same reason: rendering
- * `status_changed_at` in the *browser's* zone would print `23:41` next to a
- * server day of `2026-07-28` for a reviewer in UTC-7, and the row would look
- * like it belonged to a different day than the page it is on.
+ * Display formatting for /done. Every formatter is timezone-explicit and only
+ * renders server-decided instants: the browser's zone would put a row on a
+ * different calendar day than the page it is on.
  */
 
 /** Intl throws RangeError on an unknown zone; never let that blank the page. */
@@ -59,11 +50,7 @@ export function formatDate(iso: string, timeZone: string): string {
   return withZone(iso, timeZone, { day: 'numeric', month: 'short' });
 }
 
-/**
- * `2026-07-28` for an instant, evaluated in the server's zone. This is the day
- * grouping key: grouping on the browser's calendar day would split one triage
- * session across two headings for anyone west of UTC.
- */
+/** `2026-07-28` day-grouping key for an instant, evaluated in the server's zone. */
 export function dayKey(iso: string, timeZone: string): string {
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return iso.slice(0, 10);
@@ -81,9 +68,8 @@ export function dayKey(iso: string, timeZone: string): string {
 }
 
 /**
- * `Tuesday, 28 July` from a bare `YYYY-MM-DD`. Anchored at noon UTC and
- * formatted in UTC so the calendar day can never roll backwards — the string
- * already *is* the server's answer, it just needs spelling out.
+ * `Tuesday, 28 July` from a bare `YYYY-MM-DD`, anchored at noon UTC and
+ * formatted in UTC so the calendar day can never roll backwards.
  */
 export function formatDayLabel(isoDate: string): string {
   const parsed = new Date(`${isoDate}T12:00:00Z`);

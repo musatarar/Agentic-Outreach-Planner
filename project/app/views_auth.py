@@ -1,32 +1,8 @@
-"""Magic-link sign-in endpoints (MUS-37).
+"""Magic-link sign-in endpoints: request-link, consume, logout, me (MUS-37).
 
-Four endpoints, pinned by contract MUS-35 section 5.1:
-
-* ``POST /api/auth/request-link/`` -- mint and deliver a link. Always 200.
-* ``POST /api/auth/consume/``      -- redeem it, establish the session.
-* ``POST /api/auth/logout/``       -- flush the session.
-* ``GET  /api/auth/me/``           -- who am I (401 when nobody).
-
-Why magic links at all: one operator, no roles, no invites. That means no
-password hashing, no reset flow, no credential rotation and no second factor
-to bolt on later -- strictly less code *and* strictly less risk than
-passwords for this product.
-
-Two properties in here are worth more than the rest of the module:
-
-**request-link is not an account-enumeration oracle.** The response is the
-same shape, the same status and (outside DEBUG+console) byte-identical
-whether or not the address is allowlisted, and the non-allowlisted branch
-burns an equivalent token generation + hash so wall-clock timing matches too.
-Rate limiting is applied by DRF *before* this view body runs, so a 429 cannot
-be used to enumerate either.
-
-**``dev_link`` leaking in production is a full auth bypass.** It is populated
-only when ``DEBUG`` is True *and* delivery is ``console`` *and* the address is
-allowlisted. All three, every time.
-
-New module rather than additions to ``views.py`` -- see contract section 8.1;
-that separation is the whole conflict-avoidance strategy for this wave.
+Two security invariants: request-link is not an account-enumeration oracle
+(identical response and wall-clock cost either way), and ``dev_link`` is
+populated only when DEBUG *and* console delivery *and* allowlisted.
 """
 
 from __future__ import annotations
@@ -60,9 +36,8 @@ NOT_AUTHENTICATED_DETAIL = "Authentication credentials were not provided."
 def _client_ip(request: Request) -> str | None:
     """Best-effort client IP for the audit columns.
 
-    ``REMOTE_ADDR`` only, deliberately: ``X-Forwarded-For`` is attacker-controlled
-    unless a trusted proxy is known to rewrite it, and ``requested_ip`` is
-    audit data that must never influence an authorization decision.
+    ``REMOTE_ADDR`` only: ``X-Forwarded-For`` is attacker-controlled, and this
+    value must never influence an authorization decision.
     """
     return request.META.get("REMOTE_ADDR") or None
 
@@ -75,15 +50,12 @@ def _iso_z(value: datetime) -> str:
 class AuthRequestLinkView(APIView):
     """``POST /api/auth/request-link/`` -- ask for a sign-in link.
 
-    Always 200 for a syntactically valid address. See the module docstring
-    for why that is not negotiable.
+    Always 200 for a syntactically valid address (see the module docstring).
     """
 
     permission_classes = [AllowAny]
-    # Two independent caps: per source IP (scoped, DRF's own) and per
-    # recipient address. Neither alone is enough -- see throttling.py. Both
-    # run in DRF's initial(), i.e. before the allowlist check below, so a 429
-    # cannot be used to enumerate the allowlist either.
+    # Per-IP and per-recipient caps, both applied before this view body runs
+    # so a 429 cannot enumerate the allowlist either -- see throttling.py.
     throttle_classes = [ScopedRateThrottle, LoginEmailRateThrottle]
     throttle_scope = "auth_request_ip"
     throttle_detail = "Too many login links requested."
@@ -106,8 +78,8 @@ class AuthRequestLinkView(APIView):
             if settings.DEBUG and settings.LOGIN_LINK_DELIVERY == login_links.DELIVERY_CONSOLE:
                 dev_link = issued.link
         else:
-            # No row, no delivery -- but the same CSPRNG draw and the same
-            # hash, so the two branches cost the same wall-clock time.
+            # No row, no delivery -- but the same CSPRNG draw and hash, so both
+            # branches cost the same wall-clock time.
             login_links.burn_discard_token()
 
         return Response(
@@ -124,10 +96,8 @@ class AuthRequestLinkView(APIView):
 class AuthConsumeView(APIView):
     """``POST /api/auth/consume/`` -- redeem a link and establish the session.
 
-    ``expired`` and ``invalid`` are distinguished on purpose: the sign-in page
-    needs a third state that offers "send me a new one" instead of "that link
-    is wrong". It is safe because holding a token already implies a link was
-    once issued; it says nothing about which addresses exist.
+    ``expired`` and ``invalid`` are distinguished on purpose so the page can
+    offer "send me a new one"; neither reveals which addresses exist.
     """
 
     permission_classes = [AllowAny]
@@ -147,13 +117,12 @@ class AuthConsumeView(APIView):
 
         email = login_token.email
         if not login_links.is_allowed(email):
-            # The allowlist can shrink between issue and redeem. Revoking
-            # access must not require hunting down outstanding links.
+            # Re-checked at redeem: the allowlist can shrink after issue.
             raise ContractError("invalid_token", INVALID_TOKEN_DETAIL)
 
         user = self._user_for(email)
-        # login() rotates the CSRF token (see contract section 9.12) -- the client
-        # must re-read the `csrftoken` cookie after this response.
+        # login() rotates the CSRF token -- the client must re-read the
+        # `csrftoken` cookie after this response.
         django_login(request, user)
 
         return Response(
@@ -169,10 +138,8 @@ class AuthConsumeView(APIView):
     def _user_for(email: str):
         """Fetch or create the Django user for an allowlisted address.
 
-        Created on first successful sign-in rather than up front, so the
-        allowlist stays the single source of truth about who may sign in and
-        there is no user table to keep in step with it. The password is
-        unusable: there is no password login path to attack.
+        Created on first sign-in so the allowlist stays the single source of
+        truth; the password is unusable because there is no password login path.
         """
         user_model = get_user_model()
         user = user_model.objects.filter(username=email).first()
@@ -185,11 +152,7 @@ class AuthConsumeView(APIView):
 
 
 class AuthLogoutView(APIView):
-    """``POST /api/auth/logout/`` -- flush the session.
-
-    POST rather than GET so CSRF applies: a GET logout is trivially triggered
-    by any third-party page embedding an image tag.
-    """
+    """``POST /api/auth/logout/`` -- flush the session. POST so CSRF applies."""
 
     permission_classes = [IsAuthenticated]
 
@@ -201,9 +164,8 @@ class AuthLogoutView(APIView):
 class AuthMeView(APIView):
     """``GET /api/auth/me/`` -- the route guard's one question.
 
-    ``AllowAny`` at the DRF level and raising the 401 by hand, so the frontend
-    can call it on every page load without the global 401 handler firing
-    recursively on its own probe.
+    ``AllowAny`` with a hand-raised 401, so the frontend's global 401 handler
+    does not fire recursively on its own probe.
     """
 
     permission_classes = [AllowAny]

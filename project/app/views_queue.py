@@ -1,16 +1,4 @@
-"""Triage queue API (MUS-39).
-
-Plain ``APIView`` throughout, matching the rest of this API: no routers, no
-ViewSets, no pagination. `GET /api/queue/` returns the whole queue in one call
-because it is tens of items, not thousands, and because the inbox owes a
-sub-120ms row advance with no spinner -- which is only achievable if advancing
-a row performs zero network requests.
-
-Errors use the contract's uniform envelope, ``{"code", "detail"}``, emitted
-directly by these views rather than left to MUS-37's exception handler: the
-codes are pinned per endpoint (section 5.3), and returning them here keeps the
-shape identical whether or not that handler is installed.
-"""
+"""Triage queue API (MUS-39)."""
 
 import datetime
 import hashlib
@@ -53,7 +41,7 @@ SNOOZE_HOUR = 9
 
 
 def error(code, detail, status_code):
-    """The one error shape in this API (section 5)."""
+    """The one error shape in this API."""
     return Response({"code": code, "detail": detail}, status=status_code)
 
 
@@ -80,25 +68,14 @@ def body_of(request):
 
 
 def queue_queryset():
-    """The base queryset for every queue read.
-
-    ``select_related("lead")`` plus ONE prefetch of the lead's events, ordered
-    in SQL and sliced in Python by the serializer. Slicing inside the Prefetch
-    queryset makes Django re-query per object, which is exactly how the
-    existing N+1 in ``_events_list`` would land in the hot path.
-    """
+    """The base queryset for every queue read."""
     return OutreachAction.objects.select_related("lead").prefetch_related(
         Prefetch("lead__events", queryset=Event.objects.order_by("-timestamp", "-id"))
     )
 
 
 def triage_day():
-    """(now, today, start, end) for the server's idea of "today".
-
-    The server decides the day boundary, in ``settings.TRIAGE_TIMEZONE``, and
-    returns it. A reviewer in UTC-7 clearing the queue at 6pm local would
-    otherwise see ``0 / 0 today`` if the frontend computed it (section 9.5).
-    """
+    """(now, today, start, end) for the server's idea of "today"."""
     tz = ZoneInfo(settings.TRIAGE_TIMEZONE)
     now = timezone.now()
     today = now.astimezone(tz).date()
@@ -130,19 +107,7 @@ def day_counts(start, end):
 
 
 def snooze_target(trigger, until_raw, now):
-    """Resolve a snooze trigger to ``(snooze_until, snooze_activity_after)``.
-
-    Returns ``(None, None)`` when a ``custom`` trigger is missing or in the
-    past -- the only user-supplied value here.
-
-    Every branch produces a non-NULL ``snooze_until``, including
-    ``on_activity``, which gets a backstop of
-    ``TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS``. "Come back when they actually
-    do something" for a lead that never does anything is indistinguishable from
-    a dismiss nobody chose, and a non-NULL
-    column means neither the unsnooze sweep nor the frontend ordering needs a
-    NULL branch.
-    """
+    """Resolve a snooze trigger to ``(snooze_until, snooze_activity_after)``."""
     tz = ZoneInfo(settings.TRIAGE_TIMEZONE)
 
     if trigger == OutreachAction.TRIGGER_CUSTOM:
@@ -173,11 +138,7 @@ def snooze_target(trigger, until_raw, now):
 
 
 class QueueBaseView(APIView):
-    """Authenticated by default.
-
-    Set explicitly rather than inherited from the global default MUS-37 adds,
-    so the queue is never accidentally public if that setting is reordered.
-    """
+    """Authenticated by default."""
 
     permission_classes = [IsAuthenticated]
 
@@ -260,10 +221,9 @@ class QueueDoneView(QueueBaseView):
 
 
 class QueueMutationView(QueueBaseView):
-    """POST /api/queue/{id}/<verb>/ -- one item, one lifecycle move.
+    """POST `/api/queue/{id}/<verb>/` -- one item, one lifecycle move.
 
-    Subclasses implement ``mutate``; the 404 and the auth check are handled
-    once, here.
+    Subclasses implement ``mutate``.
     """
 
     def post(self, request, pk, *args, **kwargs):
@@ -277,16 +237,7 @@ class QueueMutationView(QueueBaseView):
 
 
 class QueueEditView(QueueMutationView):
-    """POST /api/queue/{id}/edit/ -- persist a reviewer's edit of the copy.
-
-    ``suggested_copy`` is never written. The edit lands in ``edited_copy`` and
-    an OutreachEdit row records the before/after pair: that diff is the copy
-    eval corpus, and it only exists if the original survives.
-
-    ``{"copy": null}`` is "revert to original" -- it clears ``edited_copy`` and
-    still writes an OutreachEdit, because reverting is itself a judgement worth
-    keeping.
-    """
+    """POST /api/queue/{id}/edit/ -- persist a reviewer's edit of the copy."""
 
     def mutate(self, request, action):
         if action.status not in OutreachAction.EDITABLE_STATUSES:
@@ -310,9 +261,7 @@ class QueueEditView(QueueMutationView):
                     "`copy` must be a string or null.",
                     status.HTTP_400_BAD_REQUEST,
                 )
-            # Normalized BEFORE storage and before any offset is computed: a
-            # <textarea> submits \r\n, and Python counts that as two characters
-            # (section 9.1c).
+            # Normalized BEFORE storage and before any offset is computed
             new_copy = queue_copy.normalize_copy(raw)
             if not new_copy.strip():
                 return error(
@@ -341,18 +290,10 @@ class QueueEditView(QueueMutationView):
 
 
 class QueueVerifyView(QueueMutationView):
-    """POST /api/queue/{id}/verify/ -- a DRY RUN over candidate copy.
-
-    Nothing is persisted and no OutreachEdit is written; this backs live
-    re-verification while the reviewer types. The response echoes the exact
-    copy it verified so a debounced out-of-order reply can be discarded rather
-    than rendered over newer text (section 9.2).
-    """
+    """POST /api/queue/{id}/verify/ -- a DRY RUN over candidate copy."""
 
     # Picked up by the global ScopedRateThrottle in settings.REST_FRAMEWORK, so
-    # key repeat in the inline editor cannot hammer the verifier. The scope name
-    # must match a key in DEFAULT_THROTTLE_RATES or DRF raises
-    # ImproperlyConfigured -- there is no silently-inert middle state.
+    # key repeat in the inline editor cannot hammer the verifier.
     throttle_scope = "queue_verify"
     # Read by the contract exception handler to lead the 429 sentence.
     throttle_detail = "Too many verification requests."
@@ -395,8 +336,7 @@ class QueueApproveView(QueueMutationView):
                 status.HTTP_409_CONFLICT,
             )
 
-        # IsAuthenticated guarantees a session identity; defensive, because an
-        # approve_send decision with no recorded approver authorizes nothing.
+        # An approve_send decision with no recorded approver authorizes nothing.
         reviewer = editor_of(request)
         if not reviewer:
             return error(
@@ -417,10 +357,7 @@ class QueueApproveView(QueueMutationView):
             if latest is not None:
                 latest.committed = True
                 latest.save(update_fields=["committed"])
-            # The human decision dispatch() later re-verifies: who approved,
-            # when, and the exact bytes they approved, hash-bound. Re-approve
-            # after an undo creates a fresh live row (the old one is voided,
-            # so rd_one_live_send_per_action permits it).
+            # Record of human dispatch
             approved = action.effective_copy
             ReviewDecision.objects.create(
                 outreach_action=action,
@@ -435,12 +372,7 @@ class QueueApproveView(QueueMutationView):
 
 
 class QueueSnoozeView(QueueMutationView):
-    """POST /api/queue/{id}/snooze/ -- not skip.
-
-    Snooze carries a judgement about *when* the lead should come back, which is
-    the thing a reviewer actually wants to express and usually cannot.
-    Re-snoozing an already-snoozed item is allowed and refreshes both stamps.
-    """
+    """POST /api/queue/{id}/snooze/ -- not skip."""
 
     def mutate(self, request, action):
         if not action.can_transition_to(OutreachAction.STATUS_SNOOZED):
@@ -482,12 +414,7 @@ class QueueSnoozeView(QueueMutationView):
 
 
 class QueueDismissView(QueueMutationView):
-    """POST /api/queue/{id}/dismiss/ -- gone, and it does not come back.
-
-    Writes the suppression ledger row in the same transaction as the status
-    change, so a later plan_outreach() run cannot resurrect the recommendation
-    (and does not spend an LLM call discovering that).
-    """
+    """POST /api/queue/{id}/dismiss/ -- gone, and it does not come back."""
 
     def mutate(self, request, action):
         if not action.can_transition_to(OutreachAction.STATUS_DISMISSED):
@@ -523,11 +450,6 @@ class QueueDismissView(QueueMutationView):
                     "revoked_at": None,
                 },
             )
-            # Dismissal is the queue's rejection of an outbound send — recorded
-            # evidence (who, when), not just a status flip. No copy snapshot:
-            # nothing is authorized by a rejection. No collision with a live
-            # approval is possible — there is no approved→dismissed edge, so an
-            # approved action must undo (voiding its decision) first.
             ReviewDecision.objects.create(
                 outreach_action=action,
                 kind=ReviewDecision.KIND_REJECT_SEND,
@@ -538,11 +460,7 @@ class QueueDismissView(QueueMutationView):
         return Response(self.serialize(action, now=now), status=status.HTTP_200_OK)
 
 
-#: Statuses whose reversal is time-boxed. The undo window exists to catch a
-#: fat-fingered IRREVERSIBLE act -- an approve that put text on someone's
-#: clipboard, a dismiss that suppresses a recommendation permanently. Snooze is
-#: neither: it is a deferral, and bringing a deferred lead back early is a new
-#: decision rather than the correction of a mistake, so it is never time-boxed.
+#: Statuses that can be reversed
 UNDO_WINDOWED_STATUSES = (
     OutreachAction.STATUS_APPROVED,
     OutreachAction.STATUS_DISMISSED,
@@ -550,18 +468,7 @@ UNDO_WINDOWED_STATUSES = (
 
 
 class QueueUndoView(QueueMutationView):
-    """POST /api/queue/{id}/undo/ -- reverse the last decision.
-
-    Undoing a DISMISS also revokes the suppression, in the same transaction.
-    Without that the row goes back to pending and the UI looks perfectly
-    correct, while the ledger keeps suppressing -- so the next plan_outreach()
-    run, days later, quietly drops the lead (section 9.7).
-
-    Un-snoozing is deliberately NOT time-boxed. Capping it at the undo window
-    would leave `/done` showing an un-snooze control that is dead for every row
-    snoozed more than five minutes ago -- which, on a view that lists a whole
-    day's decisions, is nearly all of them.
-    """
+    """POST /api/queue/{id}/undo/ -- reverse the last decision."""
 
     def mutate(self, request, action):
         if action.status == OutreachAction.STATUS_PENDING:
@@ -585,9 +492,7 @@ class QueueUndoView(QueueMutationView):
                 )
 
         was_dismissed = action.status == OutreachAction.STATUS_DISMISSED
-        # Leaving approved or dismissed voids the send decision that state
-        # carried — symmetrically for both kinds. Voided rows stay for audit
-        # and never authorize; dispatch() checks voided_at IS NULL.
+
         leaves_send_decision = action.status in (
             OutreachAction.STATUS_APPROVED,
             OutreachAction.STATUS_DISMISSED,
@@ -609,8 +514,6 @@ class QueueUndoView(QueueMutationView):
             action.snooze_trigger = ""
             action.snooze_activity_after = None
             action.dismiss_reason = ""
-            # edited_copy and the OutreachEdit rows are deliberately untouched:
-            # undoing a decision is not undoing the writing.
             action.save(
                 update_fields=[
                     "status",

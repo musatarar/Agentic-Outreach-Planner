@@ -33,17 +33,9 @@ export interface InboxEmptyStateProps {
 }
 
 /**
- * The end of the queue.
- *
- * This is the payoff for the whole product and the screen someone screenshots,
- * so it gets real figures rather than a grey checkmark: how many drafts went
- * out, how much pipeline they touched, how long it took. The numbers are set
- * large in mono because they are machine output — the same voice as the rule
- * trace, which is what makes them read as *measured* rather than congratulatory.
- *
- * `queue_cleared` and `total` come from the server and select the state
- * directly. Array lengths are never consulted: a reviewer who cleared
- * the queue in another tab must still see the celebration here.
+ * The end of the queue. `queue_cleared` and `total` come from the server and
+ * select the state directly; array lengths are never consulted, so a queue
+ * cleared in another tab still shows the right state here.
  */
 export function InboxEmptyState({ summary, error }: InboxEmptyStateProps) {
   if (error) {

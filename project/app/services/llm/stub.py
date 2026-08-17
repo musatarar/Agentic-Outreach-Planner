@@ -1,44 +1,14 @@
 """A fake provider, for benchmarking the planner without calling anyone (MUS-26e).
 
-The concurrency work in MUS-26 is worth exactly as much as the wall-clock it
-saves, and measuring that against a real provider is useless: Groq's free tier
-is rate-limited, so a 200-lead run measures the throttle rather than the pool.
-This client sleeps for a configurable, seeded duration and returns a canned
-email, which makes the benchmark reproducible and free.
-
-**Two things this is careful about, because a fake provider is a very easy thing
-to get wrong in a way that flatters the number it produces.**
-
-*It returns a well-formed, grounded email*, not a placeholder. The planner runs
-two output gates on whatever comes back -- ``validate_copy`` (shape) and
-``verify.verify_copy`` (grounding) -- and both walk the text. A stub returning
-``"ok"`` would fail both, sending every lead down the short branch, and the
-benchmark would be timing a code path the demo never takes. So the canned copy
-interpolates the lead's real name and agency out of the prompt, carries a
-subject line, exactly one call to action, and a body inside the 60-200 word
-window, and makes no numeric claim the verifier could contradict.
-
-*It reports plausible token counts*, so MUS-25's token metric has something to
-record end to end rather than a hole where the interesting number goes.
-
-**It cannot be selected by accident.** Three independent things have to be true,
-and the first is the one that matters:
-
-1. ``get_llm_client()`` resolves the provider from an ``LLMConfiguration`` row
-   whose ``provider`` is a foreign key to a real ``LLMProvider`` row.
-   ``seed_llm_catalog`` creates exactly four, and "stub" is not among them --
-   so no database this project produces can point at it, and the Settings UI,
-   which lists providers from that same table, can never show it. (The old
-   ``LLM_CONFIG_PATH`` belt is gone along with ``config.toml``; this replaces
-   it, and is strictly stronger, because a file could be edited and a foreign
-   key cannot be satisfied by wishing.)
-2. ``StubClient.__init__`` raises unless ``OUTREACH_ALLOW_STUB_LLM=1``. Only
-   ``evals/bench_planner.py`` sets it.
-3. The benchmark reaches this class through ``build_client("stub")`` and injects
-   it directly, so even it never writes a "stub" row anywhere.
-
-It is registered in ``_REGISTRY`` anyway, so it is constructed by the same
-factory as every real adapter and cannot drift away from their interface.
+Sleeps for a configurable, seeded duration and returns a canned, grounded email
+with plausible token counts, so a benchmark measures the pool rather than a free
+tier's throttle -- and passes the planner's shape and grounding gates instead of
+timing a failure path. It cannot be selected by accident: ``seed_llm_catalog``
+never creates a "stub" provider row for a configuration to point at, and
+``__init__`` raises unless ``OUTREACH_ALLOW_STUB_LLM=1`` (only
+``evals/bench_planner.py`` sets it, and it injects the client directly). It is
+registered in ``_REGISTRY`` anyway, so it cannot drift from the real adapters'
+interface.
 """
 
 from __future__ import annotations
@@ -54,28 +24,23 @@ from .base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
 from .chat_types import Message, ToolCallRequest, ToolSpec
 from .errors import LLMRateLimitError, LLMTransientError
 
-# The gate. Deliberately an environment variable rather than a Django setting:
-# a setting would appear in `.env.example` and in the README's configuration
-# table, which is the opposite of what this needs.
+# The gate. An environment variable rather than a Django setting, which would
+# advertise itself in `.env.example` and the README configuration table.
 ALLOW_ENV_VAR = "OUTREACH_ALLOW_STUB_LLM"
 
-# Matches Groq's measured median in the committed copy-eval table (README:
-# "Latency (med) 1.87s"), so `--concurrency 1` reports a number in the same
-# neighbourhood as the real thing rather than an invented one.
+# Groq's measured median in the committed copy-eval table (README: "Latency
+# (med) 1.87s"), so `--concurrency 1` reports a realistic number.
 DEFAULT_LATENCY_MEAN_S = 1.87
 DEFAULT_LATENCY_STDDEV_S = 0.45
 
-# Never sleep less than this. A gaussian around 1.87 with a 0.45 spread has a
-# thin negative tail, and a negative sleep is an error rather than a fast call.
+# Floor: the gaussian has a thin negative tail, and a negative sleep is an error.
 MIN_LATENCY_S = 0.01
 
 PROVIDER_NAME = "stub"
 DEFAULT_MODEL = "stub-1"
 
-# Pulled out of the prompt so the canned email is about the actual lead. The
-# stub is handed a prompt and nothing else -- exactly like a real provider --
-# and that is the point: interpolating a name it had to *find* proves the
-# prompt-building phase ran, where a hardcoded "Hi there" would not.
+# Pulled out of the prompt so the canned email is about the actual lead --
+# interpolating a name it had to *find* proves the prompt-building phase ran.
 _CONTACT_RE = re.compile(r"^- Contact: ([^(\n]+?)\s*\(", re.MULTILINE)
 _AGENCY_RE = re.compile(r"^- Agency: ([^(\n]+?)\s*\(", re.MULTILINE)
 
@@ -90,8 +55,7 @@ class StubClient(LLMClient):
     ``latency_mean_s`` / ``latency_stddev_s`` shape a gaussian per call.
     ``rate_limit_rate`` and ``failure_rate`` are probabilities in ``[0, 1]`` of
     raising a retryable :class:`LLMRateLimitError` / :class:`LLMTransientError`
-    -- both retryable on purpose, so a benchmark run with them switched on
-    measures the retry path rather than turning into a run of failed leads.
+    -- retryable on purpose, so switching them on measures the retry path.
     ``seed`` makes all of it reproducible.
     """
 
@@ -121,11 +85,9 @@ class StubClient(LLMClient):
         self.latency_stddev_s = latency_stddev_s
         self.rate_limit_rate = rate_limit_rate
         self.failure_rate = failure_rate
-        # Its own Random, not the module-global one: a benchmark must not move
-        # the global stream out from under anything else in the process, and a
-        # seeded global would be a spooky action at a distance for whatever runs
-        # next. Note the *order* of draws still depends on task scheduling under
-        # concurrency, so a seed reproduces the distribution, not the sequence.
+        # Its own Random, not the module-global stream. Under concurrency the
+        # *order* of draws still follows task scheduling, so a seed reproduces
+        # the distribution, not the sequence.
         self._random = random.Random(seed)
         self.calls = 0
 
@@ -140,9 +102,8 @@ class StubClient(LLMClient):
     async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         latency_s = self._next_latency()
         self._maybe_fail()
-        # `asyncio.sleep`, not `time.sleep`. A stub that blocked the loop would
-        # report a peak concurrency of 1 and make the benchmark measure nothing
-        # -- which is the single most likely way for this file to quietly lie.
+        # `asyncio.sleep`, not `time.sleep`: blocking the loop would report a
+        # peak concurrency of 1 and make the benchmark measure nothing.
         await asyncio.sleep(latency_s)
         return self._result(prompt, latency_s)
 
@@ -156,13 +117,10 @@ class StubClient(LLMClient):
     ) -> LLMResult:
         """Scripted chat turn: one tool call first, then the canned email.
 
-        **Stateless on purpose.** Clients are ``lru_cache``d singletons shared
-        across every concurrently-running lead, so the script derives from the
-        *message list* — offered tools with no ``tool_result`` yet means "ask
-        for the first tool"; once any ``tool_result`` is present (or no tools
-        were offered), answer with the canned, grounded email. Replaying a
-        conversation replays the same response; eight interleaved leads cannot
-        pop each other's script entries because there is nothing to pop.
+        Stateless on purpose — clients are ``lru_cache``d singletons shared
+        across concurrent leads, so the script derives from the *message list*:
+        tools offered with no ``tool_result`` yet means "ask for the first
+        tool", otherwise answer with the canned email.
         """
         latency_s = self._next_latency()
         self._maybe_fail()
@@ -191,9 +149,8 @@ class StubClient(LLMClient):
         return max(MIN_LATENCY_S, self._random.gauss(self.latency_mean_s, self.latency_stddev_s))
 
     def _maybe_fail(self):
-        # Drawn once and compared twice against cumulative bands, so the two
-        # rates never interact: rate_limit_rate=0.5 with failure_rate=0.5 means
-        # half and half, not 0.5 then 0.5-of-the-rest.
+        # One draw compared against cumulative bands, so the two rates never
+        # interact: 0.5/0.5 means half and half, not 0.5 then 0.5-of-the-rest.
         draw = self._random.random()
         if draw < self.rate_limit_rate:
             raise LLMRateLimitError(
@@ -216,10 +173,8 @@ class StubClient(LLMClient):
             provider=self.provider_name,
             model=self.model,
             response_model=self.model,
-            # Roughly the four-characters-per-token rule the copy eval already
-            # uses for its estimate. Not exact, and not pretending to be -- the
-            # point is that the token metric records a plausible number rather
-            # than a None.
+            # The four-characters-per-token estimate the copy eval already uses
+            # -- plausible, not exact.
             input_tokens=max(1, len(prompt) // 4),
             output_tokens=max(1, len(text) // 4),
             finish_reason=FINISH_STOP,
@@ -231,17 +186,9 @@ class StubClient(LLMClient):
 def canned_email(prompt):
     """A well-formed, grounded outreach email for the lead named in ``prompt``.
 
-    Everything about the wording is chosen so the planner's two output gates do
-    real work on it and pass:
-
-    * a ``Subject:`` line and no preamble (shape gate);
-    * exactly one call-to-action sentence (shape gate -- the second-person
-      question at the end is the only one);
-    * a body between 60 and 200 words (shape gate);
-    * **no numeric claim at all** (grounding gate). The verifier's job is to
-      catch a model inventing "your 47 closed deals"; a stub that invented one
-      would route every benchmark lead to a human and turn the run into a
-      measurement of the failure path.
+    Worded to pass the planner's two output gates: a ``Subject:`` line with no
+    preamble, exactly one call-to-action sentence and a 60-200 word body (shape
+    gate), and no numeric claim at all (grounding gate).
     """
     contact = _first_group(_CONTACT_RE, prompt, "there")
     agency = _first_group(_AGENCY_RE, prompt, "your agency")

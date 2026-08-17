@@ -1,10 +1,6 @@
 """Pure-Python tests for the grounding verifier (project.app.services.verify).
 
-No Django, no database: leads are SimpleNamespace stubs mirroring the real data
-shape, exactly like tests_logic.py. The verifier itself makes no LLM calls.
-
-Run standalone:
-    ./venv/bin/python -m unittest project.app.tests_verify
+No Django, no database: leads are SimpleNamespace stubs, as in tests_logic.py.
 """
 
 import datetime
@@ -142,8 +138,7 @@ class CountTests(unittest.TestCase):
         self.assertIn("wrong_count", _kinds(v))
 
     def test_producer_comparison_not_flagged(self):
-        # "agencies with 50 producers" is a comparison, not a claim about *this*
-        # lead's team, so the count must not be flagged.
+        # A comparison, not a claim about this lead's team.
         v = _verify(_lead(num_producers=4), "Hi Priya,\nEven agencies with 50 producers struggle.")
         self.assertEqual(v, [])
 
@@ -157,8 +152,6 @@ class CountTests(unittest.TestCase):
         self.assertIn("wrong_count", _kinds(v))
 
     def test_milestone_target_not_flagged(self):
-        # Goals ("5-deal milestone", "1 deal short", "close 3 more deals") are
-        # not claims about the record, so they must not be flagged.
         lead = _lead(deals_closed=4)
         copy = "Hi Priya,\nYou're just 1 deal short of the 5-deal milestone — close 3 more deals!"
         self.assertEqual(_verify(lead, copy), [])
@@ -174,10 +167,8 @@ class CountTests(unittest.TestCase):
 
 
 class GoalContextTests(unittest.TestCase):
-    """A spaced milestone ("20 closed deals") appears verbatim in real HubSpot
-    notes (lead_001: "if she hits 20 closed deals") and is exactly what a
-    power-user email should echo, so goal-framed counts must not be flagged as
-    contradictions — while genuine achievement claims still are."""
+    """Goal-framed counts ("20 closed deals" as a target) are not contradictions, while
+    genuine achievement claims still are."""
 
     def setUp(self):
         # deals_closed=6 like lead_001; the milestone is 20.

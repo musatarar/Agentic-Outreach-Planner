@@ -22,9 +22,8 @@ export function ConsumePage() {
   const [code, setCode] = useState('');
   const [detail, setDetail] = useState('');
 
-  // A login token is single-use, so consuming it twice burns it. StrictMode
-  // double-invokes effects in development and the ref survives that simulated
-  // remount, which is exactly what this guard needs it to do.
+  // A login token is single-use, and StrictMode double-invokes effects in
+  // dev; the ref survives that simulated remount, so it guards the consume.
   const attempted = useRef(false);
 
   useEffect(() => {
@@ -39,9 +38,8 @@ export function ConsumePage() {
 
     consumeLoginToken({ token })
       .then(() => {
-        // Soft navigation is safe across the login boundary: client.ts reads
-        // the csrftoken cookie per request, so it picks up the rotated one
-        // Django set on this response.
+        // Safe across the login boundary: client.ts reads the csrftoken
+        // cookie per request, so it picks up the rotated one.
         navigate(takeDestination(), { replace: true });
       })
       .catch((error: unknown) => {
@@ -56,14 +54,13 @@ export function ConsumePage() {
   }, [token, navigate]);
 
   if (phase === 'failed' && TOKEN_CODES.has(code)) {
-    // State 03. It is a state of /signin, not a page of its own, because the
-    // only thing to do from a dead link is ask for another one.
+    // A state of /signin rather than a page of its own.
     return <SignInPage initialState="expired" expiredCode={code} />;
   }
 
   if (phase === 'failed') {
-    // Rate limiting, or the network. Showing "your link expired" here would be
-    // a plain lie, so the server's own sentence is shown instead.
+    // Rate limiting or the network — show the server's own sentence, not
+    // "your link expired".
     return (
       <AuthShell title="Could not sign you in">
         <h1 className="auth-title">Could not sign you in</h1>

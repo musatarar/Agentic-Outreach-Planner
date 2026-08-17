@@ -19,13 +19,7 @@ export interface ShortcutOverlayProps {
   onClose: () => void;
 }
 
-/**
- * The `?` overlay.
- *
- * A backstop, not the primary teaching surface — the chips in the header are
- * that, because a shortcut list you have to go looking for is a list nobody
- * learns from.
- */
+/** The `?` overlay — a backstop to the shortcut chips in the header. */
 export function ShortcutOverlay({ onClose }: ShortcutOverlayProps) {
   const closeButton = useRef<HTMLButtonElement | null>(null);
 

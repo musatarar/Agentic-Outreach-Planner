@@ -1,10 +1,5 @@
-"""Offline unit tests for the deterministic copy checks (evals/copy_checks.py).
-
-These are the "free, run first" structural checks the copy eval (MUS-21) applies
-before the LLM judge. They are pure functions -- no network, no provider key, no
-inspect-ai -- so they belong in the mocked Django/unittest suite and count
-toward coverage, exactly like tests_llm.py mocks the transport.
-"""
+"""Offline unit tests for the deterministic copy checks in ``evals/copy_checks.py`` —
+the structural checks the copy eval (MUS-21) applies before the LLM judge."""
 
 import unittest
 

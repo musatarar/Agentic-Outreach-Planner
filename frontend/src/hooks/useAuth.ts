@@ -4,14 +4,9 @@ import { fetchAuthMe } from '../api/endpoints';
 export type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 
 /**
- * Asks the server whether this browser has a session.
- *
- * `GET /api/auth/me/` is `AllowAny` and returns 401 itself, and
- * `client.ts` exempts the `/api/auth/` namespace from the global 401 handler —
- * so asking the question cannot trigger the redirect it is about to decide on.
- *
- * The session cookie is the credential and the browser sends it; there is
- * nothing for this hook to store, and nothing it could store safely.
+ * Asks the server whether this browser has a session. `client.ts` exempts
+ * `/api/auth/` from the global 401 handler, so asking cannot trigger the
+ * redirect it is about to decide on.
  */
 export function useAuth() {
   const [status, setStatus] = useState<AuthStatus>('checking');
@@ -26,10 +21,8 @@ export function useAuth() {
         setStatus(me.authenticated ? 'authenticated' : 'anonymous');
       })
       .catch(() => {
-        // 401 is the expected answer for a signed-out visitor, and a network
-        // failure is indistinguishable from it here. Treating both as
-        // "anonymous" fails towards the sign-in screen rather than towards a
-        // half-rendered app the user cannot act on.
+        // 401 and a network failure are indistinguishable here; both fail
+        // towards the sign-in screen.
         if (!cancelled) setStatus('anonymous');
       });
     return () => {

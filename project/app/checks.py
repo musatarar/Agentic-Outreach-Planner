@@ -1,8 +1,7 @@
 """Django system checks for project.app.
 
-Registered from AppConfig.ready() so they run on every ``manage.py`` command
-(via the system check framework) -- not just the first time an LLM call is
-made, which would let a misconfigured deploy silently boot.
+Registered from AppConfig.ready() so a misconfigured deploy fails at boot,
+not at first LLM call.
 """
 
 import os
@@ -16,13 +15,8 @@ from project.app.services.crypto import ENCRYPTION_KEY_ENV_VAR
 
 @register()
 def llm_key_encryption_check(app_configs, **kwargs):
-    """Fail loudly at boot if a stored LLM API key exists but
-    ``LLM_KEY_ENCRYPTION_KEY`` is unset -- that key would be undecryptable
-    and every LLM call would break at first use instead of at startup.
-
-    Guards all DB access: a fresh clone/CI run may not have migrations
-    applied yet (e.g. before `makemigrations`/first `migrate`), in which case
-    this check is a silent no-op rather than a crash.
+    """Fail at boot if a stored LLM API key exists but ``LLM_KEY_ENCRYPTION_KEY``
+    is unset -- the key would be undecryptable. Silent no-op before migrations.
     """
     if os.environ.get(ENCRYPTION_KEY_ENV_VAR):
         return []
@@ -61,16 +55,7 @@ def llm_key_encryption_check(app_configs, **kwargs):
 def planner_runtime_check(app_configs, **kwargs):
     """Range-check the MUS-26 planner knobs at boot, not at first run.
 
-    ``OUTREACH_MAX_ATTEMPTS=0`` or ``OUTREACH_BACKOFF_MULTIPLIER=0.5`` parse
-    perfectly well in ``settings.py``; nothing rejects them until the planner
-    resolves its configuration. Without this check a bad deploy passes CI, passes
-    ``manage.py check``, boots clean, and then hands an ``ImproperlyConfigured``
-    500 to whoever clicked "Run Outreach Plan" -- which is the exact failure
-    mode this module exists to prevent (see the module docstring).
-
-    No new validation lives here: it calls the accessor the planner calls, so
-    the check and the run can never disagree about what is valid, and the
-    message an operator reads is the same one either way.
+    Calls the same accessor the planner calls, so check and run cannot disagree.
     """
     from django.core.exceptions import ImproperlyConfigured
 
@@ -87,13 +72,8 @@ def planner_runtime_check(app_configs, **kwargs):
 def bulk_create_pk_check(app_configs, **kwargs):
     """The planner's phase 5 needs ``bulk_create`` to return primary keys.
 
-    Postgres always does (RETURNING); SQLite only from 3.35. On anything older
-    the run would still succeed -- and then the API would serialize
-    ``"id": null`` for every planned row, breaking the triage queue two screens
-    away from the cause. tests_planner_perf asserts pk population on the CI
-    legs, which both qualify; this check covers the deploys CI never sees.
-
-    Feature detection only -- no query, so it is safe before migrations.
+    Postgres always does; SQLite only from 3.35. Feature detection only -- no
+    query, so it is safe before migrations.
     """
     if connections["default"].features.can_return_rows_from_bulk_insert:
         return []

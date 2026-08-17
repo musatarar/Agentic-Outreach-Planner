@@ -1,9 +1,7 @@
 """Seed the LLM provider/model catalog (idempotent, safe to re-run).
 
-Model IDs and per-Mtok pricing were looked up from each provider's own docs
-at write time (Anthropic, OpenAI, DeepSeek, Groq) rather than copied from any
-prior spec -- these numbers drift, so re-verify against the vendor's pricing
-page before trusting them for a cost estimate months from now.
+Model IDs and per-Mtok pricing were read from each vendor's docs at write
+time and drift -- re-verify before trusting them for a cost estimate.
 """
 
 from decimal import Decimal

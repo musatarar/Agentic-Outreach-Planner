@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
 """LLM-judge copy quality eval runner + regression gate (MUS-21).
 
-Sibling of ``run_rules_eval.py``. Where that harness scores the *classifier*,
-this one scores the *generated copy*: it runs the Inspect task in
-``evals/copy_eval.py`` for **one configured provider**, aggregates deterministic
-checks + LLM-judge scores, writes a per-provider result artifact, and fails
-(exit 1) if quality regressed below the committed baseline.
-
-Key properties (see evals/README.md and the plan):
-
-* **LLM-agnostic, single provider per run.** Generation and judging both flow
-  through the repo's database-backed provider layer. Nothing is hardcoded, and a
-  run only ever calls the provider you configured (active, or ``--provider``).
-* **The comparison table is assembled from separate runs.** Run once per
-  provider; ``--table`` renders the Markdown table from whatever
-  ``evals/results/copy-*.json`` artifacts exist.
+Runs the Inspect task in ``evals/copy_eval.py`` for one configured provider,
+writes a per-provider result artifact, and exits 1 if quality regressed below
+the committed baseline. LLM-agnostic: a run only ever calls the provider you
+configured, and the comparison table (``--table``) is assembled from separate
+per-provider runs. Requires the provider's API key in the environment.
 
 Usage::
 
-    python evals/run_copy_eval.py                       # gate active provider vs baseline
-    python evals/run_copy_eval.py --provider claude     # gate a specific configured provider
-    python evals/run_copy_eval.py --update-baseline     # (re)write this provider's baseline
-    python evals/run_copy_eval.py --limit 6             # quick smoke test (fewer leads)
-    python evals/run_copy_eval.py --table               # print the README comparison table
-
-Requires the provider's API key in the environment (e.g. GROQ_API_KEY); a
-provider whose key is missing fails fast with a clear message.
+    python evals/run_copy_eval.py [--provider p] [--update-baseline] [--limit N] [--table]
 """
 
 import argparse
@@ -52,8 +36,7 @@ PRICING_PATH = EVALS_DIR / "pricing.toml"
 LOG_DIR = EVALS_DIR / ".inspect-logs"
 TODAY = "2026-06-12"  # frozen date the golden leads are relative to (see run_rules_eval)
 
-# Regression tolerances. Generation is non-deterministic (every run produces
-# different emails), so exact-match gating would flap -- these bands absorb
+# Regression tolerances: generation is non-deterministic, so these bands absorb
 # run-to-run noise while still catching a real drop.
 DET_TOLERANCE = 0.10  # deterministic pass-rate points (0-1)
 JUDGE_TOLERANCE = 0.5  # judge score points (1-5 scale)
