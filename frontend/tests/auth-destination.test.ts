@@ -28,17 +28,17 @@ test('a remembered path is handed back once, then forgotten', () => {
   rememberDestination('/inbox?lead=12');
   assert.equal(takeDestination(), '/inbox?lead=12');
   // Second read must not replay it — a later sign-in belongs on the default.
-  assert.equal(takeDestination(), '/inbox');
+  assert.equal(takeDestination(), '/leads/');
 });
 
-test('the default destination is /inbox', () => {
-  assert.equal(takeDestination(), '/inbox');
+test('the default destination is /leads/', () => {
+  assert.equal(takeDestination(), '/leads/');
 });
 
 test('/signin is never remembered as a destination', () => {
   // Otherwise a 401 raised while already on the sign-in screen would loop.
   rememberDestination('/signin');
-  assert.equal(takeDestination(), '/inbox');
+  assert.equal(takeDestination(), '/leads/');
 });
 
 test('off-origin destinations are refused', () => {
@@ -50,7 +50,7 @@ test('off-origin destinations are refused', () => {
   ]) {
     store.clear();
     rememberDestination(hostile);
-    assert.equal(takeDestination(), '/inbox', `should have refused ${hostile}`);
+    assert.equal(takeDestination(), '/leads/', `should have refused ${hostile}`);
   }
 });
 
@@ -58,7 +58,7 @@ test('a hostile value already in storage is refused on read', () => {
   // Storage is attacker-writable from any script on the origin, so the check
   // has to hold on the way out as well as on the way in.
   store.set('auth:destination', '//evil.example');
-  assert.equal(takeDestination(), '/inbox');
+  assert.equal(takeDestination(), '/leads/');
 });
 
 test('no token or credential is written to storage', () => {
