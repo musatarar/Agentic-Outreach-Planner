@@ -6,6 +6,7 @@ import { SignOutButton } from './SignOutButton';
 // have none, the four legacy routes do, and a mismatch here 404s on hard
 // refresh even though client-side navigation looks fine.
 const LINKS = [
+  { to: '/leads/', label: 'Leads' },
   { to: '/inbox', label: 'Inbox' },
   { to: '/done', label: 'Done' },
   { to: '/', label: 'Planner' },

@@ -26,6 +26,16 @@ def next_actions(request):
 
 
 @ensure_csrf_cookie
+def leads(request):
+    """Render the leads table shell — the page signing in lands on.
+
+    Public like every other shell: it renders an empty #root and holds no data,
+    and access control is the client-side guard in RequireAuth.tsx.
+    """
+    return render(request, "app/leads.html")
+
+
+@ensure_csrf_cookie
 def settings(request):
     """Render the Settings page (LLM provider/model/API key selection)."""
     return render(request, "app/settings.html")

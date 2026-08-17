@@ -16,7 +16,7 @@ interface LeadGroup {
 
 /** Group by lead, preserving the API's newest-first order within each group. */
 function groupByLead(actions: OutreachAction[]): LeadGroup[] {
-  const groups = new Map<number, LeadGroup>();
+  const groups = new Map<string, LeadGroup>();
   for (const action of actions) {
     const group = groups.get(action.lead.id);
     if (group) {

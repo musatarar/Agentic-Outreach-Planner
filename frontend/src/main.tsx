@@ -6,6 +6,7 @@ import { ConsumePage } from './pages/ConsumePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DonePage } from './pages/DonePage';
 import { InboxPage } from './pages/InboxPage';
+import { LeadsPage } from './pages/LeadsPage';
 import { PlannerPage } from './pages/PlannerPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -22,6 +23,7 @@ createRoot(root).render(
         <Route path="/signin" element={<SignInPage />} />
         <Route path="/auth/consume" element={<ConsumePage />} />
         <Route path="/" element={<RequireAuth><PlannerPage /></RequireAuth>} />
+        <Route path="/leads/" element={<RequireAuth><LeadsPage /></RequireAuth>} />
         <Route path="/inbox" element={<RequireAuth><InboxPage /></RequireAuth>} />
         <Route path="/done" element={<RequireAuth><DonePage /></RequireAuth>} />
         <Route path="/reports/" element={<RequireAuth><ReportsPage /></RequireAuth>} />

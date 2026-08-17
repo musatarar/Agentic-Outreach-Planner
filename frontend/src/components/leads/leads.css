@@ -1,0 +1,154 @@
+/* Leads table.
+   Imported from LeadsPage.tsx; vite folds it into the single assets/index.css.
+   A separate file for the same reason inbox.css is one: frontend/src/styles.css
+   belongs to MUS-36 and this is the only surface that needs these rules.
+
+   Tokens only. No hex literal appears below, and none may be added.
+
+   The type rule inherited from the inbox: mono is machine output. Lead ids,
+   book sizes and dates are mono; agency and contact names are not. */
+
+.leads-count {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* Non-fatal: the leads loaded, the queue did not. Amber rather than red —
+   nothing is broken, some badges are just missing. */
+.leads-warning {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-p2-border);
+  border-radius: var(--radius-md);
+  background: var(--color-p2-bg);
+  color: var(--color-p2-fg);
+  font-size: var(--text-sm);
+}
+
+/* Six columns do not fit a phone. Scroll the table, never the page. */
+.leads-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.leads-table {
+  width: 100%;
+  min-width: 46rem;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+/* Announced to screen readers, not painted: the arrow in the header is
+   invisible to them and "sorted by what?" is the first question they'd ask. */
+.leads-table__caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.leads-table thead th {
+  text-align: left;
+  padding: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
+  white-space: nowrap;
+}
+
+/* The whole header cell is the hit target, not just the word inside it. */
+.leads-table__sort {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.leads-table__sort:hover {
+  color: var(--color-accent);
+}
+
+.leads-table__sort:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.leads-table__num .leads-table__sort {
+  justify-content: flex-end;
+}
+
+/* Reserved so the row does not shift by a character when sorting changes. */
+.leads-table__arrow {
+  display: inline-block;
+  min-width: 0.75em;
+}
+
+.leads-table th:last-child {
+  padding: var(--space-3) var(--space-4);
+}
+
+.leads-table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+  vertical-align: top;
+  color: var(--color-text);
+}
+
+.leads-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.leads-table tbody tr:hover {
+  background: var(--color-surface-hover);
+}
+
+.leads-table__num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.leads-table__agency,
+.leads-table__contact {
+  display: block;
+  font-weight: var(--weight-medium);
+}
+
+.leads-table__id {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--color-text-subtle);
+}
+
+.leads-table__email {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.leads-table__idle {
+  color: var(--color-text-subtle);
+}
