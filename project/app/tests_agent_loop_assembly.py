@@ -1,13 +1,8 @@
 """Component artifact: assembly (MUS-29) — the acceptance criteria as tests.
 
-A run produces an inspectable trace per lead, survives a mid-run kill without
-losing or duplicating work, and the agent gathers context without gaining
-authority: crash-then-resume, contested claims, the resume endpoint, and the
-red-team fencing of tool results.
-
-``_tool_result``/``_final`` are module-level copies of the same-named helpers in
-tests_agent_loop_loop.py (LLMResult builders; component modules do not import
-each other).
+Crash-then-resume, contested claims, the resume endpoint, and red-team fencing of
+tool results. ``_tool_result``/``_final`` duplicate tests_agent_loop_loop.py's helpers
+because component modules do not import each other.
 """
 
 import dataclasses
@@ -32,9 +27,7 @@ from project.app.services.llm.runtime import get_planner_runtime
 from project.app.services.llm.stub import canned_email
 from project.app.tests_auth_utils import AuthenticatedAPITestCase
 
-# Same channel as tests_planner_async._agency_of: phase 3 hands the client only a
-# prompt, whose trusted section carries "- Agency: SYNTH-NNN", and _seed_leads
-# below pairs agency SYNTH-NNN with id lead_NNN.
+# The prompt is the only channel to the client; _seed_leads pairs SYNTH-NNN with lead_NNN.
 _AGENCY_IN_PROMPT = re.compile(r"^- Agency: (SYNTH-\d+)", re.MULTILINE)
 
 
@@ -67,8 +60,7 @@ def _final(text="Subject: Hi\n\nBody."):
 
 
 def _seed_leads(count):
-    """Seed leads exactly as tests_planner_async._make_leads does: ids
-    lead_000.., agencies SYNTH-000.., stage demo_completed with no signup date —
+    """Seed leads lead_000../SYNTH-000.. at stage demo_completed with no signup date —
     the one date-independent classification (complete_onboarding)."""
     return [
         Lead.objects.create(
@@ -108,9 +100,8 @@ class _ScriptedChatClient(LLMClient):
 
 
 class _OutageChatClient(LLMClient):
-    """The provider is up but refusing every call — the shape a rate-limited or
-    unauthenticated run takes. `LLMError` is a value on the agent path, so each
-    run checkpoints `failed` and phase 5 writes a failed-generation row."""
+    """Refuses every call with a non-retryable auth error: each run checkpoints
+    ``failed`` and phase 5 writes a failed-generation row."""
 
     provider_name = "fake"
 
@@ -127,12 +118,7 @@ class _OutageChatClient(LLMClient):
 
 
 class _RateLimitedChatClient(LLMClient):
-    """Every call draws a 429 — a free tier meeting OUTREACH_MAX_IN_FLIGHT.
-
-    Unlike `_OutageChatClient`'s auth failure this one is *retryable*, so the
-    loop spends its whole budget before giving up, which is the case whose
-    accounting the review row reports.
-    """
+    """Every call draws a retryable 429, so the loop spends its whole retry budget."""
 
     provider_name = "groq"
 
@@ -176,10 +162,8 @@ class CrashResumeTests(TestCase):
         _seed_leads(3)
 
     def _fake_chat(self, crash_after=None):
-        # Two chat calls per lead (one tool call, then a final): 3 leads = 6
-        # calls total. crash_after=4 serves calls 1-4 then raises KILL, so under
-        # any interleaving of the bounded pool at least one lead has persisted
-        # its `final` step and at least one has not.
+        # Two chat calls per lead, 3 leads = 6; crash_after=4 guarantees at least one
+        # lead finished and at least one did not, under any pool interleaving.
         return _ScriptedChatClient(
             {
                 lead_id: [_tool_result(), _final(f"Subject: Hi\n\nBody for {lead_id}.")]
@@ -215,8 +199,7 @@ class CrashResumeTests(TestCase):
         resumed = self._fake_chat()  # fresh client, fresh counter
         with mock.patch.object(outreach, "get_llm_client", return_value=resumed):
             outreach.plan_outreach(resume_run_id=run_id)
-        # (a) finished leads were replayed from the log, not re-billed — no chat
-        #     call on resume may target a lead whose run was already done:
+        # (a) finished leads were replayed from the log, not re-billed:
         for call in resumed.chat_calls:
             lead_id = _lead_of(call["messages"][0].content)
             self.assertNotIn(lead_id, done_before)
@@ -268,16 +251,8 @@ class CrashResumeTests(TestCase):
         )
 
     def test_resume_recovers_a_run_checkpointed_terminal_before_the_crash(self):
-        """MB2: `failed` and `exhausted` are outside NON_TERMINAL_STATUSES, so
-        the claim CAS matches zero rows for a run that checkpointed one of them
-        and then died before finalize wrote its `OutreachAction`. That surfaces
-        as AgentClaimLost, which phase 5 drops — and nothing ever resets a
-        terminal run, so the lead is lost from this resume and every later one.
-
-        The contract defines AgentClaimLost as "another worker won ... whose own
-        finalize writes this lead's row". Here no worker ever writes it, and the
-        lead would have produced a needs_human row in the non-crash flow.
-        """
+        """A run left terminal (``failed``/``exhausted``) with no ``OutreachAction`` is
+        still recovered by resume rather than silently dropped."""
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         client = self._fake_chat(crash_after=0)  # every call dies: runs exist, no steps
         with mock.patch.object(outreach, "get_llm_client", return_value=client):
@@ -286,9 +261,7 @@ class CrashResumeTests(TestCase):
         run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
         self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 0)
 
-        # The durable checkpoints that committed before the process died: one
-        # lead's provider call failed, another ran out of its step budget.
-        # Neither reached phase 5, so neither has a row to show for it.
+        # Terminal checkpoints that committed before the crash, neither with a row.
         app_models.AgentLeadRun.objects.filter(trace_run_id=run_id, lead_id="lead_000").update(
             status=app_models.AgentLeadRun.STATUS_FAILED
         )
@@ -309,22 +282,8 @@ class CrashResumeTests(TestCase):
                 )
 
     def test_resume_after_a_provider_outage_replaces_the_failure_rows(self):
-        """Found by running the app against a rate-limiting provider: every lead
-        failed, phase 5 wrote the failed-generation rows that tell the reviewer
-        "re-run the planner once the provider recovers" — and the re-run deleted
-        all of them and wrote nothing back.
-
-        Phase 5 supersedes failed-generation rows by design
-        (`failed_generation_filter`), but the leads behind them are dropped from
-        the rows to write, because their runs are terminal and the claim CAS
-        refuses them. Delete plus drop equals a lead that silently leaves the
-        queue — strictly worse than the stale row it replaced, and the exact
-        instruction the reviewer was given turns into data loss.
-
-        A row recording a failed attempt is therefore *not* the "already
-        finalized" that must be left alone: phase 5 itself treats it as
-        replaceable.
-        """
+        """Resuming after an outage replaces the failed-generation rows with real
+        drafts; no lead leaves the queue."""
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         with mock.patch.object(outreach, "get_llm_client", return_value=_OutageChatClient()):
             outreach.plan_outreach()
@@ -340,8 +299,6 @@ class CrashResumeTests(TestCase):
         with mock.patch.object(outreach, "get_llm_client", return_value=recovered):
             outreach.plan_outreach(resume_run_id=run_id)
 
-        # No lead leaves the queue, and each now carries the draft the re-run
-        # was told to go and fetch.
         self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 3)
         for lead_id in ("lead_000", "lead_001", "lead_002"):
             with self.subTest(lead_id=lead_id):
@@ -349,17 +306,14 @@ class CrashResumeTests(TestCase):
                 self.assertNotEqual(action.suggested_copy, "")
 
     def test_resume_leaves_a_terminal_run_that_already_finalized_alone(self):
-        """The reset is conditioned on having no row, not on being terminal:
-        a run that did reach phase 5 is finished work, and re-running it would
-        re-bill the provider for a row the resume must not write twice."""
+        """A terminal run that already wrote its row is left alone — nothing re-billed."""
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         client = self._fake_chat()
         with mock.patch.object(outreach, "get_llm_client", return_value=client):
             outreach.plan_outreach()
         run_id = app_models.AgentLeadRun.objects.values_list("trace_run_id", flat=True).first()
         self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 3)
-        # A run that finalized and was *then* marked failed (a checkpoint that
-        # lost a race with its own finalize) still has nothing owed to it.
+        # A run that finalized and was *then* marked failed still has nothing owed to it.
         app_models.AgentLeadRun.objects.filter(trace_run_id=run_id, lead_id="lead_000").update(
             status=app_models.AgentLeadRun.STATUS_FAILED
         )
@@ -380,9 +334,7 @@ class CrashResumeTests(TestCase):
             "resume_run_id", inspect.signature(outreach.plan_outreach).parameters
         )  # red at skeleton
         fields = {f.name for f in dataclasses.fields(agent_loop.AgentOutcome)}
-        # attempts/elapsed_s are retry accounting, not classification: they feed
-        # phase 4's "gave up after N attempt(s) over Ns" sentence and nothing
-        # else reads them. The authority this guard protects is still absent.
+        # attempts/elapsed_s are retry accounting, not classification.
         self.assertEqual(
             fields,
             {"draft_text", "error", "steps_used", "tool_calls_used", "attempts", "elapsed_s"},
@@ -399,18 +351,7 @@ class CrashResumeTests(TestCase):
     COPY_VERIFY_LEVEL="off",
 )
 class AgentFailureReportingTests(TestCase):
-    """Found by running the app against a rate-limiting provider.
-
-    Every review row read "Copy generation gave up after 0 attempt(s) over
-    0.0s" while the loop had in fact spent its entire retry budget on each
-    lead. The sentence exists to tell a reviewer this is provider noise rather
-    than work; "0 attempts over 0.0s" tells them the opposite — that nothing was
-    even tried — and points whoever investigates at a retry loop that is
-    working correctly.
-
-    The numbers are carried, not recomputed: `AgentOutcome` is the only thing
-    that crosses from the loop back to phase 3.
-    """
+    """The review row reports the attempts the agent run actually spent, not zero."""
 
     @classmethod
     def setUpTestData(cls):
@@ -426,11 +367,8 @@ class AgentFailureReportingTests(TestCase):
         self.assertTrue(action.needs_human)
         self.assertIn("gave up after 3 attempt(s)", action.further_action)
         self.assertNotIn("0 attempt(s)", action.further_action)
-        # Elapsed is asserted at the unit level (tests_agent_loop_loop) rather
-        # than here: with a fake provider and the backoff overridden to zero,
-        # three attempts really do take under 0.05s, so this row would say
-        # "over 0.0s" truthfully and the assertion would be about how fast the
-        # test double is.
+        # Elapsed is asserted at the unit level (tests_agent_loop_loop): with zeroed
+        # backoff this row would truthfully say "over 0.0s".
 
 
 class RedTeamFencingTests(TestCase):
@@ -488,8 +426,7 @@ class RedTeamFencingTests(TestCase):
 
 class RuntimeDefaultTests(SimpleTestCase):
     def test_agent_is_disabled_by_default_so_merged_code_is_inert(self):
-        """The bench (evals/bench_planner.py) and every existing mock seam keep
-        driving the single-shot path until an operator opts in."""
+        """The agent flag defaults off, so merged code keeps taking the single-shot path."""
         runtime = get_planner_runtime()
         self.assertTrue(hasattr(runtime, "agent_enabled"))  # red at skeleton
         self.assertFalse(runtime.agent_enabled)
@@ -508,18 +445,8 @@ class ResumeEndpointTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.json()["error"], "unknown_run")
 
     def test_resume_with_the_agent_flag_off_is_refused_rather_than_replanned(self):
-        """MB3: the view gates resume purely on `AgentLeadRun` rows existing,
-        never on the flag, and those rows survive a crash. Every piece of resume
-        machinery — run lookup, prior steps, claims, the already-finalized
-        filter — sits inside `if runtime.agent_enabled:`, while the telemetry
-        layer reuses the supplied run id and stamps it on every new row.
-
-        So a crash with the flag on followed by an operator flipping it off and
-        restarting (a natural incident response) re-bills every lead
-        single-shot, including ones a flag-on resume would have replayed from
-        the log at zero cost, and then serves the crashed agent run's step log
-        as the provenance of a draft that was written single-shot.
-        """
+        """Resuming an agent run with the flag off 400s rather than re-billing every
+        lead single-shot under the crashed run's id."""
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         _seed_leads(2)
         with (
@@ -544,9 +471,6 @@ class ResumeEndpointTests(AuthenticatedAPITestCase):
             )
 
         self.assertEqual(client.copy_calls, 0)  # nothing re-billed single-shot
-        # Nor mislabelled: a row stamped with the crashed agent run's id makes
-        # the trace endpoint serve that run's step log as this draft's
-        # provenance, for a draft the agent never wrote.
         self.assertEqual(OutreachAction.objects.filter(trace_run_id=run_id).count(), 0)
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "agent_disabled")
@@ -554,10 +478,7 @@ class ResumeEndpointTests(AuthenticatedAPITestCase):
 
 @override_settings(OUTREACH_AGENT_ENABLED=True)
 class ResumeValidationTests(TestCase):
-    """FU-A: the guards belong at the mechanism, not only at the one view that
-    happens to reach it. `plan_outreach` is importable, scriptable and called
-    directly by tests and scripts; a guard only the view enforces is a guard
-    the next caller does not get."""
+    """``plan_outreach`` enforces the resume guards itself, not just the view."""
 
     @classmethod
     def setUpTestData(cls):

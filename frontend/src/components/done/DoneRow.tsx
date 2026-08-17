@@ -20,11 +20,8 @@ export interface DoneRowProps {
 }
 
 /**
- * One thing you did today: who, where, what it was, what happened, when.
- *
- * The timestamp is `status_changed_at` — when you actioned it, not when the
- * planner created it. `created_at` is only a fallback so a row can never
- * render a blank time.
+ * One thing you did today. The timestamp is `status_changed_at` — when you
+ * actioned it, not when the planner created it; `created_at` is the fallback.
  */
 export function DoneRow({ item, timeZone, onUndo, undoState }: DoneRowProps) {
   const actionedAt = item.status_changed_at ?? item.created_at;
@@ -40,8 +37,7 @@ export function DoneRow({ item, timeZone, onUndo, undoState }: DoneRowProps) {
           <span className="done-row__contact">{item.lead.contact_name}</span>
           <span className="done-row__agency">{item.lead.agency_name}</span>
         </p>
-        {/* action_label is server-rendered prose for the action type; the FE
-            never reconstructs it from action_type. */}
+        {/* Server-rendered prose; never reconstructed from action_type. */}
         <p className="done-row__action">{item.action_label}</p>
         <p className="done-row__outcome">{describeOutcome(item, timeZone)}</p>
 
@@ -58,10 +54,8 @@ export function DoneRow({ item, timeZone, onUndo, undoState }: DoneRowProps) {
         </time>
 
         <div className="done-row__actions">
-          {/* Clipboard contents get lost constantly. Re-copying an approved
-              draft should not mean finding the lead again. `effective_copy` is
-              the server's answer to "edited or suggested?" — the FE never
-              branches on edited_copy. */}
+          {/* `effective_copy` is the server's answer to "edited or
+              suggested?" — the FE never branches on edited_copy. */}
           {item.status === 'approved' && (
             <CopyButton text={item.effective_copy} label="Copy again" />
           )}

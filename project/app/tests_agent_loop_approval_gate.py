@@ -1,9 +1,7 @@
 """Component artifact: approval_gate (MUS-29).
 
-"Nothing sends without a recorded human approval" is a tested property, not
-prose — these are those tests: the hash-bound one-shot dispatch gate, the
-queue-recorded send decisions (approve/dismiss/undo), and the serializer
-surface that keeps send decisions out of the triage endpoint.
+Nothing sends without a recorded human approval: the hash-bound one-shot dispatch gate,
+queue-recorded send decisions, and the serializer that keeps them out of triage.
 """
 
 import hashlib
@@ -144,8 +142,7 @@ class DispatchGateTests(AuthenticatedAPITestCase):
             dispatch.dispatch(action)
 
     def test_dismiss_records_a_reject_send_decision(self):
-        """Dismissal is the queue's recorded rejection of an outbound send —
-        reviewer identity and timestamp, not just a status flip."""
+        """Dismissal records a reviewer-attributed rejection, not just a status flip."""
         self.assertTrue(hasattr(ReviewDecision, "KIND_REJECT_SEND"))  # red at skeleton
         action = _pending_action()
         resp = self._dismiss(action)
@@ -177,18 +174,8 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         self.assertEqual(live.status, ReviewDecision.STATUS_RESOLVED)
 
     def test_a_send_is_never_recorded_against_an_approval_voided_before_it_commits(self):
-        """MB1: liveness and hash equality are facts about the instant the send
-        commits, so the checks that establish them must run inside the
-        transaction that consumes them — not before it.
-
-        The interleave is the one the queue explicitly supports and documents:
-        undo voids the live decision and returns the action to pending, an edit
-        changes the bytes, and re-approve mints a fresh live decision over the
-        new copy. The action is `approved` again, so the CAS still wins — but
-        against a *different* approval than the one dispatch() checked. The send
-        that results must be attributed to the approval that is live when it
-        commits, over the bytes that are current when it commits.
-        """
+        """A send is attributed to the approval live when it commits, over the bytes
+        current when it commits — undo/edit/re-approve interleaved inside the window."""
         action = _pending_action()
         self.assertEqual(self._approve(action).status_code, 200)
         action.refresh_from_db()
@@ -231,9 +218,8 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         self.assertEqual(record.body_sha256, live.approved_body_sha256)
 
     def test_a_void_with_no_reapproval_blocks_the_send_and_rolls_the_cas_back(self):
-        """The other half: when the window closes on a void that is *not*
-        followed by a fresh approval, there is nothing live to attribute the
-        send to, so the CAS must roll back rather than mark the action sent."""
+        """A void with no fresh approval leaves nothing live, so the CAS rolls back
+        rather than marking the action sent."""
         action = _pending_action()
         self.assertEqual(self._approve(action).status_code, 200)
         action.refresh_from_db()
@@ -261,9 +247,8 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         self.assertEqual(action.status, OutreachAction.STATUS_APPROVED)  # CAS rolled back
 
     def test_dispatch_binds_the_send_to_the_live_decision_it_reverified(self):
-        """The re-read must not over-block: an untouched approval still sends,
-        and the recorded `OutboundSend` points at the decision that authorized
-        it — the row an auditor follows back to a named human."""
+        """An untouched approval still sends, and the ``OutboundSend`` points at the
+        decision that authorized it."""
         action = _pending_action()
         self.assertEqual(self._approve(action).status_code, 200)
         action.refresh_from_db()
@@ -279,8 +264,7 @@ class DispatchGateTests(AuthenticatedAPITestCase):
         self.assertEqual(record.body_sha256, live.approved_body_sha256)
 
     def test_unverified_claims_still_block_approval_with_a_409(self):
-        """Regression: the queue's existing fail-closed check is upstream of the
-        new decision write — a blocked approve records nothing."""
+        """A fail-closed approve 409s and records no decision."""
         self.assertTrue(hasattr(ReviewDecision, "KIND_APPROVE_SEND"))  # red at skeleton
         action = _pending_action()
         OutreachAction.objects.filter(pk=action.pk).update(

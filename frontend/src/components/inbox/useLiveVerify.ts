@@ -16,24 +16,13 @@ export interface LiveVerifyResult {
 }
 
 /**
- * Re-verify edited copy while the user types, so the underlines answer back.
- *
- * Editing a number to something the record does not support should turn its
- * underline red immediately — that feedback is the whole reason inline editing
- * is worth building rather than shipping a plain textarea.
- *
- * Two edges.2 are load-bearing:
- *
- *  - `POST /verify/` is a dry run; nothing is persisted. Only `/edit/` commits.
- *  - The response **echoes the exact copy it verified**. If that no longer
- *    matches the textarea, the reply is an out-of-order debounced request and
- *    is discarded rather than rendered. Rendering it would draw spans computed
- *    against one string over the text of another, which is precisely the class
- *    of bug that puts a green underline under a number nobody checked.
+ * Re-verify edited copy while the user types. `POST /verify/` is a dry run —
+ * only `/edit/` persists. The response echoes the exact copy it verified; if
+ * that no longer matches the textarea it is an out-of-order debounced reply
+ * and is discarded, never rendered against newer text.
  */
 export function useLiveVerify(
-  // Nullable so the caller can keep the hook call unconditional while the queue
-  // is still loading or has drained.
+  // Nullable so the hook call stays unconditional while the queue loads/drains.
   itemId: number | null,
   committedReport: VerificationReport | null,
   draft: string,
@@ -43,13 +32,11 @@ export function useLiveVerify(
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // What the textarea holds *right now*, readable from inside an async callback
-  // that closed over an older value.
+  // The textarea's current value, readable from inside stale async closures.
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
-  // Monotonic request token: a slow reply that has been superseded by a newer
-  // one must not win, even if it happens to still match the draft.
+  // Monotonic request token: a superseded slow reply must not win.
   const latestRequest = useRef(0);
 
   // A new lead, or a fresh committed report from /edit/, resets the overlay.
@@ -61,8 +48,7 @@ export function useLiveVerify(
   useEffect(() => {
     if (!active || itemId === null || committedReport === null) return;
     if (draft === committedReport.copy) {
-      // Back to exactly what the server last verified — the committed report is
-      // already correct, so there is nothing to ask.
+      // Back to what the server last verified — nothing to ask.
       setLiveReport(null);
       setError(null);
       return;

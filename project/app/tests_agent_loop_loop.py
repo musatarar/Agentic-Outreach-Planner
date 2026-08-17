@@ -1,11 +1,7 @@
 """Component artifact: loop (MUS-29).
 
-Pins the bounded tool-calling loop and its event-sourced checkpoint: a gapless
-persisted step trace per lead, resume-after-final replay with zero re-billed
-provider calls, budget exhaustion forcing one toolless final call, epoch-CAS
-claim semantics (fresh runs claimable, terminal runs refused, a lost claim
-surfaces as ``AgentClaimLost`` with nothing written), and the ``execute_tool``
-span that carries content hashes but never payloads.
+Pins the bounded tool-calling loop and its event-sourced checkpoint: gapless step
+traces, free resume, budget exhaustion, epoch-CAS claims, and the ``execute_tool`` span.
 """
 
 import asyncio
@@ -157,14 +153,8 @@ class RunAgentLeadTests(TestCase):
     OUTREACH_MAX_ATTEMPTS=3, OUTREACH_INITIAL_BACKOFF_S=0.0, OUTREACH_MAX_BACKOFF_S=0.0
 )
 class AgentFailureAccountingTests(TestCase):
-    """What the reviewer's failure sentence is built from.
-
-    ``_describe_failure`` renders "gave up after {attempts} attempt(s) over
-    {elapsed}s", and those two numbers are the whole difference between a row a
-    reviewer reads as noise and one they read as work. The single-shot path
-    counts them in ``agenerate_copy``; the agent path has to count them here,
-    because ``AgentOutcome`` is the only thing that crosses back to phase 3.
-    """
+    """``AgentOutcome`` carries the attempt count and elapsed time the reviewer's
+    failure sentence is built from."""
 
     @classmethod
     def setUpTestData(cls):
@@ -200,15 +190,12 @@ class AgentFailureAccountingTests(TestCase):
         outcome = self._run(client)
 
         self.assertIsInstance(outcome.error, LLMRateLimitError)
-        # The budget was spent, so the sentence must say so. Reporting 0 here
-        # tells a reviewer the run never tried.
         self.assertEqual(len(client.chat_calls), 3)  # OUTREACH_MAX_ATTEMPTS
         self.assertEqual(outcome.attempts, 3)
         self.assertGreater(outcome.elapsed_s, 0.0)
 
     def test_a_failure_that_was_not_retried_reports_its_single_attempt(self):
-        """One attempt is still one, not zero: "gave up after 0 attempts" and
-        "gave up after 1 attempt" describe different bugs to whoever reads it."""
+        """A non-retryable failure reports one attempt, not zero."""
         client = _RefusingChatClient(LLMAuthError("bad key", provider="groq"))
         outcome = self._run(client)
 
@@ -234,10 +221,8 @@ class CheckpointClaimTests(TestCase):
         )
 
     def test_claim_succeeds_on_fresh_runs_and_refuses_terminal_ones(self):
-        """Instance-symmetric: either Checkpoint claims a fresh run, and neither
-        can claim a run that already reached a terminal status — cover both
-        orders. (The same-epoch two-CAS single-winner race is pinned at the ORM
-        level in tests_agent_loop_agent_models.)"""
+        """Either Checkpoint instance claims a fresh run, and neither claims a terminal
+        one. (The same-epoch single-winner race is pinned in tests_agent_loop_agent_models.)"""
         self.assertTrue(hasattr(app_models, "AgentLeadRun"))  # red at skeleton
         for order in ("ab", "ba"):
             with self.subTest(order=order):

@@ -26,17 +26,9 @@ export interface RuleTraceProps {
 }
 
 /**
- * The machine's arithmetic, in mono, one line per condition.
- *
- * This is the highest-leverage block on the card. The prose `reason` is not
- * rendered anywhere near it — showing a sentence and its own evidence side by
- * side invites the reader to trust the sentence. The trace doubles as the audit
- * trail, and it means "why did this surface?" is never a question anyone has to
- * ask.
- *
- * Passed conditions sit at full text colour and failed ones recede to
- * `--color-text-subtle`, so the shape of the reasoning is legible before a
- * single line is read.
+ * The machine's arithmetic, one line per condition. The prose `reason` is
+ * deliberately not rendered alongside it. Passed conditions sit at full text
+ * colour, failed ones recede to `--color-text-subtle`.
  */
 export function RuleTrace({ trace, queueDate }: RuleTraceProps) {
   const stale = isStaleTrace(trace, queueDate);

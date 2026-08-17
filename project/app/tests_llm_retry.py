@@ -1,10 +1,7 @@
 """Tests for the shared retry policy (MUS-46).
 
-``asyncio.sleep`` and ``random.uniform`` are injected rather than patched
-globally, and the stub for ``uniform`` returns the top of its range. That makes
-these assertions about the *bounds the policy produces* — which is the actual
-contract — instead of about a seeded PRNG's output, which would change silently
-under a Python upgrade and send someone hunting a retry bug that isn't there.
+``sleep`` and ``rand`` are injected, with the rand stubs pinned to the bottom or top of
+each range, so the assertions are about the bounds the policy produces.
 """
 
 import asyncio
@@ -14,12 +11,7 @@ from project.app.services.llm import errors, retry
 
 
 class _RecordingScope:
-    """A context manager standing in for a per-attempt telemetry span.
-
-    Records the three things such a span sees: it opens, it may be handed the
-    successful result, and it closes with whatever exception (if any) ended the
-    attempt.
-    """
+    """Stands in for a per-attempt telemetry span, recording enter, result and exit."""
 
     def __init__(self, attempt, events):
         self.attempt = attempt
@@ -77,9 +69,7 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(policy.multiplier, 2.0)
 
     def test_one_attempt_is_legal_zero_is_not(self):
-        # max_attempts counts TOTAL attempts, not retries. 1 means "call once,
-        # surface whatever happens"; 0 would mean never calling the provider,
-        # which is never what anyone meant.
+        # max_attempts counts TOTAL attempts, not retries.
         self.assertEqual(retry.RetryPolicy(max_attempts=1).max_attempts, 1)
         with self.assertRaises(ValueError):
             retry.RetryPolicy(max_attempts=0)
@@ -90,9 +80,7 @@ class RetryPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             retry.RetryPolicy(max_backoff_s=-1)
         with self.assertRaises(ValueError):
-            # A multiplier below 1 would make each wait SHORTER than the last,
-            # which is the opposite of backoff.
-            retry.RetryPolicy(multiplier=0.5)
+            retry.RetryPolicy(multiplier=0.5)  # below 1 shortens each wait
 
 
 class BackoffTests(unittest.TestCase):
@@ -102,10 +90,7 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(ceilings, [0.5, 1.0, 2.0, 4.0, 4.0, 4.0])
 
     def test_jitter_is_full_not_a_nudge(self):
-        # Full jitter means the wait is uniform over [0, ceiling] -- two workers
-        # that fail at the same instant must be able to come back at genuinely
-        # unrelated times. A schedule of "ceiling plus a small random nudge"
-        # would keep them in lockstep, which is the failure this prevents.
+        # Full jitter: the wait is uniform over [0, ceiling], not ceiling plus a nudge.
         policy = retry.RetryPolicy(initial_backoff_s=1.0, multiplier=2.0, max_backoff_s=30.0)
         self.assertEqual(retry.backoff_seconds(2, policy, rand=_bottom_of_range), 0.0)
         self.assertEqual(retry.backoff_seconds(2, policy, rand=_top_of_range), 4.0)
@@ -113,34 +98,25 @@ class BackoffTests(unittest.TestCase):
     def test_retry_after_wins_on_magnitude(self):
         policy = retry.RetryPolicy(initial_backoff_s=0.5, multiplier=2.0, max_backoff_s=60.0)
         # Provider said 30s; the exponential ceiling for attempt 0 is 0.5s.
-        # The header is real information about when the window reopens.
         self.assertEqual(
             retry.backoff_seconds(0, policy, retry_after=30.0, rand=_bottom_of_range), 30.0
         )
 
     def test_retry_after_still_gets_jitter_on_top(self):
-        # The failure mode this exists for: eight workers all receive
-        # `Retry-After: 30`, all sleep exactly thirty seconds, all wake in the
-        # same millisecond and re-throttle each other. Observed on Groq's free
-        # tier, which is this repo's default provider.
+        # Otherwise every worker handed the same Retry-After wakes in lockstep.
         policy = retry.RetryPolicy(max_backoff_s=60.0)
         spread = retry.backoff_seconds(0, policy, retry_after=30.0, rand=_top_of_range)
         self.assertEqual(spread, 30.0 + retry.RETRY_AFTER_JITTER_FRACTION * 30.0)
         self.assertGreater(spread, 30.0)
 
     def test_retry_after_is_capped_by_the_policy_at_both_ends_of_the_jitter(self):
-        # Asserted at BOTH ends on purpose. With the jitter stub pinned to the
-        # bottom of its range this passes even when the jitter is computed off
-        # the raw header instead of the capped base -- which is how a
-        # 300s Retry-After against a 30s cap turns into a 105s sleep while a
-        # green test insists max_backoff_s is a bound.
+        # Both ends: at the bottom of the range the jitter's base is invisible.
         policy = retry.RetryPolicy(max_backoff_s=10.0)
         lowest = retry.backoff_seconds(0, policy, retry_after=300.0, rand=_bottom_of_range)
         highest = retry.backoff_seconds(0, policy, retry_after=300.0, rand=_top_of_range)
 
         self.assertEqual(lowest, 10.0)
         self.assertEqual(highest, 10.0 + retry.RETRY_AFTER_JITTER_FRACTION * 10.0)
-        # The invariant the cap is supposed to give, stated directly.
         self.assertLessEqual(
             highest, policy.max_backoff_s * (1 + retry.RETRY_AFTER_JITTER_FRACTION)
         )
@@ -152,10 +128,7 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         self.attempts = 0
 
     def _operation(self, *outcomes):
-        """A coroutine function yielding ``outcomes`` in order.
-
-        An exception outcome is raised; anything else is returned.
-        """
+        """A coroutine function yielding ``outcomes`` in order; exceptions are raised."""
         queue = list(outcomes)
 
         async def operation():
@@ -193,9 +166,6 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sleep.calls, [1.0, 2.0])
 
     async def test_non_retryable_raises_on_attempt_one_with_no_sleep(self):
-        # The whole point of the taxonomy at the call site. A missing API key
-        # used to cost six attempts and ~40 seconds to produce the message it
-        # already had.
         operation = self._operation(errors.LLMAuthError("no key"), "never reached")
         with self.assertRaises(errors.LLMAuthError):
             await self._run(operation)
@@ -207,8 +177,7 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(errors.LLMTransientError):
             await self._run(operation, policy=retry.RetryPolicy(max_attempts=3))
         self.assertEqual(self.attempts, 3)
-        # Three attempts means two waits -- never a sleep after the last one,
-        # which would delay the failure without any chance of changing it.
+        # Three attempts means two waits — never a sleep after the last one.
         self.assertEqual(len(self.sleep.calls), 2)
 
     async def test_a_single_attempt_policy_does_not_retry(self):
@@ -225,8 +194,6 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sleep.calls, [20.0 + retry.RETRY_AFTER_JITTER_FRACTION * 20.0])
 
     async def test_non_llm_exceptions_are_not_retried(self):
-        # A bug on our side is not a provider blip. Retrying it would turn one
-        # stack trace into the same stack trace, four times as slowly.
         operation = self._operation(ValueError("our bug"), "never reached")
         with self.assertRaises(ValueError):
             await self._run(operation)
@@ -234,10 +201,7 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sleep.calls, [])
 
     async def test_attempt_scope_opens_and_closes_once_per_attempt(self):
-        # The seam MUS-25 opens a per-HTTP-attempt span from, so this module
-        # never has to import anything telemetry-shaped. Every attempt must end
-        # exactly once -- including the SUCCESSFUL last one, which a pair of
-        # enter/on-error callbacks would silently leave open.
+        # Every attempt ends exactly once, including the successful last one.
         events = []
         operation = self._operation(errors.LLMTransientError("503"), "ok")
         await self._run(operation, attempt_scope=lambda n: _RecordingScope(n, events))
@@ -248,10 +212,7 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
                 ("enter", 0, None),
                 ("exit", 0, errors.LLMTransientError),
                 ("enter", 1, None),
-                # The successful attempt hands its result to the scope BEFORE
-                # closing. Without this a per-attempt span could only ever
-                # describe failures -- the inverse of what is wanted, since the
-                # token counts and served model only exist on success.
+                # The successful attempt hands its result to the scope before closing.
                 ("result", 1, "ok"),
                 ("exit", 1, None),
             ],
@@ -270,9 +231,7 @@ class CallWithRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1], ("exit", 0, errors.LLMAuthError))
 
     async def test_cancellation_during_backoff_is_not_retried(self):
-        # CancelledError does not derive from Exception in 3.12, and is not an
-        # LLMError, so `except LLMError` cannot swallow it. Pinned because a
-        # retry helper that swallows cancellation makes a run un-killable.
+        # A retry helper that swallows cancellation makes a run un-killable.
         async def cancelling_sleep(seconds):
             raise asyncio.CancelledError
 

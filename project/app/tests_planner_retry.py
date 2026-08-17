@@ -1,19 +1,7 @@
 """Retries, and what the review queue says when they run out (MUS-26c).
 
-This is the ticket's actual complaint. The review queue is a *finite* list of
-things a human has to decide, and its whole value is that everything in it is
-work. A 429 from a free tier used to land there looking exactly like "no
-automated outreach pattern matched" -- same `needs_human`, same shape of
-sentence about this lead -- so a reviewer had no way to tell a provider's bad
-thirty seconds from a real judgement call, and learned to skim.
-
-Two things fix that, and both are tested here: the 429 is **retried** rather
-than escalated at all, and when retries genuinely run out the row says whose
-problem it is.
-
-Every test drives the real `agenerate_copy` -- the stub is a fake `LLMClient`,
-one layer below. Patching `agenerate_copy` (as the pool tests do) would skip the
-retry loop entirely, which is the thing under test.
+Every test drives the real `agenerate_copy`; the stub is a fake `LLMClient` one
+layer below, since patching `agenerate_copy` would skip the retry loop itself.
 """
 
 import asyncio
@@ -49,27 +37,19 @@ GOOD_COPY = (
     "Best,\nDana"
 )
 
-# Backoff is switched off rather than shortened. `initial_backoff_s=0` makes
-# `random.uniform(0, 0)` return 0 for every attempt, so these tests exercise the
-# retry *count* deterministically without sleeping and without depending on a
-# seeded PRNG. The schedule itself is tested in the retry helper's own suite.
+# Backoff switched off, not shortened: `initial_backoff_s=0` makes every jitter
+# draw 0, so these tests pin the retry *count* without sleeping. The schedule
+# itself is tested in the retry helper's own suite.
 NO_SLEEP = {"OUTREACH_INITIAL_BACKOFF_S": 0.0, "OUTREACH_MAX_BACKOFF_S": 0.0}
 
 
 class _ScriptedClient:
-    """A provider that fails on cue and counts how often it was asked.
-
-    Duck-typed rather than an ``LLMClient`` subclass: the only surface the retry
-    path touches is ``agenerate``, and a subclass would drag in the abstract
-    ``generate`` for no benefit here.
-    """
+    """A provider that fails on cue and counts how often it was asked."""
 
     provider_name = "groq"
 
     def __init__(self, *errors, then=GOOD_COPY):
-        # `errors` is the script: one entry per attempt, consumed in order. When
-        # it runs out, `then` is returned -- so `_ScriptedClient(rate_limit(),
-        # rate_limit())` means "fail twice, then succeed".
+        # One entry per attempt, consumed in order; `then` is returned after.
         self.script = list(errors)
         self.then = then
         self.attempts = 0
@@ -89,11 +69,8 @@ class _ScriptedClient:
 class _HangingClient:
     """A provider that answers far too late, for the per-lead budget.
 
-    A *bounded* sleep, not `asyncio.Event().wait()`. With an unbounded wait,
-    deleting the `asyncio.timeout` makes this suite HANG rather than fail --
-    and `.github/workflows/ci.yml` sets no `timeout-minutes`, so that would
-    burn GitHub's 360-minute default and report as a cancelled job instead of a
-    red test. Thirty seconds is far past every deadline these tests set.
+    A *bounded* sleep, so deleting the `asyncio.timeout` fails this suite
+    rather than hanging CI. Thirty seconds is past every deadline set here.
     """
 
     provider_name = "groq"
@@ -163,16 +140,8 @@ class RateLimitIsRetriedTests(TestCase):
     """The ticket's acceptance criterion, in one test."""
 
     def test_rate_limit_is_retried_not_escalated(self):
-        """**This is MUS-26's literal acceptance criterion**: *"Rate limits are
-        retried, not reported as needing human review."*
-
-        Two 429s then a success. The lead must come out of the run with copy and
-        `needs_human = False` -- indistinguishable from a lead the provider
-        answered first time, because from a reviewer's point of view it *is*
-        indistinguishable. The attempt count is asserted too: without it, a
-        planner that silently gave up and a planner that retried twice both
-        satisfy "needs_human is False" as long as some copy exists.
-        """
+        """MUS-26's acceptance criterion: rate limits are retried, not reported
+        as needing human review. Two 429s then a success, attempt count pinned."""
         _lead()
         client = _ScriptedClient(rate_limit(), rate_limit(), then=GOOD_COPY)
 
@@ -199,11 +168,8 @@ class RateLimitIsRetriedTests(TestCase):
         self.assertEqual(client.attempts, 2)
 
     def test_a_hostile_retry_after_header_cannot_park_the_run(self):
-        # `retry_after` wins on magnitude over the configured backoff, but is
-        # capped by OUTREACH_MAX_BACKOFF_S -- which is 0 here, so a 300-second
-        # header costs this test nothing. The cap is the assertion (a run that
-        # honoured the raw header would hang for five minutes); whether the
-        # header is honoured *at all* is the retry helper's own suite.
+        # `retry_after` is capped by OUTREACH_MAX_BACKOFF_S, which is 0 here, so
+        # a 300-second header costs this test nothing. The cap is the assertion.
         _lead()
         client = _ScriptedClient(rate_limit(retry_after=300.0))
 
@@ -231,21 +197,16 @@ class ExhaustedRetriesTests(TestCase):
         self.assertTrue(action.needs_human)
         self.assertEqual(action.suggested_copy, "")
 
-        # Asserted against the constant, never a literal: a test that hard-codes
-        # this wording keeps passing while the three messages drift back into
-        # each other, which is the exact regression this component exists to
-        # prevent. Only the wall-clock seconds are matched loosely -- `re.escape`
-        # leaves the alphanumeric sentinel intact, so it survives to be swapped
-        # for a number pattern.
+        # Asserted against the constant, never a literal. Only the wall-clock
+        # seconds are matched loosely: `re.escape` leaves the alphanumeric
+        # sentinel intact, so it survives to be swapped for a number pattern.
         sentinel = "ELAPSEDSECONDS"
         expected = outreach.COPY_RETRIES_EXHAUSTED.format(
             attempts=3,
             elapsed=sentinel,
             provider="groq",
             kind=outreach.FAILURE_KINDS[LLMRateLimitError],
-            # `_safe_detail` punctuates, so the provider's bare message
-            # arrives with a full stop rather than running into the next
-            # sentence.
+            # `_safe_detail` punctuates, hence the trailing full stop.
             detail="Rate limit reached.",
             action_type=actions.COMPLETE_ONBOARDING,
         )
@@ -253,12 +214,7 @@ class ExhaustedRetriesTests(TestCase):
 
     @override_settings(OUTREACH_MAX_ATTEMPTS=2)
     def test_it_says_the_lead_is_not_the_problem(self):
-        """The sentence a reviewer actually acts on.
-
-        Everything else in this row -- the priority, the action type, the reason
-        -- is still correct and still worth acting on later. Saying so is what
-        stops the row being read as "this lead is broken".
-        """
+        """The message says the failure is the provider's, not the lead's."""
         _lead()
         client = _ScriptedClient(rate_limit(), then=rate_limit())
 
@@ -274,8 +230,7 @@ class ExhaustedRetriesTests(TestCase):
 
     @override_settings(OUTREACH_MAX_ATTEMPTS=4)
     def test_the_attempt_count_in_the_message_is_the_real_one(self):
-        # Four configured attempts, all refused. A message that said "1 attempt"
-        # would understate the effort and read like the run gave up instantly.
+        # Four configured attempts, all refused.
         _lead()
         client = _ScriptedClient(*[rate_limit()] * 3, then=rate_limit())
 
@@ -310,8 +265,7 @@ class NonRetryableFailureTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        # Exactly one attempt. Hammering an endpoint with a bad key burns the
-        # retry budget and, on some providers, earns a longer lockout.
+        # Exactly one attempt: retrying a bad key earns a longer lockout.
         self.assertEqual(client.attempts, 1)
         action = OutreachAction.objects.get()
         self.assertTrue(action.needs_human)
@@ -334,11 +288,7 @@ class NonRetryableFailureTests(TestCase):
         )
 
     def test_the_two_failure_messages_are_visibly_different(self):
-        """A reviewer must be able to tell them apart at a glance.
-
-        Both are "no copy, needs_human". The only thing separating them is the
-        prose, so the prose has to actually separate them.
-        """
+        """Both rows are "no copy, needs_human", so only the prose separates them."""
         self.assertNotEqual(outreach.COPY_RETRIES_EXHAUSTED, outreach.COPY_FAILED_PERMANENTLY)
         self.assertIn("transient provider failure", outreach.COPY_RETRIES_EXHAUSTED)
         self.assertIn("engineer should look at", outreach.COPY_FAILED_PERMANENTLY)
@@ -360,10 +310,7 @@ class PerLeadBudgetTests(TestCase):
         with _with_client(client):
             planned = plan_outreach()
 
-        # The run finished at all, which is the point: without the outer
-        # deadline this test would hang, holding 1 of OUTREACH_MAX_IN_FLIGHT
-        # slots -- and in production, 1/N of the run's throughput -- for as long
-        # as the provider cared to stay silent.
+        # The run finished at all: without the outer deadline it would hang.
         self.assertEqual(len(planned), 1)
         action = OutreachAction.objects.get()
         self.assertTrue(action.needs_human)
@@ -373,9 +320,8 @@ class PerLeadBudgetTests(TestCase):
     @override_settings(
         OUTREACH_REQUEST_TIMEOUT_S=0.05,
         OUTREACH_PER_LEAD_TIMEOUT_S=0.2,
-        # A pool of ONE. With the default 8 both leads get a slot regardless, so
-        # the test would pass even if the expiring timeout leaked its semaphore.
-        # At 1, the healthy lead can only be served if the slow one released.
+        # A pool of ONE: the healthy lead can only be served if the expiring
+        # slow one released its semaphore slot.
         OUTREACH_MAX_IN_FLIGHT=1,
     )
     def test_one_slow_lead_does_not_take_the_others_down(self):
@@ -383,9 +329,8 @@ class PerLeadBudgetTests(TestCase):
         _lead("lead_fine")
         clients = {"lead_slow": _HangingClient(), "lead_fine": _ScriptedClient()}
 
-        # One client for the whole run, so the slow/fast split has to come from
-        # the prompt -- exactly as it does in production, where phase 3 holds no
-        # lead object.
+        # One client for the whole run, so the slow/fast split comes from the
+        # prompt, as in production where phase 3 holds no lead object.
         class _Router:
             provider_name = "groq"
 
@@ -413,12 +358,8 @@ class MessagesStayDistinctTests(TestCase):
     """The pin. These three rows must never read the same again."""
 
     def test_the_unmatched_classification_message_is_unchanged(self):
-        """Real BD work, and its wording predates this component.
-
-        Pinned deliberately: the temptation when adding failure messages is to
-        "harmonise" them all, and this one must not move. It is the only one of
-        the four that describes something a reviewer can actually decide.
-        """
+        """This wording predates the component and must not be harmonised with
+        the failure messages -- it is the one describing a real decision."""
         lead = _unmatched_lead()
 
         planned = plan_outreach()
@@ -432,11 +373,7 @@ class MessagesStayDistinctTests(TestCase):
         self.assertIn("no automated outreach pattern matched", planned[0].further_action)
 
     def test_a_rate_limited_lead_and_an_unmatched_lead_do_not_read_alike(self):
-        """The whole point of the component, as one assertion.
-
-        Both rows are `needs_human = True` with no copy. Before this, both also
-        carried a sentence about the lead and nothing to tell them apart.
-        """
+        """Both rows are `needs_human` with no copy; the prose must differ."""
         _lead("lead_throttled")
         _unmatched_lead("lead_nothing_matched")
         client = _ScriptedClient(*[rate_limit()] * 3, then=rate_limit())
@@ -454,11 +391,8 @@ class MessagesStayDistinctTests(TestCase):
         self.assertNotIn("no automated outreach pattern matched", throttled)
 
     def test_a_non_provider_failure_keeps_the_pre_existing_wording(self):
-        """A prompt that will not build is neither of the new categories.
-
-        It predates this component and its message is unchanged, so the tests
-        that already pinned it keep passing for the right reason.
-        """
+        """A prompt that will not build is neither of the new categories and
+        keeps its pre-existing message."""
         from unittest.mock import patch
 
         _lead()
@@ -499,10 +433,8 @@ class FailureKindTests(SimpleTestCase):
             self.assertNotIn("Error", label)
 
     def test_an_unnamed_subclass_inherits_its_parents_words(self):
-        # A provider adapter inventing `LLMQuotaError(LLMRateLimitError)` should
-        # be described as a rate limit, not as "unclassified" -- which is what a
-        # lookup keyed on the exact type would say about the single most
-        # classifiable thing that happens to a free tier.
+        # Lookup walks the MRO, so a provider adapter's own subclass is still
+        # described as a rate limit rather than "unclassified".
         class LLMQuotaError(LLMRateLimitError):
             pass
 
@@ -565,8 +497,7 @@ class AgenerateCopyRetryUnitTests(SimpleTestCase):
             )
         )
 
-        # Every attempt, not just the first: a retry that dropped the per-request
-        # deadline would let attempt four hang for ever.
+        # Every attempt, not just the first.
         self.assertEqual(seen, [7.5, 7.5, 7.5])
 
     def test_a_successful_call_returns_the_text_unwrapped(self):
@@ -587,16 +518,8 @@ class AgenerateCopyRetryUnitTests(SimpleTestCase):
 
 @override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
 class ReRunActuallyWorksTests(TestCase):
-    """The instruction the message gives has to do something.
-
-    ``COPY_RETRIES_EXHAUSTED`` tells a reviewer to re-run the planner once the
-    provider recovers. That sentence is the component's entire payload -- and
-    for it to be true, the failed row must not hold the dedupe slot, because
-    "an open item wins" would otherwise skip exactly the lead it named. A row
-    that cannot be cleared by the action it prescribes is worse than no message,
-    because it sits in a finite queue for ever telling a human to do something
-    that does nothing.
-    """
+    """``COPY_RETRIES_EXHAUSTED`` tells a reviewer to re-run the planner, so a
+    failed row must not hold the dedupe slot against the lead it named."""
 
     def test_a_lead_that_failed_is_re_planned_on_the_next_run(self):
         _lead()
@@ -610,9 +533,7 @@ class ReRunActuallyWorksTests(TestCase):
         self.assertEqual(failed.suggested_copy, "")
         self.assertIn("Re-run the planner", failed.further_action)
 
-        # Now do exactly what the message says. Nothing else -- no dismiss (that
-        # would suppress the recommendation permanently), no approve (that would
-        # put an empty draft on someone's clipboard).
+        # Now do exactly what the message says, and nothing else.
         healthy = _ScriptedClient()
         with _with_client(healthy):
             planned = plan_outreach()
@@ -622,8 +543,7 @@ class ReRunActuallyWorksTests(TestCase):
         self.assertFalse(planned[0].needs_human)
 
     def test_the_stale_failure_row_is_superseded_rather_than_left_beside_it(self):
-        # Otherwise the queue shows the real draft and "the provider was down"
-        # side by side, which is a different way of wasting the same reviewer.
+        # Otherwise the queue shows the real draft and the stale failure side by side.
         _lead()
         with _with_client(_ScriptedClient(*[rate_limit()] * 3, then=rate_limit())):
             plan_outreach()
@@ -634,13 +554,8 @@ class ReRunActuallyWorksTests(TestCase):
         self.assertEqual(OutreachAction.objects.get().suggested_copy, GOOD_COPY)
 
     def test_an_unmatched_lead_still_suppresses_its_re_plan(self):
-        """The other half, and the reason this is not just `.exclude(copy="")`.
-
-        An unmatched lead is real BD work with a decision pending. Raising it
-        again on every run would be the duplicate-inbox bug the open-item rule
-        exists to prevent -- so the exclusion has to distinguish "no copy
-        because we failed" from "no copy because there was never any to write".
-        """
+        """Why this is not just `.exclude(copy="")`: the exclusion distinguishes
+        "no copy because we failed" from "no copy was ever to be written"."""
         _unmatched_lead()
 
         first = plan_outreach()
@@ -670,22 +585,15 @@ class BudgetExpiryReportsTheRealCauseTests(TestCase):
     """What the per-lead budget says when it fires."""
 
     @override_settings(
-        # The request timeout has to come down with it: 26-a rejects a per-lead
-        # budget shorter than one attempt, on the grounds that it fails every lead.
+        # The request timeout must come down too: a per-lead budget shorter
+        # than one attempt is rejected outright.
         OUTREACH_REQUEST_TIMEOUT_S=0.15,
         OUTREACH_PER_LEAD_TIMEOUT_S=0.15,
         OUTREACH_MAX_ATTEMPTS=50,
     )
     def test_a_run_of_429s_that_runs_out_of_time_is_reported_as_rate_limits(self):
-        """The most likely production path, and the one that read wrong.
-
-        `asyncio.timeout` cancels whatever was in flight, so the exception the
-        provider was raising is gone by the time the budget branch runs.
-        Fabricating a fresh timeout there described a throttled free tier --
-        the exact case `retry.py`'s docstring names as motivating -- as "kept
-        returning timeouts", pointing an engineer at a network problem that
-        does not exist.
-        """
+        """`asyncio.timeout` cancels the in-flight call, so the budget branch
+        must report the provider's own error rather than fabricating a timeout."""
         _lead()
         # Retry-After keeps it retrying until the budget goes.
         client = _ScriptedClient(*[rate_limit(retry_after=0.02)] * 50, then=GOOD_COPY)
@@ -718,10 +626,8 @@ class ForeignTimeoutTests(TestCase):
 
     @override_settings(OUTREACH_PER_LEAD_TIMEOUT_S=120.0, OUTREACH_REQUEST_TIMEOUT_S=60.0)
     def test_a_bare_timeout_error_keeps_its_own_words(self):
-        # `TimeoutError` is a builtin (and an OSError subclass), so a client
-        # that raises one directly -- rather than the taxonomy's -- would
-        # otherwise be reported as the per-lead budget expiring. An engineer
-        # would raise OUTREACH_PER_LEAD_TIMEOUT_S and watch nothing change.
+        # A builtin `TimeoutError` raised by the client, not the taxonomy's,
+        # must not be reported as the per-lead budget expiring.
         _lead()
         client = _ScriptedClient(TimeoutError("[Errno 60] Operation timed out"))
 
@@ -749,9 +655,8 @@ class DetailIsSafeToPersistTests(SimpleTestCase):
         self.assertNotIn("hunter2secret", detail)
 
     def test_an_enormous_provider_body_is_truncated(self):
-        # The Anthropic SDK puts the whole response body in its message, falling
-        # back to raw text when it isn't JSON -- so a proxy's HTML error page
-        # would otherwise land in a TextField once per lead.
+        # SDKs put the whole response body in the message, so a proxy's HTML
+        # error page would otherwise land in a TextField once per lead.
         detail = outreach._safe_detail(RuntimeError("<html>" + "x" * 200_000 + "</html>"))
 
         self.assertLessEqual(len(detail), outreach.DETAIL_MAX_CHARS + 20)

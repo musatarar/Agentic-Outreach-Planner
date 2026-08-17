@@ -52,7 +52,7 @@ export const saveLLMConfig = (config: LLMConfigInput) =>
 export const testLLMConfig = (config: LLMConfigInput) =>
   postJson<LLMTestResult>('/api/llm/config/test/', config);
 
-// ===== MUS-37 / MUS-38: magic-link auth ============================
+// ===== magic-link auth =============================================
 
 export const fetchAuthMe = () => getJson<AuthMe>('/api/auth/me/');
 
@@ -64,7 +64,7 @@ export const consumeLoginToken = (body: AuthConsumeInput) =>
 
 export const logout = () => postJson<void>('/api/auth/logout/', {});
 
-// ===== MUS-39 / MUS-40 / MUS-41: triage queue ======================
+// ===== triage queue ================================================
 
 export const fetchQueue = () => getJson<QueueResponse>('/api/queue/');
 

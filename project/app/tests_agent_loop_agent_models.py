@@ -1,11 +1,7 @@
 """Component artifact: agent_models (MUS-29).
 
-Pins the agent-loop schema (migration 0007_agent_loop): the ``AgentLeadRun``
-resume unit with its epoch-CAS claim, the append-only ``AgentStep`` trace, the
-``ReviewDecision`` send kinds with their partial-unique backstops, and the
-terminal ``sent`` status on ``OutreachAction``. New models are resolved by
-attribute lookup off ``app_models`` behind capability assertions, the pattern
-this suite inherited from its planted-red origin.
+Pins the agent-loop schema (migration 0007_agent_loop): ``AgentLeadRun`` epoch-CAS
+claims, append-only ``AgentStep``, ``ReviewDecision`` send kinds, and terminal ``sent``.
 """
 
 from django.db import IntegrityError, transaction

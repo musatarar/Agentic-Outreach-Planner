@@ -1,13 +1,7 @@
 """GET /api/outreach/<pk>/trace/ — one action's agent step log (MUS-29).
 
-The reports page renders this as "How this draft was reached". Single-shot
-actions (no agent run) 404 with ``{"error": "no_agent_trace"}`` so the frontend
-can hide the toggle instead of special-casing an empty trace.
-
-Serialized inline rather than via a DRF serializer: the shape is pinned by
-docs/contracts/agent-loop.md and ``serializers.py`` is owned by the
-approval_gate component. Constant query count: one action, one run, one
-step prefetch.
+Single-shot actions (no agent run) 404 with ``{"error": "no_agent_trace"}`` so
+the frontend can hide the toggle instead of rendering an empty trace.
 """
 
 from django.shortcuts import get_object_or_404
@@ -26,9 +20,8 @@ class OutreachTraceView(APIView):
         action = get_object_or_404(OutreachAction, pk=pk)
         run = None
         if action.trace_run_id:
-            # The (trace_run_id, lead) pair is the join identity promised by
-            # AgentLeadRun's unique constraint; single-shot actions share a
-            # trace_run_id but have no run row.
+            # (trace_run_id, lead) is the join identity; single-shot actions
+            # share a trace_run_id but have no run row.
             run = (
                 AgentLeadRun.objects.filter(
                     trace_run_id=action.trace_run_id, lead_id=action.lead_id

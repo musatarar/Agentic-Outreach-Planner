@@ -1,26 +1,8 @@
 """Provider-agnostic LLM client interface.
 
-Every provider adapter (Claude, ChatGPT, DeepSeek, Groq, ...) implements
-``generate`` so the rest of the app can produce text without knowing which
-provider is configured. The active provider/model/key are resolved from the
-database by :func:`project.app.services.llm.get_llm_client` (see
-:mod:`project.app.services.llm.config`).
-
-Adapters used to return a bare ``str``, which throws away everything the provider
-says *alongside* the text — how many tokens it charged us for, which model it
-actually served, why it stopped generating, how long it took. :class:`LLMResult`
-is that discarded context, kept.
-
-The copy eval reads it already. It still *estimates* tokens as ``len(text) // 4``
-rather than reading the provider's counts, deliberately: the committed baselines
-were recorded against the estimate, and changing a metric and its baseline
-together would make a regression indistinguishable from a units change. The
-planner still takes the text-only path; MUS-26 moves it over when it makes copy
-generation concurrent.
-
-``complete()`` remains the text-only convenience wrapper, unchanged in name and
-return type. It is the seam the whole test suite mocks, and it is still the right
-call for the majority of callers that only want the string.
+Adapters implement ``generate``/``agenerate`` returning :class:`LLMResult`
+(text plus usage, model and finish reason); ``complete()`` is the text-only
+wrapper most callers — and the test suite's mocks — use.
 """
 
 import asyncio
@@ -35,9 +17,7 @@ from .chat_types import Message, ToolCallRequest, ToolSpec
 # The async client an adapter caches: httpx.AsyncClient or AsyncAnthropic.
 ClientT = TypeVar("ClientT")
 
-# Normalized finish reasons. Providers each have their own vocabulary
-# ("end_turn" vs "stop", "max_tokens" vs "length") — fine for a human reading
-# one provider's logs, useless for a metric aggregated across two.
+# Normalized finish reasons, shared across provider vocabularies.
 FINISH_STOP = "stop"
 FINISH_LENGTH = "length"
 FINISH_CONTENT_FILTER = "content_filter"
@@ -57,22 +37,15 @@ _FINISH_REASONS = {
     "tool_calls": FINISH_TOOL_CALLS,
     "function_call": FINISH_TOOL_CALLS,
 }
-# Deliberately absent, and both must stay absent: Anthropic's "pause_turn" and
-# DeepSeek's "insufficient_system_resource" have no honest equivalent here. See
-# normalize_finish_reason for why an unknown reason is None rather than "error".
+# Anthropic's "pause_turn" and DeepSeek's "insufficient_system_resource" must
+# stay absent: unknown reasons map to None, never to an error bucket.
 
 
 def normalize_finish_reason(raw: object) -> str | None:
     """Map a provider's stop/finish reason onto our small shared vocabulary.
 
-    An unrecognized value maps to ``None``, not to some catch-all "error"
-    bucket: a provider adding a new legitimate reason (Anthropic added
-    ``pause_turn``) must not start reporting healthy generations as errors on a
-    dashboard. A call that actually failed raises an ``LLMError`` and produces
-    no ``LLMResult`` at all, so there is nothing for such a bucket to hold. The
-    provider's own string is always preserved in
-    :attr:`LLMResult.raw_finish_reason`, so nothing is lost by declining to
-    guess.
+    Unknown values map to ``None``, not an error bucket — a failed call raises
+    instead — and the raw string survives in :attr:`LLMResult.raw_finish_reason`.
     """
     if not isinstance(raw, str):
         return None
@@ -82,15 +55,8 @@ def normalize_finish_reason(raw: object) -> str | None:
 def coerce_token_count(value: object) -> int | None:
     """Return ``value`` as a token count, or ``None`` if it isn't one.
 
-    Deliberately ``None`` rather than ``0`` for a missing or unusable count.
-    ``0`` is a *measurement* ("this call consumed no tokens") and would poison a
-    token-usage histogram; ``None`` is the absence of one. Providers are
-    inconsistent about whether ``usage`` appears at all, so the distinction is
-    load-bearing rather than pedantic.
-
-    ``bool`` is excluded explicitly — it is an ``int`` subclass in Python, and a
-    stray ``True`` silently becoming ``1`` token is the kind of thing nobody
-    ever finds.
+    A missing/unusable count is ``None``, never ``0`` (``0`` is a measurement);
+    ``bool`` is excluded because it is an ``int`` subclass.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -98,15 +64,8 @@ def coerce_token_count(value: object) -> int | None:
 
 
 def read_field(container: object, name: str) -> object:
-    """Read ``name`` off a provider payload, whether it is an object or a dict.
-
-    The two adapters receive the same information in different containers: the
-    Anthropic SDK hands us a pydantic model, an OpenAI-compatible body is plain
-    JSON. Both shapes also cross over in practice — ``with_raw_response`` and
-    ``model_dump()`` turn an SDK response into dicts — and a token count going
-    silently missing because the container was the other kind is the worst sort
-    of loss for a billing number. One reader, both shapes, no asymmetry.
-    """
+    """Read ``name`` off a provider payload, whether it is an object (SDK
+    model) or a dict (plain JSON / ``model_dump()``)."""
     if isinstance(container, Mapping):
         return container.get(name)
     return getattr(container, name, None)
@@ -114,13 +73,7 @@ def read_field(container: object, name: str) -> object:
 
 def read_sequence(container: object, name: str) -> list[object]:
     """Read a list-valued field off a payload, or ``[]`` if it isn't one.
-
-    Companion to :func:`read_field` for the fields that hold arrays (``content``
-    blocks, ``choices``). Accepts any sequence, not just ``list``: JSON only ever
-    produces lists, but an SDK model or a test double may hand back a tuple, and
-    quietly dropping the whole array over the container type would be a silent
-    data loss for a one-character reason.
-    """
+    Accepts tuples too — SDK models and test doubles hand them back."""
     value = read_field(container, name)
     if isinstance(value, (list, tuple)):
         return list(value)
@@ -128,12 +81,7 @@ def read_sequence(container: object, name: str) -> list[object]:
 
 
 def coerce_text(value: object) -> str | None:
-    """Return ``value`` if it is a non-empty string, else ``None``.
-
-    Guards the fields read straight off a provider payload (``model``,
-    ``stop_reason``) so a missing key, a JSON ``null``, or a test double can
-    never put a non-string into a typed field.
-    """
+    """Return ``value`` if it is a non-empty string, else ``None``."""
     return value if isinstance(value, str) and value else None
 
 
@@ -141,45 +89,15 @@ def coerce_text(value: object) -> str | None:
 class LLMResult:
     """One completed provider call: the text plus everything it arrived with.
 
-    Frozen because it records something that already happened — nothing
-    downstream has any business editing a provider's reported token count.
-
-    ``model`` is what we asked for; ``response_model`` is what the provider says
-    it served. They differ more often than you would hope: aliases resolve to
-    dated snapshots, and providers substitute a fallback under load. Keeping
-    both is what lets a copy-quality regression be traced to a model swap
-    instead of blamed on the prompt.
-
-    ``finish_reason`` is normalized across providers (see
+    ``model`` is what we asked for; ``response_model`` is what the provider
+    says it served — they can differ. ``finish_reason`` is normalized (see
     :func:`normalize_finish_reason`); ``raw_finish_reason`` is the provider's
-    own string, untouched, because the normalization is lossy by design.
-
-    ``latency_s`` times the provider call **only**. Retry backoff is excluded on
-    purpose: folding it in would make a throttled free tier look like a slow
-    model, which is the opposite of the conclusion the number should support.
-    It defaults to ``None``, not ``0.0``, for the same reason token counts do —
-    a caller-constructed result must not claim a real observation of zero
-    seconds.
-
-    The cache fields are reported as the provider reports them, and the two
-    providers disagree: Anthropic counts cache reads and writes *alongside*
-    ``input_tokens`` (so the true prompt cost is the sum), while
-    OpenAI-compatible providers count cached tokens *within* ``prompt_tokens``
-    and have no notion of a cache write. Nothing here caches yet — the fields
-    exist because this type is what both downstream branches build on, and
-    widening it after the fact would break them.
-
-    ``slots=True`` means instances have no ``__dict__`` — use
-    :func:`dataclasses.asdict` rather than ``vars()`` when fanning the fields out
-    into span attributes.
-
-    ``tool_calls`` (MUS-29) is the model requesting tool executions, appended as
-    the LAST field with a default so existing construction stays valid. Fanout
-    audit at widening time, per the warning above: ``genai.py`` reads these
-    fields explicitly (``_record_success``, ``_finish_reasons``,
-    ``_add_run_usage``) and no ``dataclasses.asdict`` fanout exists anywhere, so
-    a defaulted trailing field cannot leak into span attributes behind the
-    telemetry allowlist's back.
+    own string. ``latency_s`` times the provider call only — retry backoff
+    excluded — and defaults to ``None``, never ``0.0``. Cache fields follow
+    each provider's own accounting: Anthropic counts cache reads/writes
+    *alongside* ``input_tokens``, OpenAI-compatible providers *within*
+    ``prompt_tokens``. ``tool_calls`` (MUS-29) is appended last with a default
+    so existing construction stays valid.
     """
 
     text: str
@@ -205,9 +123,8 @@ class LLMClient(ABC):
     to reading its own env var only when ``api_key`` is ``None``.
     """
 
-    # Our configured provider name ("groq", "claude", ...). Subclasses must set
-    # it; it rides on both LLMResult.provider and LLMError.provider, so a success
-    # and a failure are joinable back to the same configured provider.
+    # Configured provider name ("groq", "claude", ...); rides on both
+    # LLMResult.provider and LLMError.provider. Subclasses must set it.
     provider_name: str
 
     def __init__(self, model, default_max_tokens=500, api_key=None):
@@ -219,24 +136,17 @@ class LLMClient(ABC):
     def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         """Call the provider once and return the full :class:`LLMResult`.
 
-        ``max_tokens`` falls back to ``default_max_tokens`` when not supplied.
-        ``timeout`` (seconds) overrides the adapter's default per-attempt request
-        timeout for this single call when supplied -- used by the config "test
-        connection" endpoint to fail fast instead of hanging.
-        Failures are raised as one of the typed errors in
-        :mod:`project.app.services.llm.errors`.
+        ``max_tokens`` falls back to ``default_max_tokens``; ``timeout``
+        (seconds) overrides the per-attempt request timeout for this call.
+        Failures raise the typed errors in :mod:`.errors`.
         """
         raise NotImplementedError
 
     async def agenerate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
         """Async counterpart of :meth:`generate`.
 
-        Declared on the interface from the start so the concurrent planner has a
-        stable signature to be written against, but left unimplemented here
-        rather than defaulting to ``asyncio.to_thread(self.generate, ...)``: a
-        thread-pool impersonation of async would silently cap concurrency at the
-        pool size while looking like it worked. Adapters override this with a
-        genuinely async client (``AsyncAnthropic``, ``httpx.AsyncClient``).
+        No thread-pool fallback by design — that would silently cap concurrency
+        at the pool size. Adapters override with a genuinely async client.
         """
         raise NotImplementedError(
             f"{type(self).__name__} has no native async implementation; call generate() instead."
@@ -252,25 +162,18 @@ class LLMClient(ABC):
     ) -> LLMResult:
         """Async multi-turn chat with optional tool offers (MUS-29).
 
-        The agent loop's seam. ``messages`` is the running conversation in the
-        provider-neutral shapes of :mod:`.chat_types`; ``tools`` are the specs
-        offered to the model. The result may carry
-        :attr:`LLMResult.tool_calls` instead of — or alongside — text.
-
-        **Async-only by design.** The sync Claude client keeps 2 SDK-internal
-        retries (see the claude module docstring); a sync chat path would
-        double-retry underneath the loop's own retry policy. Like
-        :meth:`agenerate`, the default raises rather than impersonating async
-        via a thread pool.
+        The agent loop's seam; the result may carry :attr:`LLMResult.tool_calls`
+        instead of — or alongside — text. Async-only by design: the sync Claude
+        client keeps SDK-internal retries, so a sync chat path would
+        double-retry underneath the loop's own retry policy.
         """
         raise NotImplementedError(f"{type(self).__name__} has no chat/tool-calling implementation.")
 
     def complete(self, prompt, max_tokens=None, timeout=None) -> str:
         """Return just the model's text completion for a single user ``prompt``.
 
-        The original interface, preserved — sync, same name, plain ``str``. Most
-        callers want the string and nothing else, and this is the seam the test
-        suite mocks. ``timeout`` is forwarded to :meth:`generate`.
+        The seam the test suite mocks; ``timeout`` is forwarded to
+        :meth:`generate`.
         """
         return self.generate(prompt, max_tokens=max_tokens, timeout=timeout).text
 
@@ -280,43 +183,21 @@ class LLMClient(ABC):
         return result.text
 
     async def aclose(self) -> None:
-        """Release any async resources held by this client.
-
-        A no-op unless the adapter caches an async HTTP client. Callers that own
-        the event loop should await this in a ``finally``.
-        """
+        """Release any async resources held by this client (no-op unless the
+        adapter caches an async HTTP client)."""
         return None
 
 
 class LoopBoundAsyncClient(Generic[ClientT]):
     """Caches one async client, keyed on the event loop that created it.
 
-    `asyncio.run()` builds a *fresh* event loop and closes it on the way out.
-    An `httpx.AsyncClient` or `AsyncAnthropic` created inside one run holds
-    connections bound to that loop, so reusing it in a later run fails — and
-    fails obscurely, deep inside a transport, with a message about a closed or
-    different loop rather than about caching.
-
-    That is precisely the shape of this codebase's usage: `plan_outreach()` is
-    sync and will drive its concurrency through `asyncio.run()`, so calling it
-    twice in one process (a test, a management command, two API requests) hits
-    the stale-client case immediately. Caching *with* the loop and rebuilding
-    when it changes is a small fix for a bug that is otherwise very easy to
-    write and very annoying to diagnose.
-
-    **The lock is not decoration.** ``_build_client`` is ``lru_cache``d, so one
-    adapter — and therefore one of these — is shared process-wide by every
-    request thread. Under a threaded server, two threads each running
-    ``asyncio.run()`` are two live loops on this object at once, and an
-    unlocked check-then-store can hand thread A the client thread B just built
-    for B's loop. That is exactly the cross-loop handout this class exists to
-    prevent, reachable by a GIL switch instead of by a stale cache.
-
-    A client whose loop has gone is dropped rather than closed: closing it would
-    mean awaiting on a dead loop. Its socket FDs are reclaimed when the orphan is
-    garbage-collected — `asyncio.run()` closes the loop but does not close open
-    transports, so under ``-W error`` this can surface as a ``ResourceWarning``.
-    Awaiting a dead loop to avoid that would be strictly worse.
+    ``asyncio.run()`` builds a fresh loop each call, so a client cached across
+    runs holds connections bound to a dead loop; rebuild when the loop changes.
+    The lock is required: the ``lru_cache``d adapter is shared process-wide, so
+    two threads can have two live loops on this object at once. A client whose
+    loop is gone is dropped, not closed — closing would await a dead loop; the
+    orphan's sockets are reclaimed at GC (a ``ResourceWarning`` under
+    ``-W error``).
     """
 
     def __init__(
@@ -338,20 +219,17 @@ class LoopBoundAsyncClient(Generic[ClientT]):
             if self._client is None or self._loop is not loop:
                 self._client = self._factory()
                 self._loop = loop
-            # Returned from inside the lock, and as a local: re-reading the
-            # attribute after releasing would reintroduce the race.
+            # Returned as a local from inside the lock; re-reading the
+            # attribute after release would reintroduce the race.
             return self._client
 
     async def aclose(self) -> None:
         running = asyncio.get_running_loop()
         with self._lock:
             if self._client is None or self._loop is not running:
-                # Either nothing to close, or the cached client belongs to some
-                # other loop. Awaiting its close from here would be the very
-                # cross-loop use this class exists to prevent -- and clearing
-                # the fields would be worse than doing nothing, because under
-                # the two-live-loops case this class explicitly designs for it
-                # would yank a client another thread is still using.
+                # Nothing to close, or the client belongs to another loop:
+                # closing it here would be a cross-loop use, and clearing the
+                # fields would yank a client another thread is still using.
                 return
             client = self._client
             self._client = self._loop = None

@@ -6,12 +6,7 @@ import { AuthShell } from '../components/AuthShell';
 import { Badge, Button, Input } from '../components/ui';
 import './auth.css';
 
-/**
- * `expired` is only ever entered from ConsumePage, which renders this page with
- * `initialState="expired"` after the backend rejects a token. It is a state of
- * /signin rather than a page of its own because the only thing to do from it is
- * ask for another link, which is state 01.
- */
+/** `expired` is entered only from ConsumePage after the backend rejects a token. */
 type State = 'enter' | 'sent' | 'expired';
 
 export interface SignInPageProps {
@@ -26,10 +21,8 @@ function minutesFrom(seconds: number): string {
 }
 
 /**
- * Deliberately permissive: the server is the authority on what a valid address
- * is (it answers `invalid_email`), and a stricter regex here would reject
- * addresses the backend accepts. This only catches the empty and obviously
- * malformed cases so the round-trip is not spent on them.
+ * Deliberately permissive — the server is the authority (`invalid_email`);
+ * this only catches empty and obviously malformed input.
  */
 function looksLikeEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
@@ -53,10 +46,8 @@ function EnterState({
 }) {
   const formRef = useRef<HTMLFormElement>(null);
 
-  // The Input primitive's props are frozen.4 and carry no
-  // `autoComplete`/`name`, and forking the primitive is not allowed. The
-  // ticket requires autocomplete="email", so set it on the DOM node instead —
-  // which is where the browser reads it from anyway.
+  // The Input primitive's props are frozen and carry no `autoComplete`/`name`,
+  // so set them on the DOM node — where the browser reads them anyway.
   useEffect(() => {
     const field = formRef.current?.querySelector('input');
     if (!field) return;
@@ -70,9 +61,8 @@ function EnterState({
       <h1 className="auth-title">Sign in</h1>
       <p className="auth-lede">We&rsquo;ll email you a link. No password to remember.</p>
 
-      {/* noValidate: the browser's own validation bubble is chrome we do not
-          control and cannot theme. The same check runs in onSubmit and renders
-          through the Input's error slot instead. */}
+      {/* noValidate: the browser's validation bubble cannot be themed; the
+          same check renders through the Input's error slot instead. */}
       <form
         className="auth-form"
         noValidate
@@ -100,8 +90,7 @@ function EnterState({
         )}
 
         <div className="auth-actions">
-          {/* loading implies disabled in the primitive, so a second submit
-              cannot be issued while one is in flight. */}
+          {/* loading implies disabled, so no double submit. */}
           <Button variant="primary" type="submit" loading={pending}>
             {pending ? 'Sending…' : 'Email me a link'}
           </Button>
@@ -137,8 +126,7 @@ function SentState({
         {minutesFrom(result.expires_in)} and works once.
       </p>
 
-      {/* Rendered only when the API returns one. Never constructed here: the
-          token is minted server-side and this page never sees it otherwise. */}
+      {/* Rendered only when the API returns one; never constructed here. */}
       {result.dev_link && (
         <div className="auth-devlink">
           <div className="auth-devlink__head">
@@ -183,8 +171,7 @@ function SentState({
 
 /** 03 — Expired. Explains the two rules, then puts you back at state 01. */
 function ExpiredState({ code, onRestart }: { code: string; onRestart: () => void }) {
-  // `expired_token` and `invalid_token` are the only two the backend
-  // distinguishes; a used link is reported as invalid.
+  // The backend only distinguishes expired vs invalid; a used link is invalid.
   const lede =
     code === 'expired_token'
       ? 'Sign-in links last 15 minutes, and this one is past that.'
@@ -212,8 +199,7 @@ export function SignInPage({ initialState = 'enter', expiredCode = '' }: SignInP
   const [formError, setFormError] = useState('');
   const [cooldown, setCooldown] = useState(0);
 
-  // One tick per second while a cooldown is running. Cleared on unmount and on
-  // every restart, so a resend cannot leave two intervals racing.
+  // Cleared on unmount and restart, so a resend cannot leave two intervals racing.
   useEffect(() => {
     if (cooldown <= 0) return;
     const timer = window.setInterval(() => {
@@ -238,9 +224,7 @@ export function SignInPage({ initialState = 'enter', expiredCode = '' }: SignInP
         setCooldown(response.resend_after);
         setState('sent');
       } catch (error) {
-        // Everything the user sees here is the server's own sentence. The
-        // codes are branched on only to decide *where* it lands: a bad address
-        // belongs under the field, a rate limit belongs above the button.
+        // The server's own sentence is shown; the code only decides where it lands.
         const code = error instanceof ApiError ? error.code : '';
         const detail =
           error instanceof Error
@@ -282,8 +266,7 @@ export function SignInPage({ initialState = 'enter', expiredCode = '' }: SignInP
           result={result}
           cooldown={cooldown}
           resending={pending}
-          // There is no field to hang an error under in this state, so both
-          // buckets land in the same banner.
+          // No field in this state, so both error buckets share the banner.
           resendError={formError || fieldError}
           onResend={() => {
             if (pending || cooldown > 0) return;

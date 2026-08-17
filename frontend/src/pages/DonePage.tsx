@@ -16,10 +16,8 @@ function SummaryStrip({ data }: { data: DoneResponse }) {
   const { summary } = data;
   return (
     <div className="done-summary">
-      {/* The day comes from the server, computed in
-          TRIAGE_TIMEZONE. Nothing on this page asks the browser what day it
-          is — a reviewer in UTC-7 clearing the queue at 6pm local would
-          otherwise be told they had done nothing. */}
+      {/* The day comes from the server (TRIAGE_TIMEZONE); nothing on this
+          page asks the browser what day it is. */}
       <span className="done-summary__date">{formatDayLabel(data.date)}</span>
       <span className="done-summary__zone">{data.timezone}</span>
       <div className="done-summary__counts">
@@ -46,16 +44,9 @@ interface UndoneNotice {
 }
 
 /**
- * `/done` — everything actioned today, newest first.
- *
- * This screen exists so that pressing `A` on the inbox is cheap: a visible,
- * reversible record is what lets someone move fast. It is also the only route
- * back from a dismiss, which is otherwise permanent by design.
- *
- * No keyboard shortcuts are bound here. All keyboard
- * handling goes through MUS-40's `hooks/useHotkeys.ts` rather than a local
- * `keydown` listener, and that hook does not exist on this branch. An undo
- * hotkey is a one-line addition to this page once MUS-40 has merged.
+ * `/done` — everything actioned today, newest first, and the only route back
+ * from a dismiss. No keyboard shortcuts are bound here; all keyboard handling
+ * goes through `hooks/useHotkeys.ts`, never a local `keydown` listener.
  */
 export function DonePage() {
   const [data, setData] = useState<DoneResponse | null>(null);
@@ -85,8 +76,7 @@ export function DonePage() {
       const verb = item.status === 'snoozed' ? 'Un-snoozed' : 'Undone';
       setUndoState((prev) => ({ ...prev, [item.id]: { phase: 'sending' } }));
       try {
-        // Sent unconditionally: the undo window is the server's
-        // call, so the request is never gated on the browser's clock.
+        // Never gated on the browser's clock; the window is the server's call.
         await undoQueueItem(item.id);
         setUndone({ verb, contact: item.lead.contact_name });
         setUndoState((prev) => {
@@ -94,10 +84,8 @@ export function DonePage() {
           delete next[item.id];
           return next;
         });
-        // Refetch rather than splice. `summary.queue_cleared` and the counts
-        // are server-computed and must not be inferred from array lengths —
-        // an undo puts an item back in the queue, which has to switch the
-        // cleared-queue state back off.
+        // Refetch rather than splice: `summary.queue_cleared` and the counts
+        // are server-computed and must not be inferred from array lengths.
         await load(true);
       } catch (caught) {
         // The row stays on /done either way; only the control goes away.
@@ -160,12 +148,8 @@ export function DonePage() {
           </div>
         )}
 
-        {/* The two empty states are selected by the server, never inferred:
-            `summary.total === 0` is "the day has not started";
-            `summary.queue_cleared` is "there is nothing left in the queue".
-            They are not opposites of one list being empty — an undo can flip
-            queue_cleared back off while the list stays full, which is why the
-            undo handler refetches instead of splicing. */}
+        {/* Both empty states are selected by the server, never inferred from
+            list length. */}
         {data && data.summary.total === 0 && (
           <NothingDoneYet date={data.date} timeZone={data.timezone} />
         )}

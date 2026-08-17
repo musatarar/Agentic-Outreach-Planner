@@ -1,15 +1,5 @@
 """Tests for the GenAI provider-call span and metrics (MUS-25, 25-b).
-
-Every span assertion here is on the *exact* attribute set, not on a subset. A
-semantic convention is a contract with a backend that will never tell you it is
-being violated — a misspelled key, a string where the spec wants an array, a
-provider name outside the enum — so the tests have to be the thing that notices.
-
-The metric assertions go further and check unit strings and bucket boundaries,
-because those are silently wrong by default: the SDK's default histogram buckets
-put every sub-second latency in bucket one, and a wrong ``unit`` turns a chart's
-axis into a lie without changing a single number.
-"""
+Span assertions pin the exact attribute set; metric assertions pin units and buckets."""
 
 import unittest
 from unittest import mock
@@ -63,20 +53,11 @@ def _immediate_sleep(_seconds):
 
 class ProviderCallTests(SimpleTestCase):
     def test_the_provider_map_is_total_over_the_shipped_providers(self):
-        """Every provider in the client registry maps to a legal enum member.
-
-        The map being total is what removes the need for a "closest legal value"
-        fallback. A provider added to the registry without a mapping would
-        silently start emitting spans with no ``gen_ai.provider.name`` at all,
-        so the registry is the source of truth for this assertion, not a list
-        copied beside it.
-        """
+        """Every provider in the client registry maps to a legal enum member."""
         from project.app.services.llm import _REGISTRY
 
-        # The bench-only stub is the one registry entry deliberately left out:
-        # it is exactly the "stub or self-hosted provider" the map's comment
-        # says must emit no `gen_ai.provider.name` rather than an invented
-        # enum member. Every provider a user can actually configure must map.
+        # The bench-only stub is deliberately unmapped: it must emit no
+        # `gen_ai.provider.name` rather than an invented enum member.
         self.assertEqual(set(_REGISTRY) - {"stub"}, set(genai.PROVIDER_NAMES))
         legal = {
             semconv.PROVIDER_ANTHROPIC,
@@ -87,8 +68,7 @@ class ProviderCallTests(SimpleTestCase):
         self.assertTrue(set(genai.PROVIDER_NAMES.values()) <= legal)
 
     def test_an_unmapped_provider_gets_no_gen_ai_provider_name(self):
-        """A stub provider has no legal enum value, and inventing one would
-        produce a span that validates nowhere but renders everywhere."""
+        """An unmapped provider emits no ``gen_ai.provider.name`` rather than an invented one."""
         call = genai.ProviderCall(provider="stub", model="stub-1")
         self.assertIsNone(call.gen_ai_provider)
         self.assertEqual(call.metric_attributes()[semconv.LLM_PROVIDER_CONFIGURED], "stub")
@@ -115,9 +95,7 @@ class ProviderCallTests(SimpleTestCase):
         self.assertEqual(genai.ProviderCall.from_client(client).max_tokens, 500)
 
     def test_an_adapter_without_a_base_url_omits_the_server_attributes(self):
-        """``ClaudeClient`` keeps the Anthropic SDK's client private, and
-        ``ANTHROPIC_BASE_URL`` can move the real endpoint — so an absent
-        ``server.address`` is correct where a hardcoded one would be a lie."""
+        """No ``base_url`` means no ``server.*`` attributes — a hardcoded address would be a lie."""
 
         class Adapter:
             provider_name = "claude"
@@ -133,8 +111,7 @@ class ProviderCallTests(SimpleTestCase):
         self.assertEqual(explicit[semconv.SERVER_ADDRESS], "localhost")
         self.assertEqual(explicit[semconv.SERVER_PORT], 11434)
 
-        # No synthesised 443: the attribute would then be a fact about our
-        # parser rather than about the request.
+        # No synthesised 443 for an implicit port.
         implicit = genai._server_attributes("https://api.groq.com/openai/v1")
         self.assertEqual(implicit, {semconv.SERVER_ADDRESS: "api.groq.com"})
 
@@ -190,8 +167,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
         )
 
     async def test_finish_reasons_is_an_array_of_strings(self):
-        """The plural is the spec's. A bare string here is a technically
-        invalid span that still looks correct in every UI."""
+        """The spec wants an array here; a bare string looks right in every UI but is invalid."""
 
         async def operation():
             return RESULT
@@ -204,8 +180,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
         self.assertTrue(all(isinstance(r, str) for r in reasons))
 
     async def test_the_raw_reason_is_used_when_normalization_declined(self):
-        """A provider adding a new legitimate stop reason (Anthropic added
-        ``pause_turn``) should show that word, not an empty attribute."""
+        """An unmapped-but-legitimate stop reason shows the raw word, not an empty attribute."""
         unmapped = LLMResult(
             text="x",
             provider="groq",
@@ -222,8 +197,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
         self.assertEqual(span.attributes[semconv.GEN_AI_RESPONSE_FINISH_REASONS], ("pause_turn",))
 
     async def test_absent_usage_leaves_the_token_attributes_off(self):
-        """Absent and zero mean different things, and only one of them is true
-        of a provider that omitted ``usage`` entirely."""
+        """Absent usage means absent attributes — zero would say something false."""
         no_usage = LLMResult(text="x", provider="groq", model="openai/gpt-oss-20b")
 
         async def operation():
@@ -254,13 +228,7 @@ class SuccessfulCallSpanTests(_SpanTestCase):
 
 class RetrySpanTests(_SpanTestCase):
     async def test_three_attempts_produce_three_spans_two_of_them_red(self):
-        """The acceptance criterion for the README screenshot.
-
-        A rate-limited lead has to *look* rate-limited: three CLIENT spans under
-        one parent, the first two red with ``error.type``, the third green. A
-        single span around the whole retry loop would show one slow call and
-        hide the policy entirely.
-        """
+        """One CLIENT span per attempt: the first two red with ``error.type``, the third green."""
         attempts = []
 
         async def operation():
@@ -306,9 +274,7 @@ class RetrySpanTests(_SpanTestCase):
         self.assertNotIn(semconv.LLM_RETRY_AFTER_S, span.attributes)
 
     async def test_the_provider_error_message_never_reaches_the_span(self):
-        """A provider's error string is text we did not write, produced in
-        response to a prompt built from lead data. The status description is the
-        exception's class name and there is no exception event at all."""
+        """Only the exception's class name reaches the span — no message, no exception event."""
         secret = "CANARY-9f3a-lead-notes"
 
         async def operation():
@@ -324,8 +290,7 @@ class RetrySpanTests(_SpanTestCase):
         self.assertNotIn(secret, str(span.status.description))
 
     async def test_an_unexpected_exception_still_closes_the_span(self):
-        """``acall_with_retry`` only catches ``LLMError``; anything else escapes
-        immediately. The span must not be left open when it does."""
+        """A non-``LLMError`` escapes immediately, but the span still closes red."""
 
         async def operation():
             raise ValueError("bug on our side")
@@ -338,15 +303,7 @@ class RetrySpanTests(_SpanTestCase):
         self.assertEqual(span.status.status_code, trace.StatusCode.ERROR)
 
     async def test_a_cancelled_attempt_still_closes_its_span(self):
-        """``CancelledError`` derives from ``BaseException``, which is why the
-        handler catches that and not ``Exception``.
-
-        Not a hypothetical: once MUS-26 runs eight leads under
-        ``asyncio.gather``, one lead's failure cancels the others mid-flight.
-        Narrowing the handler would leave those spans open -- and an unended
-        span is never exported, so the cancelled leads would vanish from the
-        trace rather than appear as cancelled. A green suite would not notice.
-        """
+        """``CancelledError`` is a ``BaseException``; an unended span is never exported."""
         import asyncio
 
         async def operation():
@@ -360,11 +317,7 @@ class RetrySpanTests(_SpanTestCase):
         self.assertEqual(span.status.status_code, trace.StatusCode.ERROR)
 
     async def test_a_broken_recorder_cannot_fail_a_call_the_provider_answered(self):
-        """These steps run in ``__exit__``, after ``acall_with_retry`` has
-        already evaluated ``return result``. An exception here would replace a
-        successful return with one the retry helper does not catch, and the
-        planner would report a hard failure for a call that worked. Telemetry
-        must never be the thing that fails a provider call."""
+        """A recorder exception in ``__exit__`` must not replace a successful return."""
 
         async def operation():
             return RESULT
@@ -376,9 +329,7 @@ class RetrySpanTests(_SpanTestCase):
         self.assertIs(result, RESULT)
 
     async def test_a_broken_recorder_cannot_swallow_a_provider_failure(self):
-        """Worse than the success case: here an unguarded raise would *replace*
-        the ``LLMError``, and the retry helper would stop retrying because what
-        reached it was not retryable."""
+        """A recorder exception must not replace the ``LLMError`` in flight."""
 
         async def operation():
             raise LLMRateLimitError("throttled", provider="groq")
@@ -388,9 +339,7 @@ class RetrySpanTests(_SpanTestCase):
                 await self._run(operation, max_attempts=1)
 
     async def test_a_provider_authored_finish_reason_is_shape_checked(self):
-        """``raw_finish_reason`` is the one attribute here carrying text off the
-        provider's wire, and this module's stance is that such text does not
-        reach the trace backend. An enum-ish token passes; a sentence does not."""
+        """``raw_finish_reason`` comes off the provider's wire: an enum-ish token passes, a sentence does not."""
         smuggled = LLMResult(
             text="x",
             provider="groq",
@@ -408,14 +357,10 @@ class RetrySpanTests(_SpanTestCase):
 
 
 class NoTelemetryPathTests(SimpleTestCase):
-    """The same helper, driven against the API's no-op providers.
+    """The same helper against no-op providers: no second code path, nothing raises.
 
-    This is the test that proves there is no second code path: the planner will
-    call exactly these statements whether or not an endpoint is configured, and
-    with none configured they must complete without raising and without
-    recording. Both providers are stubbed out, not just the tracer -- otherwise
-    ``instruments()`` would still reach the process-global meter and the class
-    would only be true of tracing.
+    Both providers are stubbed, not just the tracer — otherwise ``instruments()``
+    would still reach the process-global meter.
     """
 
     def setUp(self):
@@ -441,10 +386,7 @@ class NoTelemetryPathTests(SimpleTestCase):
 
 class NullContextSemanticsTests(_SpanTestCase):
     async def test_a_scope_whose_caller_reports_no_result_still_closes_green(self):
-        """A caller may opt out of reporting a result (``nullcontext``
-        semantics). The span then has no response-side attributes but is not an
-        error -- and the attempt still took as long as it took, so the Required
-        latency instrument must not under-count."""
+        """A scope with no reported result closes green, with no response-side attributes."""
         scope = genai.provider_call_scope(CALL)
         with scope(0):
             pass
@@ -455,14 +397,8 @@ class NullContextSemanticsTests(_SpanTestCase):
 
 
 class MetricTests(unittest.IsolatedAsyncioTestCase):
-    """Metrics get their own ``MeterProvider``, not the global one.
-
-    The API's ``set_meter_provider`` is once-per-process like the tracer's, and
-    these tests need a *fresh* reader per test to assert on point counts. So
-    each test builds its own provider and patches the module's meter lookup —
-    which also means these assertions cannot be perturbed by whatever else in
-    the suite has touched global telemetry state.
-    """
+    """Each test builds its own ``MeterProvider`` and patches the meter lookup —
+    a fresh reader per test, untouched by global telemetry state."""
 
     def setUp(self):
         self.reader = InMemoryMetricReader()
@@ -520,8 +456,7 @@ class MetricTests(unittest.IsolatedAsyncioTestCase):
         )
 
         tokens = found[semconv.METRIC_TOKEN_USAGE]
-        # "{token}" with the braces -- UCUM's annotation form for a dimensionless
-        # count. Dropping them makes it a unit named "token", which is not one.
+        # Braces are UCUM's annotation form for a dimensionless count.
         self.assertEqual(tokens.unit, "{token}")
         self.assertEqual(
             tuple(tokens.data.data_points[0].explicit_bounds), setup.TOKEN_USAGE_BUCKETS
@@ -540,14 +475,12 @@ class MetricTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_type["input"].sum, 910)
         self.assertEqual(by_type["output"].sum, 140)
         for point in points:
-            # Required on this instrument, so a missing provider name here is a
-            # spec violation and not merely a thin chart.
+            # gen_ai.provider.name is Required on this instrument.
             self.assertEqual(point.attributes[semconv.GEN_AI_PROVIDER_NAME], "groq")
             self.assertEqual(point.attributes[semconv.GEN_AI_OPERATION_NAME], "chat")
 
     async def test_no_token_points_at_all_when_usage_is_absent(self):
-        """Recording 0 would poison the histogram with observations of "this
-        call cost nothing" that no later query could tell from the real thing."""
+        """Absent usage records no points — a 0 would poison the histogram."""
 
         async def operation():
             return LLMResult(text="x", provider="groq", model="openai/gpt-oss-20b")
@@ -567,16 +500,14 @@ class MetricTests(unittest.IsolatedAsyncioTestCase):
         await self._call(operation)
         points = self._metrics_by_name()[semconv.METRIC_OPERATION_DURATION].data.data_points
 
-        # Two failed attempts share one (operation, provider, model, error.type)
-        # series; the successful one has no error.type, so it is a second series.
+        # Failed attempts share one series; the successful attempt (no error.type) is a second.
         self.assertEqual(sum(p.count for p in points), 3)
         by_error = {p.attributes.get(semconv.ERROR_TYPE): p for p in points}
         self.assertEqual(by_error["LLMRateLimitError"].count, 2)
         self.assertEqual(by_error[None].count, 1)
 
     async def test_the_successful_duration_is_the_adapters_measurement(self):
-        """``LLMResult.latency_s`` times the provider call alone. Re-timing
-        around the scope would fold our own parsing into the number."""
+        """Duration comes from ``LLMResult.latency_s``, not re-timing around the scope."""
 
         async def operation():
             return RESULT
@@ -604,10 +535,8 @@ class MetricsConfigurationTests(SimpleTestCase):
 
     def setUp(self):
         super().setUp()
-        # Both halves of the API's provider accessor, for the same reason
-        # tests_telemetry patches both on the tracing side: `configure_metrics`
-        # verifies its install by reading the provider back, because
-        # `set_meter_provider` logs and keeps the incumbent rather than raising.
+        # Both halves of the accessor: `configure_metrics` reads the provider back
+        # to verify its install.
         self.registered = None
         self.set_provider = self.enterContext(
             mock.patch.object(
@@ -633,9 +562,7 @@ class MetricsConfigurationTests(SimpleTestCase):
             self.assertEqual(setup.otlp_metrics_endpoint(), "http://otelcol:4318")
 
     def test_a_traces_endpoint_alone_starts_no_metrics_exporter(self):
-        """Phoenix is not an OTel metrics backend. Pointing the metrics exporter
-        at the traces endpoint would be a steady trickle of 404s from a stack
-        that is otherwise working perfectly."""
+        """A traces endpoint alone does not switch on the metrics exporter."""
         env = {
             "OTEL_EXPORTER_OTLP_ENDPOINT": "http://phoenix:6006",
             "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "",
@@ -652,27 +579,20 @@ class MetricsConfigurationTests(SimpleTestCase):
         self.assertFalse(setup.configure_metrics(InMemoryMetricReader()))
 
     def test_a_switch_on_with_no_reader_behind_it_installs_nothing(self):
-        """``metrics_enabled()`` and ``_build_metric_readers()`` read the same
-        environment, so they can only disagree if one is stubbed — but a
-        ``MeterProvider`` with an empty reader list collects nothing while
-        looking installed, which is the one state worth refusing outright."""
+        """A ``MeterProvider`` with no readers would look installed while collecting nothing."""
         with mock.patch.object(setup, "metrics_enabled", return_value=True):
             with mock.patch.object(setup, "_build_metric_readers", return_value=[]):
                 self.assertFalse(setup.configure_metrics())
         self.assertFalse(setup.is_metrics_installed())
 
     def test_a_refused_registration_is_reported_as_a_refusal(self):
-        """Same trap as the tracing side: ``set_meter_provider`` logs and keeps
-        the incumbent rather than raising, so believing our own flag would let
-        ``is_metrics_installed()`` say ``True`` while every ``record()`` went to
-        a provider nothing reads."""
+        """``set_meter_provider`` silently keeps an incumbent; that must read as a refusal."""
         reader = InMemoryMetricReader()
         with mock.patch.object(reader, "shutdown", wraps=reader.shutdown) as shutdown:
             with mock.patch.object(setup.metrics, "get_meter_provider", return_value=object()):
                 self.assertFalse(setup.configure_metrics(reader))
         self.assertFalse(setup.is_metrics_installed())
-        # And the discarded provider was shut down -- it owns a reader, and
-        # PeriodicExportingMetricReader (the production one) owns a thread.
+        # The discarded provider was shut down (its production reader owns a thread).
         shutdown.assert_called_once()
 
     def test_the_provider_does_not_register_its_own_atexit_handler(self):
@@ -716,12 +636,7 @@ class MetricsConfigurationTests(SimpleTestCase):
 
 
 class ForbiddenContentKeyTests(SimpleTestCase):
-    """Nothing in the telemetry package may ever mention a content carrier.
-
-    A grep-shaped test, deliberately. The canary test in 25-c proves the values
-    do not leak; this proves nobody has even written the key down, which is the
-    cheaper thing to keep true as the module grows.
-    """
+    """No module in the telemetry package may even write down a content-carrier key."""
 
     def test_no_module_in_the_package_writes_a_content_key(self):
         from pathlib import Path

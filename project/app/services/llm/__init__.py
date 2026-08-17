@@ -1,18 +1,8 @@
 """Provider-agnostic LLM layer.
 
-The active provider/model/key are resolved from the database (see
-:mod:`project.app.services.llm.config`). Call :func:`get_llm_client` to
-obtain the configured adapter; all adapters expose the same
-:meth:`~project.app.services.llm.base.LLMClient.complete` interface.
-
-To add a provider: implement an :class:`LLMClient` subclass and register it in
-``_REGISTRY`` below. Adapters implement :meth:`LLMClient.generate`, which
-returns an :class:`LLMResult` (text plus usage, model and finish reason);
-``complete()`` is the text-only wrapper most callers want.
-
-Every adapter raises only the typed errors in
-:mod:`project.app.services.llm.errors`, re-exported here so callers import the
-whole LLM contract — client factory and failure taxonomy — from one place.
+Call :func:`get_llm_client` for the configured adapter. Adapters raise only the
+typed errors in :mod:`.errors`, re-exported here; new providers register in
+``_REGISTRY``.
 """
 
 from functools import lru_cache
@@ -50,16 +40,8 @@ _REGISTRY = {
     "chatgpt": ChatGPTClient,
     "deepseek": DeepSeekClient,
     "groq": GroqClient,
-    # Benchmarking only, and unreachable from the app -- see stub.py's module
-    # docstring for the three independent reasons why. Registered here rather
-    # than constructed directly by the benchmark so it goes through the same
-    # factory as every real adapter and cannot drift away from their interface.
-    # The only consumer of this entry is `build_client("stub")`.
-    #
-    # Safe to sit in the same dict as the real four because the one place that
-    # reads this registry by name (`views.py`, the "test connection" endpoint)
-    # keys it on an `LLMProvider` *database row*, and `seed_llm_catalog` never
-    # creates one for "stub".
+    # Benchmarking only; unreachable from the app (see stub.py). Registered so
+    # `build_client("stub")` goes through the same factory as real adapters.
     "stub": StubClient,
 }
 
@@ -67,13 +49,8 @@ _REGISTRY = {
 @lru_cache(maxsize=None)
 def _build_client(provider, model, max_tokens, api_key):
     """Construct and cache a client for this exact (provider, model,
-    max_tokens, api_key) tuple.
-
-    Keying the cache on the resolved api_key (not just ``provider``) is what
-    fixes the stale-client bug: saving a new configuration (different model,
-    max_tokens, or key) changes the cache key, so the next call builds a
-    fresh client instead of silently reusing one built under the old config.
-    A bare provider-string key would keep serving the old client forever.
+    max_tokens, api_key) tuple — keyed on the full tuple so a saved config
+    change builds a fresh client instead of reusing a stale one.
     """
     try:
         client_cls = _REGISTRY[provider]
@@ -104,12 +81,8 @@ def get_llm_client():
 
 
 def build_client(provider):
-    """Return the LLM client for an explicitly named provider.
-
-    Like :func:`get_llm_client`, but selects ``provider`` instead of the
-    active one -- used by the copy eval harness to score a chosen provider
-    without changing the saved active configuration. An unknown name raises
-    ``ValueError``.
+    """Return the LLM client for an explicitly named provider (used by the
+    copy eval harness). An unknown name raises ``ValueError``.
     """
     return _build_client(*_resolve_build_args(provider))
 

@@ -1,12 +1,5 @@
-"""Tests for magic-link authentication (MUS-37).
-
-Grouped by the thing being protected rather than by module:
-
-* token secrecy -- the raw token must never reach the database;
-* single use -- a replayed link loses a race, it does not authenticate twice;
-* expiry -- and the deliberate expired/invalid distinction;
-* the allowlist -- which must not become an account-enumeration oracle.
-"""
+"""Tests for magic-link authentication (MUS-37): token secrecy, single use,
+expiry, and the enumeration-proof allowlist."""
 
 from __future__ import annotations
 
@@ -145,8 +138,7 @@ class DeliveryTests(TestCase):
         EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     )
     def test_email_delivery_failure_is_swallowed(self):
-        # A bounce must not change the HTTP response -- that would re-open the
-        # enumeration oracle the identical-response rule exists to close.
+        # A bounce must not change the HTTP response (enumeration oracle).
         issued = login_links.issue_login_link(ALLOWED)
         with (
             mock.patch.object(login_links, "send_mail", side_effect=OSError("smtp down")),
@@ -197,8 +189,7 @@ class TokenConsumeTests(TestCase):
         self.assertIsNone(token)
 
     def test_expired_and_already_consumed_reads_as_invalid(self):
-        # Once redeemed, a token stops being "expired" -- there is nothing to
-        # re-request, and "invalid" is the honest answer.
+        # Once redeemed, a token stops being "expired"; "invalid" is the honest answer.
         issued = login_links.issue_login_link(ALLOWED)
         login_links.consume_login_token(issued.raw_token)
         LoginToken.objects.filter(pk=issued.login_token.pk).update(
@@ -221,12 +212,9 @@ class TokenConsumeTests(TestCase):
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
 class ConcurrentConsumeTests(TransactionTestCase):
-    """The single highest-value test in this module.
-
-    A read-then-write implementation passes every sequential test above and
-    still authenticates a replayed link twice under concurrency. Only real
-    threads, on real connections, catch that -- hence ``TransactionTestCase``.
-    """
+    """A read-then-write implementation passes every sequential test yet still
+    replays under concurrency; only real threads catch it -- hence
+    ``TransactionTestCase``."""
 
     WORKERS = 8
 
@@ -237,10 +225,9 @@ class ConcurrentConsumeTests(TransactionTestCase):
         def redeem(_i):
             try:
                 start.wait(timeout=5)
-                # SQLite's shared-cache mode raises "table is locked" rather
-                # than waiting, and only under test. Retrying is honest here:
-                # the property under test is that no number of attempts, by
-                # any number of clients, can redeem the same link twice.
+                # SQLite's shared-cache mode raises "table is locked" instead of
+                # waiting; retrying is honest -- no number of attempts may
+                # redeem the same link twice.
                 for _attempt in range(20):
                     try:
                         outcome, _token = login_links.consume_login_token(issued.raw_token)
@@ -265,12 +252,8 @@ class ConcurrentConsumeTests(TransactionTestCase):
 
 
 class AuthAPITestCase(APITestCase):
-    """Endpoint tests, with the throttle history reset between them.
-
-    DRF keeps rate-limit history in the default cache, which outlives an
-    individual test. Without this, whichever test happens to run 21st in the
-    process gets a 429 instead of whatever it was asserting.
-    """
+    """Endpoint tests, with the throttle history reset between them -- DRF keeps
+    rate-limit history in the default cache, which outlives a test."""
 
     def setUp(self):
         super().setUp()
@@ -345,10 +328,8 @@ class RequestLinkEndpointTests(AuthAPITestCase):
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
 class DevLinkExposureTests(AuthAPITestCase):
-    """``dev_link`` leaking in production is a full auth bypass.
-
-    Three conditions, all required: DEBUG, console delivery, allowlisted.
-    """
+    """``dev_link`` leaking in production is a full auth bypass; it requires
+    DEBUG, console delivery, and an allowlisted email, all at once."""
 
     URL = "/api/auth/request-link/"
 
@@ -391,12 +372,8 @@ class DevLinkExposureTests(AuthAPITestCase):
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED}, DEBUG=False, LOGIN_LINK_DELIVERY="console")
 class EnumerationOracleTests(AuthAPITestCase):
-    """Contract section 9.18: the identical-response guarantee, scoped.
-
-    ``dev_link`` and "always return the same response" genuinely conflict, and
-    the contract resolves it by scoping the guarantee to ``DEBUG=False`` or
-    email delivery -- which is exactly where it matters.
-    """
+    """The identical-response guarantee, scoped to ``DEBUG=False`` or email
+    delivery (contract section 9.18)."""
 
     URL = "/api/auth/request-link/"
 
@@ -494,8 +471,8 @@ class ConsumeEndpointTests(AuthAPITestCase):
         self.assertEqual(resp.data["code"], "invalid_token")
 
     def test_consume_rotates_the_csrf_token(self):
-        # See contract section 9.12: a client holding a pre-consume csrftoken
-        # will 403 on its first authenticated POST unless it re-reads the cookie.
+        # Contract 9.12: a pre-consume csrftoken 403s unless the client re-reads
+        # the cookie.
         self.client.get("/")
         before = self.client.cookies["csrftoken"].value
         issued = self._issue()
@@ -545,14 +522,9 @@ class MeAndLogoutTests(AuthAPITestCase):
 
 
 def scoped_rate(scope, rate):
-    """Override one entry in ``DEFAULT_THROTTLE_RATES`` for a single test.
-
-    ``override_settings(REST_FRAMEWORK=...)`` does not reach here:
-    ``SimpleRateThrottle.THROTTLE_RATES`` is bound to the settings dict once,
-    at class-definition time, so a reloaded ``api_settings`` never propagates
-    to it. Patching the dict in place is the honest way to say "this rate, for
-    this test".
-    """
+    """Override one throttle rate for a single test. ``override_settings``
+    cannot reach ``SimpleRateThrottle.THROTTLE_RATES`` (bound at
+    class-definition time), so patch the dict in place."""
     return mock.patch.dict(SimpleRateThrottle.THROTTLE_RATES, {scope: rate})
 
 
@@ -584,8 +556,7 @@ class RequestLinkRateLimitTests(AuthAPITestCase):
     @override_settings(LOGIN_RATE_LIMIT_EMAIL="100/hour")
     @scoped_rate("auth_request_ip", "2/hour")
     def test_the_429_does_not_depend_on_the_allowlist(self):
-        # Rate limiting runs in DRF's initial(), before the view body, so a
-        # throttled unknown address and a throttled known one are identical.
+        # Rate limiting runs in DRF's initial(), before the allowlist check.
         for _ in range(2):
             self._request(email=NOT_ALLOWED)
 
@@ -623,8 +594,7 @@ class RequestLinkRateLimitTests(AuthAPITestCase):
 
     @override_settings(LOGIN_RATE_LIMIT_EMAIL="1/hour")
     def test_a_body_with_no_email_is_a_400_not_a_429(self):
-        # Bucketing every malformed body together would let one client's junk
-        # lock out everyone else's sign-in.
+        # Bucketing malformed bodies together would let junk lock out sign-in.
         for _ in range(5):
             resp = self.client.post(self.URL, {}, format="json")
             self.assertEqual(resp.status_code, 400)
@@ -682,15 +652,9 @@ class ThrottleCacheKeyTests(TestCase):
 
 
 class UnauthenticatedAccessTests(APITestCase):
-    """Contract 9.4: **401, not 403.**
-
-    DRF picks 401 vs 403 by asking the first authenticator for an
-    ``authenticate_header``; stock ``SessionAuthentication`` returns None, so
-    anonymous requests get 403. MUS-38 would then ship 401 handling that never
-    fires -- and every one of its route-guard tests would still pass, because
-    they mock the 401. `SessionAuthenticationWith401` is the whole fix, and
-    these assertions are what keep it in place.
-    """
+    """Contract 9.4: **401, not 403** -- stock ``SessionAuthentication`` yields
+    403 for anonymous requests; these assertions keep
+    `SessionAuthenticationWith401` in place."""
 
     PREVIOUSLY_PUBLIC = [
         ("get", "/api/leads/"),
@@ -713,7 +677,6 @@ class UnauthenticatedAccessTests(APITestCase):
                 self.assertEqual(resp.data["code"], "not_authenticated")
 
     def test_logout_is_401_when_anonymous(self):
-        # One endpoint from MUS-37's own surface.
         resp = self.client.post("/api/auth/logout/", {}, format="json")
 
         self.assertEqual(resp.status_code, 401)
@@ -725,13 +688,8 @@ class UnauthenticatedAccessTests(APITestCase):
         self.assertEqual(resp.headers["WWW-Authenticate"], 'Session realm="api"')
 
     def test_queue_surface_is_401_when_anonymous(self):
-        """Contract 9.4 wants this for MUS-39's surface too.
-
-        `/api/queue/` does not exist on this branch -- MUS-39 uncomments it in
-        `urls.py`. Asserting it here rather than leaving it to integration is
-        the point: a 403 there is invisible until the route guard silently
-        stops working.
-        """
+        """Contract 9.4 applies to MUS-39's `/api/queue/` surface too; the
+        assertion activates when that route lands."""
         resp = self.client.get("/api/queue/")
         if resp.status_code == 404:
             self.skipTest("/api/queue/ arrives with MUS-39; this assertion activates then")
@@ -746,9 +704,8 @@ class UnauthenticatedAccessTests(APITestCase):
         self.assertEqual(exempt, {"auth-request-link", "auth-consume", "auth-me"})
 
     def test_the_html_shells_stay_public(self):
-        # They render an empty #root. @login_required here would break
-        # tests_frontend.py and hand users a Django 302 instead of MUS-38's
-        # designed sign-in redirect.
+        # The shells render an empty #root; @login_required would replace the
+        # designed sign-in redirect with a Django 302.
         for url in ("/", "/reports/", "/next-actions/", "/settings/"):
             with self.subTest(url=url):
                 self.assertEqual(Client().get(url).status_code, 200)
@@ -756,13 +713,8 @@ class UnauthenticatedAccessTests(APITestCase):
 
 @override_settings(LOGIN_ALLOWED_EMAILS={ALLOWED})
 class CsrfAcrossTheLoginBoundaryTests(TestCase):
-    """Contract 9.12: ``login()`` rotates the CSRF token.
-
-    A client that captured `csrftoken` before consuming the link and reuses it
-    afterwards 403s on its first authenticated POST. That is correct behaviour
-    and the frontend must re-read the cookie per request -- this test is what
-    stops someone "optimising" it into a module-level constant.
-    """
+    """Contract 9.12: ``login()`` rotates the CSRF token, so the frontend must
+    re-read the cookie per request."""
 
     def test_stale_csrf_token_is_rejected_and_the_fresh_one_is_accepted(self):
         client = Client(enforce_csrf_checks=True)
@@ -800,11 +752,8 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
 
 
 class AuthenticatedAPITestCaseTests(AuthenticatedAPITestCase):
-    """The helper MUS-39 is writing against right now, in parallel.
-
-    Its name and API are frozen by contract 8.2, so it gets its own test
-    rather than being only implicitly exercised by the suites that inherit it.
-    """
+    """The helper's name and API are frozen by contract 8.2, so it gets its
+    own tests."""
 
     def test_the_client_is_signed_in(self):
         resp = self.client.get("/api/auth/me/")
@@ -816,7 +765,6 @@ class AuthenticatedAPITestCaseTests(AuthenticatedAPITestCase):
         self.assertFalse(self.user.has_usable_password())
 
     def test_json_format_requests_still_work(self):
-        # The reason client_class is APIClient: 49 existing call sites pass
-        # format="json", and none of their bodies were allowed to change.
+        # client_class is APIClient so existing format="json" call sites keep working.
         resp = self.client.post("/api/review-decisions/", {}, format="json")
         self.assertEqual(resp.status_code, 400)

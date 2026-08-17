@@ -18,11 +18,8 @@ const BLOCKER_BUTTON = {
 export interface ActionBarProps {
   report: VerificationReport;
   /**
-   * The server's verdict, taken whole: the frontend never counts claims and
-   * never recomputes this from the summary. The two
-   * answer different questions — a draft can read `4 of 4 claims verified` and
-   * still be blocked, because an unauthorized offer does not count toward the
-   * ratio but does block approval.
+   * The server's verdict, taken whole — never recomputed from the summary
+   * ("4 of 4 verified" can still be blocked by an unauthorized offer).
    */
   canApprove: boolean;
   approving: boolean;
@@ -42,13 +39,8 @@ export interface ActionBarProps {
 }
 
 /**
- * The verification summary and the one primary action on the screen.
- *
- * When approval is blocked the primary button is replaced rather than merely
- * disabled, and the replacement names the specific claim in the user's own
- * words — quoting the text they can see underlined in red a few lines above.
- * A greyed-out button with no explanation is the failure mode this design
- * exists to avoid.
+ * The verification summary and the primary action. When approval is blocked
+ * the button is replaced, naming the specific claim, not merely disabled.
  */
 export function ActionBar({
   report,
@@ -67,8 +59,7 @@ export function ActionBar({
   const blocker = canApprove ? null : findBlockingClaim(report);
   const cause = blockerCause(blocker);
 
-  // The same secondary row in both states: the alternatives to approving do not
-  // change just because approving is blocked.
+  // Same secondary row in both states.
   const secondary = (
     <>
       <Button variant="ghost" onClick={onSnooze}>
@@ -79,8 +70,7 @@ export function ActionBar({
         Dismiss
       </Button>
       <KeyHint keys={['X']} />
-      {/* Copy without approving. Reuses the existing clipboard-with-feedback
-          button rather than reimplementing it. */}
+      {/* Copy without approving. */}
       <CopyButton text={copyText} />
       {/* `suggested_copy` is immutable, so an edit is always undoable. */}
       {isEdited && (
@@ -131,8 +121,7 @@ export function ActionBar({
             <Button variant="danger" disabled>
               {BLOCKER_BUTTON[cause]}
             </Button>
-            {/* The way out of a block is to change the copy, so editing is the
-                affordance that has to be loudest here. */}
+            {/* The way out of a block is to change the copy. */}
             {!editing && (
               <Button variant="secondary" onClick={onEdit}>
                 Edit the draft

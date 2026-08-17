@@ -1,16 +1,9 @@
 import type { RuleTrace, TraceCondition, TraceSignal } from '../../api/types';
 
 /**
- * Flattening the rule trace into mono lines.
- *
- * `display` is rendered **on the server** and printed verbatim.
- * Nothing here reads `operator`, `threshold` or `value` to build text — three
- * frontend surfaces each re-deriving that string would drift on the first null
- * value or the first `usd` unit. `passed`, `unit` and `id` are for styling and
- * keys only.
- *
- * Groups nest exactly one level, so `depth` is 0 or 1 and never needs a
- * recursive walk.
+ * Flattens the rule trace into mono lines. `display` is server-rendered and
+ * printed verbatim — nothing here rebuilds text from operator/threshold/value.
+ * Groups nest exactly one level, so `depth` is 0 or 1.
  */
 
 export interface TraceLine {
@@ -56,13 +49,8 @@ export function flattenConditions(
 }
 
 /**
- * Is this trace older than the day being triaged?
- *
- * the trace is a snapshot written once at plan time and never
- * recomputed, so `days_since_last_contact > 21d → 28d` stays 28d forever. When
- * the snapshot date differs from the queue's date the UI says so, and a stale
- * recommendation announces itself instead of quietly misleading. Both values
- * are server-supplied ISO dates and are compared as strings — no `new Date()`.
+ * Is this trace older than the day being triaged? Traces are plan-time
+ * snapshots, never recomputed. Both are server ISO dates, compared as strings.
  */
 export function isStaleTrace(trace: RuleTrace, queueDate: string): boolean {
   return Boolean(queueDate) && trace.today !== queueDate;

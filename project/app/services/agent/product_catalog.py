@@ -1,9 +1,8 @@
 """Versioned static Sure Lock product facts (MUS-29).
 
-Backing data for the ``get_product_details`` tool. Deliberately a constant, not
-a table: the facts restate only what ``_build_copy_prompt`` already asserts
-about the product, so the deterministic verifier's grounding stays consistent
-with what the tool tells the model.
+Backing data for the ``get_product_details`` tool. A constant rather than a
+table, so it restates only what ``_build_copy_prompt`` already asserts and the
+verifier's grounding stays consistent with what the tool tells the model.
 """
 
 from __future__ import annotations

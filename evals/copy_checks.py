@@ -1,34 +1,19 @@
 """Deterministic, LLM-free checks on a generated outreach email (MUS-21).
 
-These are the "free, run them first" structural checks from the copy prompt's
-Requirements block (see ``_build_copy_prompt`` in
-``project/app/services/outreach.py``): a Subject line, a body roughly the
-requested length, no preamble/commentary, and exactly one call-to-action-shaped
-sentence.
-
-Pure Python (only ``re``) with **no** dependency on Django, inspect-ai, or any
-provider SDK, so the Django test suite can import and unit-test them directly
-(``project/app/tests_copy_scorers.py``) and the Inspect scorer can wrap them.
-
-They are intentionally coarse: they catch gross violations (no subject, a
-400-word essay, "Here is the email:", zero or five CTAs) and leave finer quality
-judgements — tone, concrete-fact grounding, CTA/action-type match — to the LLM
-judge. The word-count band is wide for the same reason.
+Pure Python (only ``re``) so both the Django test suite and the Inspect scorer
+can use them. Intentionally coarse: gross violations only; finer quality
+judgements are the LLM judge's job.
 """
 
 import re
 
-# "about 120 words" -> accept a generous band. Wide on purpose: the goal is to
-# flag gross length violations, not to nitpick a 95- or 150-word email (that is
-# the judge's job). Tightening this band would only add gate flap.
+# "about 120 words" -> a wide band on purpose; nitpicking length is the judge's job.
 WORD_MIN = 60
 WORD_MAX = 200
 
 _SUBJECT_RE = re.compile(r"^\s*subject\s*:\s*(.*)$", re.IGNORECASE)
 
-# Commentary the model was told NOT to emit ("Output only the email ..."). We
-# only look at the very start of the output: a well-formed email opens with the
-# Subject line, so any of these leading phrases means a preamble crept in.
+# Preamble the model was told not to emit; a clean email opens with the Subject line.
 _PREAMBLE_OPENERS = (
     "here is",
     "here's",
@@ -52,11 +37,8 @@ _PREAMBLE_OPENERS = (
     "```",
 )
 
-# Phrases that make a sentence read like a call to action. Paired with a
-# "sentence ends in ?" rule so a plain question also counts. Deliberately
-# excludes soft pitch phrases ("happy to", "I'd love to", "open to") -- those
-# are intent, not an ask, and including them over-counts. Coarse by design; the
-# LLM judge does the semantic "is the CTA right for this action" check.
+# CTA-shaped phrases; a sentence ending in "?" also counts. Soft pitch phrases
+# ("happy to", "I'd love to") are deliberately excluded -- intent, not an ask.
 _CTA_RE = re.compile(
     r"\b("
     r"let me know|let's|reply|respond|reach out|get in touch|touch base|"

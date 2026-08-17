@@ -1,22 +1,8 @@
 """Copy normalization, verification snapshots and edit diffs (MUS-39).
 
-Three jobs, all of them shared between ``plan_outreach()`` (a service) and the
-triage queue views, which is why they live here rather than in either caller --
-a service must not import from the API layer.
-
-1. **Normalization.** An LLM may emit ``\\r\\n``; a ``<textarea>`` may submit
-   ``\\r\\n``; Python counts ``\\r\\n`` as two characters. Every span offset in
-   a verification report would then be off by one per preceding line break.
-   The server normalizes *before* storing copy and *before* computing any
-   offset.
-
-2. **Verification envelopes.** One place that calls ``verify.verify_spans()``
-   and one place that decides whether a report permits approval, so the queue
-   payload's ``verification`` and its ``can_approve`` mirror cannot disagree.
-
-3. **Edit diffs.** The ``(suggested, edited)`` pair plus its opcodes is the
-   copy eval corpus (MUS-21): every correction a human makes is labeled
-   training data, and it is only capturable at the moment of editing.
+Shared between ``plan_outreach()`` and the triage queue views — a service must
+not import from the API layer. Normalization happens *before* storing copy or
+computing any offset; verification and approval each have one reading here.
 """
 
 from __future__ import annotations
@@ -38,8 +24,7 @@ def normalize_copy(text: str | None) -> str:
 def is_astral_safe(text: str) -> bool:
     """True when JS UTF-16 string indices equal Python code-point indices.
 
-    False as soon as the copy contains an astral character (an emoji echoed
-    out of a HubSpot note), at which point the frontend must slice via
+    False on astral characters (e.g. emoji), when the frontend must slice via
     ``Array.from()``.
     """
     return len(text) == len(text.encode("utf-16-le")) // 2
@@ -61,9 +46,7 @@ def build_verification(
 ) -> dict:
     """Return the v1 verification report for ``copy``, normalized first.
 
-    ``verification`` on an OutreachAction always describes ``effective_copy``,
-    so this is called on every write that changes the copy in play -- planning,
-    editing, reverting -- and never appended to.
+    Called on every write that changes the copy in play; never appended to.
     """
     normalized = normalize_copy(copy)
     report = verify.verify_spans(
@@ -79,10 +62,8 @@ def build_verification(
 def can_approve(report: dict | None) -> bool:
     """Server-side approve gate: the one reading of a verification report.
 
-    Fails CLOSED on a missing or blank report. Every path that reaches here
-    rebuilds the report first, so a blank one means the verifier did not run --
-    and "we could not check this copy" must block approval loudly rather than
-    wave it through as "nothing contradicts".
+    Fails CLOSED on a missing or blank report — "we could not check this copy"
+    blocks approval rather than waving it through.
     """
     if not report:
         return False
@@ -90,11 +71,10 @@ def can_approve(report: dict | None) -> bool:
 
 
 def diff_edit(before: str, after: str) -> dict:
-    """Summarize one reviewer edit for the eval corpus.
+    """Summarize one reviewer edit for the eval corpus (MUS-21).
 
-    ``diff_ops`` is schema v1: ``difflib.SequenceMatcher`` opcodes with the
-    ``"equal"`` runs dropped, each carrying the before/after text so the corpus
-    is readable without re-running the diff.
+    ``diff_ops`` is schema v1: ``SequenceMatcher`` opcodes minus ``"equal"``
+    runs, each carrying its before/after text.
     """
     matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
     ops: list[dict] = []

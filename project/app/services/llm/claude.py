@@ -1,35 +1,11 @@
 """Anthropic (Claude) adapter.
 
-Wraps the official ``anthropic`` SDK. Both SDK clients are built once, in
-``__init__`` -- not per call -- using the explicit ``api_key`` passed in by the
-factory (:mod:`project.app.services.llm`), which resolves it from the database
-or the environment; when ``api_key`` is falsy the SDK falls back to its own
-``ANTHROPIC_API_KEY`` lookup.
-
-Every SDK exception is translated into the shared taxonomy in
-:mod:`project.app.services.llm.errors` before it leaves this module, so callers
-never have to know which vendor SDK produced a failure in order to decide
-whether it is worth retrying.
-
-The **async** client is constructed with ``max_retries=0``; the sync one is not.
-That asymmetry is deliberate and follows one rule: whoever owns the retry budget
-owns it alone.
-
-``llm/retry.py`` wraps the async path, so leaving the SDK's default of two
-retries there would mean two *silent* HTTP attempts underneath every one of ours
--- invisible to a per-attempt span and doubling the effective budget.
-
-Nothing wraps the sync path (``outreach.generate_copy`` and the red-team eval
-call ``complete()`` bare, and the shared helper is async-only), so turning the
-SDK's retries off there would delete real resilience and replace it with
-nothing. It stays on until MUS-26 moves the planner onto the async path, at
-which point this asymmetry disappears on its own.
-
-Both clients get an explicit ``timeout``: the SDK default is a 600-second read
-timeout, which is not a bound anyone would choose for a 500-token completion. A
-caller can tighten it for one call by passing ``timeout=`` to ``generate`` /
-``complete``, which rides on the request rather than the client -- that is what
-the config "test connection" endpoint uses to fail fast instead of hanging.
+SDK exceptions are translated into the taxonomy in :mod:`.errors` before they
+leave this module. The async client is built with ``max_retries=0`` because
+``llm/retry.py`` owns that path's retry budget; the sync client keeps the SDK's
+default retries because nothing else wraps that path (the asymmetry goes away
+when MUS-26 moves the planner async). Both clients get an explicit ``timeout``
+— the SDK default is 600s — and a per-call ``timeout=`` rides on the request.
 """
 
 import time
@@ -60,19 +36,15 @@ from .errors import (
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
-# Per-HTTP-attempt timeout. Passed explicitly rather than left to the SDK
-# default so both providers time out on the same schedule; MUS-26 feeds it from
-# Django settings and only has to change the caller, not this module.
+# Per-HTTP-attempt timeout, explicit so both providers time out on the same
+# schedule.
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 
 def _open_tool_result_blocks(wire: list[dict[str, object]]) -> list[dict[str, object]] | None:
     """The block list of a trailing tool-result user message, if that is what
-    the wire conversation currently ends with — else ``None``.
-
-    "Currently ends with" is the whole point: only results that are *adjacent*
-    merge, so a tool result arriving after some other turn opens a new message
-    rather than reaching back into an earlier one.
+    the wire conversation currently ends with — else ``None``. Only *adjacent*
+    results merge; a result after some other turn opens a new message.
     """
     if not wire:
         return None
@@ -86,9 +58,6 @@ def _open_tool_result_blocks(wire: list[dict[str, object]]) -> list[dict[str, ob
 
 
 class ClaudeClient(LLMClient):
-    # Our configured name for this provider (not the vendor's). Carried on
-    # LLMResult.provider and LLMError.provider so both a success and a failure
-    # can be joined back to the configured provider.
     provider_name = "claude"
 
     def __init__(
@@ -100,9 +69,8 @@ class ClaudeClient(LLMClient):
     ):
         super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)
         self.timeout_s = timeout_s
-        # Built once, here, rather than per call. ``api_key or None`` is what
-        # hands an unset key back to the SDK's own ANTHROPIC_API_KEY lookup --
-        # an empty string would be taken as a real (invalid) credential.
+        # ``api_key or None`` hands an unset key to the SDK's own
+        # ANTHROPIC_API_KEY lookup; "" would read as a real (invalid) credential.
         self._client = anthropic.Anthropic(api_key=api_key or None, timeout=self.timeout_s)
         self._async_client = LoopBoundAsyncClient(
             # max_retries=0: llm/retry.py owns the budget on this path.
@@ -121,9 +89,8 @@ class ClaudeClient(LLMClient):
             "max_tokens": max_tokens or self.default_max_tokens,
             "messages": wire_messages,
         }
-        # Per-request override only when asked for: passing it unconditionally
-        # would override the client-level timeout with None on every ordinary
-        # call, restoring the SDK's 600-second default by accident.
+        # Only when asked for: an unconditional None would override the
+        # client-level timeout and restore the SDK's 600s default.
         if timeout is not None:
             kwargs["timeout"] = timeout
         return kwargs
@@ -134,18 +101,10 @@ class ClaudeClient(LLMClient):
     def _chat_request_kwargs(self, messages, tools, max_tokens, timeout):
         """Translate provider-neutral chat shapes into Anthropic's wire format.
 
-        An assistant turn becomes content blocks (text first, then its
-        ``tool_use`` requests); a ``tool_result`` turn is, per Anthropic's
-        convention, a *user* message carrying a ``tool_result`` block that
-        echoes the originating call's id.
-
-        Consecutive ``tool_result`` messages fold into ONE user message holding
-        every block, which is the shape Anthropic's tool-use contract specifies
-        for a turn that requested several tools at once. One message per result
-        never 400s — the API merges consecutive user turns — so nothing here
-        fails loudly; the docs simply warn that splitting them degrades
-        parallel tool use, which is why this is checked by a test rather than
-        by the provider (MUS-66).
+        Assistant turns become content blocks; a ``tool_result`` turn is a
+        *user* message carrying a ``tool_result`` block. Consecutive tool
+        results fold into ONE user message — Anthropic's parallel-tool-use
+        shape; splitting them degrades silently, so a test checks it (MUS-66).
         """
         wire: list[dict[str, object]] = []
         for m in messages:
@@ -180,25 +139,11 @@ class ClaudeClient(LLMClient):
     def _check_credentials(self, client):
         """Fail typed when the SDK could not resolve a credential.
 
-        anthropic==0.109.1 constructs a keyless client happily and only fails at
-        send time, with a bare ``TypeError`` ("Could not resolve authentication
-        method") that is NOT an ``AnthropicError`` -- so it would escape the LLM
-        layer untyped, with no ``.retryable`` for the retry helper and no
-        ``.provider`` for a span, and Claude would be the one provider whose
-        missing key isn't an ``LLMAuthError``.
-
-        Asked of the constructed client rather than of ``os.environ`` so the
-        question is "did the SDK resolve a credential?" -- the SDK's own
-        resolution order (env, explicit arg, ...) rather than a second copy of
-        it that can drift.
-
-        All THREE mechanisms count, not just the two static ones. ``credentials``
-        covers the profile-on-disk and workload-identity-federation providers,
-        which authenticate by injecting an ``Authorization`` header per request
-        and leave ``api_key`` and ``auth_token`` as ``None``. The SDK's own
-        error names all three ("Expected one of api_key, auth_token, or
-        credentials to be set"); checking only the first two would reject a
-        deployment that works, and reject it non-retryably.
+        anthropic==0.109.1 raises a bare ``TypeError`` at send time for a
+        missing key, which would escape the taxonomy untyped. Asked of the
+        client, not ``os.environ``, so the SDK's own resolution order applies;
+        all three mechanisms count (``credentials`` covers the header-injecting
+        providers that leave ``api_key``/``auth_token`` as ``None``).
         """
         if client.api_key or client.auth_token or getattr(client, "credentials", None):
             return
@@ -212,22 +157,18 @@ class ClaudeClient(LLMClient):
         elapsed = time.perf_counter() - started
         if isinstance(exc, anthropic.AnthropicError):
             return map_anthropic_error(exc, self.provider_name).with_latency(elapsed)
-        # The SDK normally wraps transport failures into APIConnectionError, but
-        # it builds on httpx and a raw one escaping is cheap to insure against --
-        # and expensive to debug if it ever does.
+        # The SDK builds on httpx; a raw httpx error escaping it is cheap to
+        # insure against.
         return map_httpx_error(exc, self.provider_name).with_latency(elapsed)
 
     # -- the two call paths -------------------------------------------------
 
     def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
-        # max_retries deliberately left at the SDK default on the sync client --
-        # see the module docstring. Nothing wraps this path in retries yet.
+        # Sync client keeps the SDK's default retries -- see module docstring.
         client = self._client
         self._check_credentials(client)
 
-        # Times the provider call and nothing else -- not our response parsing,
-        # and not any backoff the retry helper adds between attempts. See
-        # LLMResult.latency_s.
+        # Times the provider call only -- see LLMResult.latency_s.
         started = time.perf_counter()
         try:
             response = client.messages.create(**self._request_kwargs(prompt, max_tokens, timeout))
@@ -238,14 +179,9 @@ class ClaudeClient(LLMClient):
         return self._build_result(response, latency_s)
 
     async def _acall(self, kwargs) -> LLMResult:
-        """Send one already-built request on the loop-bound async client.
-
-        Credential check, latency clock and error mapping live here once: the
-        completion and chat entry points were copies of each other down to the
-        placement of the ``perf_counter`` calls before MUS-66, and the clock's
-        exact stopping point is precisely the kind of detail that drifts when it
-        is written twice.
-        """
+        """Send one already-built request on the loop-bound async client;
+        credential check, latency clock and error mapping live here once
+        (MUS-66)."""
         client = self._async_client.get()
         self._check_credentials(client)
 
@@ -269,8 +205,7 @@ class ClaudeClient(LLMClient):
         max_tokens: int | None = None,
         timeout: float | None = None,
     ) -> LLMResult:
-        # Mirrors agenerate: same credential check, same error mapping, same
-        # loop-bound async client. Async-only by design — see the base class.
+        # Async-only by design — see the base class.
         return await self._acall(self._chat_request_kwargs(messages, tools, max_tokens, timeout))
 
     async def aclose(self) -> None:
@@ -279,23 +214,15 @@ class ClaudeClient(LLMClient):
     def _build_result(self, response, latency_s) -> LLMResult:
         """Turn a Messages response into an :class:`LLMResult`.
 
-        Every field is read through
-        :func:`~project.app.services.llm.base.read_field`, so a ``model_dump()``d
-        or ``with_raw_response`` payload reads identically to a pydantic model —
-        a token count going quietly missing because the container was the other
-        kind is the worst sort of loss for a billing number. ``usage`` is
-        genuinely optional on some surfaces, and a missing count must come back
-        as ``None`` rather than ``0`` -- see
-        :func:`~project.app.services.llm.base.coerce_token_count`.
+        Fields are read via :func:`~.base.read_field` so dict and pydantic
+        payloads read identically; a missing ``usage`` count comes back
+        ``None``, never ``0``.
         """
-        # Join the text blocks; collect the tool_use blocks (skip
-        # thinking/other block types). A tool_use block is either read or
-        # raised on: dropping one silently (which this did until MUS-66) leaves
-        # the loop executing fewer calls than the model asked for, and when the
-        # last one drops it hands the turn's narration back as if it were an
-        # answer. An absent ``input`` is the zero-argument call every one of
-        # this app's agent tools is, and reads as ``{}``; anything else
-        # non-Mapping is unreadable and must not become a half-built request.
+        # Join text blocks; collect tool_use blocks (skip other types). A
+        # tool_use block is either read or raised on — dropping one silently
+        # under-executes the model's calls (a bug until MUS-66). An absent
+        # ``input`` is a zero-argument call and reads as {}; a non-Mapping one
+        # is unreadable.
         parts = []
         tool_calls = []
         for block in read_sequence(response, "content"):
@@ -323,18 +250,14 @@ class ClaudeClient(LLMClient):
         raw_finish_reason = coerce_text(read_field(response, "stop_reason"))
 
         if not text and not tool_calls:
-            # A 200 carrying neither a text block nor a tool call is a
-            # degenerate sample. Returning "" instead would land a blank draft
-            # in the review queue labelled "shape check failed", pointing the
-            # reviewer at the wrong problem entirely.
+            # A 200 with neither text nor tool calls is a degenerate sample;
+            # returning "" would land a blank draft in the review queue.
             raise LLMEmptyCompletionError(
                 "Claude returned a response with no text content and no tool calls.",
                 provider=self.provider_name,
             )
-        # `stop_reason: tool_use` with nothing readable in the tool_use blocks:
-        # the text is the model's reasoning on its way to a call it never
-        # managed to make, and finalizing it would publish that reasoning as
-        # the outreach email. Mirrors the same guard in openai_compatible.
+        # `stop_reason: tool_use` with no readable tool_use blocks: the text is
+        # reasoning, not an answer. Mirrors the same guard in openai_compatible.
         if normalize_finish_reason(raw_finish_reason) == FINISH_TOOL_CALLS and not tool_calls:
             raise LLMEmptyCompletionError(
                 "Claude signalled a tool call but sent none we could read.",
@@ -347,9 +270,8 @@ class ClaudeClient(LLMClient):
             provider=self.provider_name,
             model=self.model,
             response_model=coerce_text(read_field(response, "model")),
-            # Anthropic reports cache reads/writes separately and EXCLUDES them
-            # from input_tokens, so these three are not redundant -- a consumer
-            # wanting the true prompt cost has to add them up itself.
+            # Anthropic EXCLUDES cache reads/writes from input_tokens, so the
+            # three counts are not redundant.
             input_tokens=coerce_token_count(read_field(usage, "input_tokens")),
             output_tokens=coerce_token_count(read_field(usage, "output_tokens")),
             cache_read_tokens=coerce_token_count(read_field(usage, "cache_read_input_tokens")),

@@ -31,13 +31,7 @@ from project.app.views_queue import (
 )
 from project.app.views_trace import OutreachTraceView
 
-# Included at the `api/` prefix by project/urls.py:
-#   POST api/auth/request-link/  POST api/auth/consume/
-#   POST api/auth/logout/  GET api/auth/me/
-#   POST api/outreach/run/  GET api/outreach/  GET api/leads/
-#   POST api/leads/{lead_id}/compose/
-#   GET api/llm/catalog/  GET|PUT api/llm/config/  POST api/llm/config/test/
-#   GET api/queue/  GET api/queue/done/  GET api/queue/{id}/
+# Included at the `api/` prefix by project/urls.py.
 urlpatterns = [
     # --- auth (MUS-37) ---
     path("auth/request-link/", AuthRequestLinkView.as_view(), name="auth-request-link"),
@@ -45,9 +39,7 @@ urlpatterns = [
     path("auth/logout/", AuthLogoutView.as_view(), name="auth-logout"),
     path("auth/me/", AuthMeView.as_view(), name="auth-me"),
     # --- triage queue (MUS-39) ---
-    # `queue/done/` MUST precede `queue/<int:pk>/`. With <int:pk> it happens to
-    # be safe, but ordering it defensively removes a class of "why does /done
-    # 404" debugging for free.
+    # `queue/done/` must precede `queue/<int:pk>/`.
     path("queue/", QueueListView.as_view(), name="queue-list"),
     path("queue/done/", QueueDoneView.as_view(), name="queue-done"),
     path("queue/<int:pk>/", QueueDetailView.as_view(), name="queue-detail"),

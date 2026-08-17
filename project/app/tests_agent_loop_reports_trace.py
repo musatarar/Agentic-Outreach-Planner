@@ -1,10 +1,7 @@
 """Component artifact: reports_trace (MUS-29).
 
-"A run produces an inspectable reasoning trace per lead" is a tested property,
-not prose — these tests pin the per-action trace endpoint: run status, budgets
-used, and the ordered steps for agent actions, and a clean ``no_agent_trace``
-404 for single-shot rows so the reports page hides the toggle instead of
-special-casing an empty trace.
+Pins the per-action trace endpoint: run status, budgets, ordered steps, and a clean
+``no_agent_trace`` 404 for single-shot rows.
 """
 
 from project.app import models as app_models  # AgentLeadRun/AgentStep: lazy until Task 3 lands

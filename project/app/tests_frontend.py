@@ -36,18 +36,8 @@ class FrontendTestCase(TestCase):
 
 
 class AuthShellTests(TestCase):
-    """The four SPA shells MUS-38 adds.
-
-    These views are deliberately public: they render an empty
-    #root and hold no data, and access control is the client-side route guard in
-    RequireAuth.tsx. Adding @login_required here would give an unauthenticated
-    user a Django 302 to /accounts/login/ instead of the designed sign-in screen,
-    and would break these tests.
-
-    Each also has to set the csrftoken cookie, because /signin and /auth/consume
-    POST before any other page has run, and login() rotates the token so a
-    stale one 403s.
-    """
+    """The four SPA shells (MUS-38): deliberately public, and each sets the csrftoken
+    cookie because /signin and /auth/consume POST before any other page has run."""
 
     def test_signin_shell_renders(self):
         response = self.client.get("/signin")
@@ -84,12 +74,7 @@ class AuthShellTests(TestCase):
                 self.assertEqual(self.client.get(url).status_code, 200)
 
     def test_trailing_slash_variants_are_not_routed(self):
-        """The React routes carry no trailing slash; /inbox/ must not silently work.
-
-        APPEND_SLASH only ever adds a slash, so /inbox/ has no pattern and 404s.
-        Pinning it stops someone "fixing" the asymmetry in project/urls.py and
-        desynchronising it from main.tsx.
-        """
+        """The React routes carry no trailing slash; /inbox/ must 404, not silently work."""
         for url in ("/signin/", "/auth/consume/", "/inbox/", "/done/"):
             with self.subTest(url=url):
                 self.assertEqual(self.client.get(url).status_code, 404)

@@ -25,22 +25,12 @@ import '../components/inbox/inbox.css';
 /** Local, uncommitted edits, keyed by queue item id. */
 type DraftMap = Record<number, string>;
 
-/**
- * What owns the keyboard right now. Only `browse` gets the J/K/A/E/S/X map;
- * anything else would let `A` approve a lead from behind an open popover.
- */
+/** What owns the keyboard; only `browse` gets the J/K/A/E/S/X map. */
 type Mode = 'browse' | 'snooze' | 'dismiss' | 'shortcuts';
 
 /**
- * The triage inbox.
- *
- * The loop this screen exists for is not "generate emails". It is a human
- * calibrating trust in a machine's judgement, one lead at a time: show the
- * reasoning, make agreement one keystroke, make disagreement cheap to express.
- *
- * Everything the screen needs arrives in the single prefetch behind `useQueue`,
- * so moving between leads is a state change and never a request. There is no
- * spinner between leads because there is nothing to wait for.
+ * The triage inbox. Everything arrives in the single prefetch behind
+ * `useQueue`, so moving between leads is a state change, never a request.
  */
 export function InboxPage() {
   const queue = useQueue();
@@ -50,11 +40,9 @@ export function InboxPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>('browse');
   const [toast, setToast] = useState<string | null>(null);
-  // The single polite live region. Every status change writes here, so a
-  // screen-reader user hears the same thing a sighted user sees.
+  // Single polite live region: screen readers hear every status change.
   const [announcement, setAnnouncement] = useState('');
-  // Drafts outlive the editor on purpose: navigating away mid-edit must not
-  // throw the work away. Only Esc discards, and only the current lead's draft.
+  // Drafts outlive the editor: navigating away mid-edit must not lose work.
   const [drafts, setDrafts] = useState<DraftMap>({});
   const [editingId, setEditingId] = useState<number | null>(null);
 
@@ -136,10 +124,7 @@ export function InboxPage() {
     [clearDraft],
   );
 
-  /**
-   * `suggested_copy` is immutable server-side, so an edit is always recoverable.
-   * The same endpoint with a null copy is the documented way back.
-   */
+  /** A null copy reverts to the immutable server-side `suggested_copy`. */
   const revert = useCallback(
     (item: QueueItem) =>
       run(async () => {
@@ -153,12 +138,9 @@ export function InboxPage() {
   );
 
   /**
-   * One keystroke, three effects: the text lands on the clipboard, the item is
-   * approved, and the queue advances.
-   *
-   * The clipboard write is started **first and without awaiting anything
-   * before it**, because it must run inside the user-gesture task that the
-   * keydown created. Await a fetch first and Safari revokes permission.
+   * Copy to clipboard, approve, advance. The clipboard write starts first,
+   * unawaited: it must run in the keydown's user-gesture task or Safari
+   * revokes permission.
    */
   const approve = useCallback(
     (item: QueueItem) => {
@@ -168,9 +150,7 @@ export function InboxPage() {
       const clipboardWrite = writeToClipboard(copyForClipboard);
 
       return run(async () => {
-        // Approve acts on what is *persisted* — it takes an empty body and uses
-        // the stored copy. An uncommitted edit therefore has to land first, or
-        // the user would approve text they can see they changed.
+        // Approve uses the *stored* copy, so an uncommitted edit must land first.
         if (dirty) await editQueueCopy(item.id, { copy: localCopy });
         const approved = await approveQueueItem(item.id);
         clearDraft(item.id);
@@ -178,9 +158,8 @@ export function InboxPage() {
         settle(approved, 'approved');
 
         const copied = await clipboardWrite;
-        // A silent clipboard write feels like nothing happened, so it is always
-        // confirmed — including when it failed, which the user needs to know
-        // before they switch to Gmail and paste something stale.
+        // Confirm the clipboard result either way, so a failed write can't lead
+        // to pasting stale text elsewhere.
         setToast(copied ? 'Approved · copied to clipboard' : 'Approved · clipboard blocked');
         setAnnouncement(
           copied
@@ -220,13 +199,8 @@ export function InboxPage() {
     [clearDraft, run, settle],
   );
 
-  /**
-   * The browse map. Rebuilt when the current lead changes, which is cheap, and
-   * muted entirely while a popover or the overlay owns the keyboard.
-   *
-   * `useHotkeys` already refuses to fire inside a text field, so
-   * nothing here has to think about the inline editor.
-   */
+  // Browse map, muted while a popover/overlay owns the keyboard. `useHotkeys`
+  // already refuses to fire inside text fields.
   const hotkeys = useMemo<HotkeyMap>(() => {
     const map: HotkeyMap = {
       j: queue.next,
@@ -272,7 +246,6 @@ export function InboxPage() {
             </div>
           )}
 
-          {/* The only spinner in the product, and it is only ever seen once. */}
           {queue.loading && (
             <p className="inbox-status" role="status">
               Loading today's queue…
@@ -310,15 +283,12 @@ export function InboxPage() {
                 }
                 onDraftClick={() => setEditingId(current.id)}
                 actions={
-                  // The popovers are absolutely positioned siblings of the
-                  // action bar, so this wrapper -- not .action-bar -- is their
-                  // containing block. Without it they resolve against the
-                  // viewport and `bottom: 100%` puts them off-screen.
+                  // The popovers' containing block; without it `bottom: 100%`
+                  // resolves against the viewport and puts them off-screen.
                   <div className="action-bar-anchor">
                     <ActionBar
                       report={report}
-                      // While an edit is live the dry-run report is the honest
-                      // gate; otherwise the item's own server verdict is.
+                      // Live edits gate on the dry-run report, not the stale server verdict.
                       canApprove={live.isLive ? report.can_approve : current.can_approve}
                       approving={busy}
                       onApprove={() => void approve(current)}

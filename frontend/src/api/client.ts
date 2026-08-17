@@ -1,7 +1,6 @@
 /**
- * Thin fetch wrapper for the DRF API. The one behaviour that must not regress
- * from the old vanilla-JS pages: every POST carries the `csrftoken` cookie as
- * an `X-CSRFToken` header, or Django rejects it with a 403.
+ * Thin fetch wrapper for the DRF API. Every POST/PUT carries the `csrftoken`
+ * cookie as an `X-CSRFToken` header, or Django rejects it with a 403.
  */
 
 export class ApiError extends Error {
@@ -17,13 +16,8 @@ export class ApiError extends Error {
 }
 
 /**
- * Called by this module on any 401 from a non-auth endpoint. MUS-38's route
- * guard installs the real handler (redirect to /signin, preserving
- * `location.pathname + search`).
- *
- * It is a module-level slot rather than a thrown-and-caught concern because a
- * 401 can surface from any call site, and every one of them rendering its own
- * "something went wrong" is exactly the broken screen the ticket rules out.
+ * Called on any 401 from a non-auth endpoint; the route guard installs the
+ * real handler (redirect to /signin, preserving path + search).
  */
 let unauthorizedHandler: (() => void) | null = null;
 
@@ -31,11 +25,8 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   unauthorizedHandler = fn;
 }
 
-/**
- * `/api/auth/me/` returns 401 by design so the guard can ask "am I signed in?"
- * without recursing into the redirect it is about to decide on. Consume and
- * request-link own their own error UI too. So the auth namespace is exempt.
- */
+// The auth namespace is exempt: /me/ 401s by design and the auth pages own
+// their own error UI.
 function notifyIfUnauthorized(url: string, status: number): void {
   if (status === 401 && !url.startsWith('/api/auth/')) {
     unauthorizedHandler?.();
@@ -54,11 +45,8 @@ function getCookie(name: string): string | null {
 }
 
 /**
- * Django only sets the csrftoken cookie from its @ensure_csrf_cookie HTML
- * views. Under `npm run dev` the shell is served by Vite, so that view never
- * runs and the first POST would 403. Fetching /__csrf (proxied to Django's
- * index — see vite.config.ts) mints the cookie. Against the built bundle the
- * Django shell has already set it, so this is a no-op.
+ * Under Vite dev Django never mints the csrftoken cookie; fetching /__csrf
+ * (proxied to Django's index) does. No-op against the built bundle.
  */
 async function ensureCsrfToken(): Promise<string | null> {
   const existing = getCookie('csrftoken');
@@ -73,10 +61,7 @@ async function ensureCsrfToken(): Promise<string | null> {
 
 /**
  * Prefer DRF's `detail`, then the first field error, then a bare status.
- *
- * `code` is the machine slug.3 and is what callers branch on;
- * `detail` is only ever shown to a human. Pre-MUS-37 endpoints have no `code`,
- * hence the '' default rather than a required field.
+ * `code` is the machine slug callers branch on; '' when the body has none.
  */
 async function toError(response: Response): Promise<ApiError> {
   const body: unknown = await response.json().catch(() => null);
@@ -120,8 +105,7 @@ export async function postJson<T>(url: string, body: unknown): Promise<T> {
     notifyIfUnauthorized(url, response.status);
     throw await toError(response);
   }
-  // POST /api/auth/logout/ answers 204 with no body, and
-  // response.json() on an empty body throws. Every other POST returns JSON.
+  // 204 (logout) has no body; response.json() on an empty body throws.
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }

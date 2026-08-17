@@ -1,14 +1,10 @@
 """The only send path (MUS-29): a hash-bound, one-shot approval gate.
 
-Nothing sends without a live (``voided_at IS NULL``), resolved ``approve_send``
-``ReviewDecision`` whose ``approved_body_sha256`` equals
-``sha256(action.effective_copy)`` at send time; :func:`dispatch` hard-raises
-otherwise. "At send time" is literal: both facts are re-established from the
-database *inside* the transaction that consumes the approval, after the CAS
-wins, because winning the CAS is not authorization — see :func:`_live_approval`.
-The ``approved → sent`` flip is a conditional-UPDATE CAS and the
-``OutboundSend`` OneToOne is the DB backstop against a double send. Delivery is
-console-only — the gate is the deliverable, not SMTP.
+Nothing sends without a live, resolved ``approve_send`` decision whose hash
+matches ``effective_copy`` at send time, re-established from the database
+inside the transaction that consumes it. The ``approved → sent`` flip is a
+conditional-UPDATE CAS; the ``OutboundSend`` OneToOne backstops double sends.
+Delivery is console-only.
 """
 
 from __future__ import annotations
@@ -32,12 +28,9 @@ def _live_approval(action: OutreachAction, *, lock: bool = False) -> tuple[Revie
     """The live approval authorizing ``action``'s copy *right now*, with the
     digest of the bytes it authorizes.
 
-    Both halves are read together and from the database, never from the caller's
-    in-memory ``action``: liveness and hash equality are one fact about one
-    instant, and splitting them across two instants is what MB1 was. ``lock``
-    takes the row for update so a concurrent void serializes behind the send
-    (a no-op on SQLite, which has no row locks; the re-read is what carries the
-    guarantee there).
+    Both halves are read together from the database, never from the caller's
+    in-memory ``action``. ``lock`` takes the row for update (a no-op on SQLite,
+    where the re-read carries the guarantee).
     """
     decisions = ReviewDecision.objects.filter(
         outreach_action=action,
@@ -66,23 +59,20 @@ def _live_approval(action: OutreachAction, *, lock: bool = False) -> tuple[Revie
 
 def dispatch(action: OutreachAction) -> OutboundSend:
     """Send ``action``'s approved copy exactly once; return the ``OutboundSend``."""
-    # Cheap pre-check: refuse obviously unsendable actions without opening a
-    # transaction. It decides nothing — the re-read below is authoritative.
+    # Cheap pre-check; decides nothing — the re-read below is authoritative.
     _live_approval(action)
 
     with transaction.atomic():
-        # The CAS is the winner-picker (same shape as the login-token consume):
-        # exactly one concurrent dispatch sees approved and flips it to sent.
+        # The CAS picks the winner: exactly one concurrent dispatch flips
+        # approved -> sent.
         updated = OutreachAction.objects.filter(
             pk=action.pk, status=OutreachAction.STATUS_APPROVED
         ).update(status=OutreachAction.STATUS_SENT, status_changed_at=timezone.now())
         if updated != 1:
             raise DispatchBlocked("action is not in an approved state")
-        # Winning the CAS is not authorization. Between the pre-check and here,
-        # an undo can have voided the approval and a re-approve minted a fresh
-        # one over different bytes — leaving the action `approved` again, so the
-        # CAS still succeeds. Re-establish liveness and hash equality *inside*
-        # the transaction that consumes them; raising rolls the CAS back.
+        # Winning the CAS is not authorization: an undo + re-approve can leave
+        # the action `approved` over different bytes. Re-check liveness and hash
+        # equality inside the consuming transaction; raising rolls the CAS back.
         decision, digest = _live_approval(action, lock=True)
         record = OutboundSend.objects.create(
             outreach_action=action,

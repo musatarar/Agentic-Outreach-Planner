@@ -155,9 +155,8 @@ class ModelBasicsTests(TestCase):
 
 
 class PlanOutreachGroundingTests(TestCase):
-    """plan_outreach runs the deterministic grounding verifier on generated
-    copy and fails closed: a contradicted draft is kept but routed to the BD
-    review queue (needs_human=True) with the specific problems spelled out."""
+    """plan_outreach fails closed: a contradicted draft is kept but routed to
+    the review queue (needs_human=True) with the problems spelled out."""
 
     def _make_lead(self, **kwargs):
         # demo_completed + no signup -> complete_onboarding (date-independent),
@@ -194,8 +193,7 @@ class PlanOutreachGroundingTests(TestCase):
 
     def test_grounded_copy_passes(self):
         self._make_lead()
-        # Well-formed (subject, one CTA, sane length) AND grounded — must pass
-        # both the shape gate (MUS-23) and the grounding gate (MUS-22).
+        # Passes both the shape gate (MUS-23) and the grounding gate (MUS-22).
         good_copy = (
             "Subject: Let's finish setting up\n\n"
             "Hi Priya,\n\n"
@@ -219,9 +217,8 @@ class PlanOutreachGroundingTests(TestCase):
     @override_settings(COPY_VERIFY_LEVEL="off")
     def test_verification_can_be_disabled_via_setting(self):
         self._make_lead(deals_closed=4)
-        # Well-formed shape but a grounding contradiction (47 vs 4 deals). With
-        # grounding disabled the contradiction is not flagged; the shape gate
-        # (which is not governed by COPY_VERIFY_LEVEL) still passes.
+        # Contradicted (47 vs 4 deals) but well-shaped; the shape gate is not
+        # governed by COPY_VERIFY_LEVEL.
         bad_copy = (
             "Subject: Your incredible momentum\n\n"
             "Hi Priya,\n\n"
@@ -238,20 +235,13 @@ class PlanOutreachGroundingTests(TestCase):
             plan_outreach()
 
         action = OutreachAction.objects.get()
-        self.assertFalse(action.needs_human)  # verification off -> nothing flagged
+        self.assertFalse(action.needs_human)
         self.assertEqual(action.further_action, "")
 
 
 class PlanOutreachFailurePathTests(TestCase):
-    """The two branches that produce no copy at all.
-
-    Both existed before the planner was split into phases, and neither had a
-    test: every planner test drove the happy path. They are exactly the branches
-    the split reshaped most, and the ones MUS-26 rewrites next -- a BD reading
-    the review queue has to be able to tell "nothing matched, decide something"
-    (real work) from "the API was down" (noise), and that distinction lives
-    entirely in these two messages.
-    """
+    """The two branches that produce no copy at all: "nothing matched" (real
+    work) must stay distinguishable from "the API was down" (noise)."""
 
     def _unclassifiable_lead(self):
         # No stage, no dates, no usage -> falls through every rule to UNKNOWN.
@@ -290,7 +280,7 @@ class PlanOutreachFailurePathTests(TestCase):
         with patch("project.app.services.outreach.agenerate_copy") as generate:
             planned = plan_outreach()
 
-        generate.assert_not_called()  # no provider call for an unmatched lead
+        generate.assert_not_called()
         action = planned[0]
         self.assertTrue(action.needs_human)
         self.assertEqual(action.suggested_copy, "")
@@ -306,22 +296,19 @@ class PlanOutreachFailurePathTests(TestCase):
         ):
             planned = plan_outreach()
 
-        # Both leads still produce a row -- the run survives the failure.
         self.assertEqual(len(planned), 2)
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
-        self.assertEqual(failed.suggested_copy, "")  # nothing to keep
-        # Wrapped as LLMUnexpectedError on the way out of phase 3 (MUS-58), so
-        # the review message names it a non-retryable engineer problem rather
-        # than flattening it into an anonymous "failed".
+        self.assertEqual(failed.suggested_copy, "")
+        # Wrapped as LLMUnexpectedError (MUS-58): named non-retryable, not an
+        # anonymous "failed".
         self.assertIn("Copy generation failed and was not retryable", failed.further_action)
         self.assertIn("provider exploded", failed.further_action)
         self.assertIn("complete_onboarding", failed.further_action)
 
     def test_a_prompt_that_cannot_be_built_also_costs_only_one_lead(self):
-        # Prompt building used to run inside generate_copy's try/except, so a
-        # malformed lead cost one row. It now runs a phase earlier; this pins
-        # that the blast radius did not grow to the whole run.
+        # Prompt building now runs a phase earlier; the blast radius of a
+        # malformed lead must still be one row, not the run.
         self._classifiable_lead()
         self._unclassifiable_lead()
         with patch(
@@ -336,12 +323,8 @@ class PlanOutreachFailurePathTests(TestCase):
         self.assertIn("Copy generation failed (unrenderable lead)", failed.further_action)
 
     def test_an_unresolvable_provider_costs_the_rows_nothing(self):
-        # The client is resolved once now, before phase 3, so that phase holds
-        # no ORM handle. That moved the failure of a bad LLM configuration out
-        # of the per-lead try -- so it is carried as a value instead. Previously
-        # every lead resolved its own client and a broken config became one
-        # "Copy generation failed" per lead with the run still producing a full
-        # set of rows; this pins that it still does, rather than killing the run.
+        # The client is resolved once, before phase 3; a broken LLM config must
+        # still yield a full set of rows rather than killing the run.
         self._classifiable_lead()
         self._unclassifiable_lead()
         with patch(
@@ -354,8 +337,7 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
-        # `_resolve_client` wraps the ValueError (MUS-58), so the message calls
-        # out a configuration-shaped failure instead of echoing it bare.
+        # `_resolve_client` wraps the ValueError (MUS-58) as configuration-shaped.
         self.assertIn("Copy generation failed and was not retryable", failed.further_action)
         self.assertIn("Unknown LLM provider 'bogus'.", failed.further_action)
         # The unmatched lead is untouched by a provider problem it never needed.
@@ -363,8 +345,6 @@ class PlanOutreachFailurePathTests(TestCase):
         self.assertIn("no automated outreach pattern matched", unmatched.further_action)
 
     def test_a_run_with_nothing_to_generate_never_resolves_a_provider(self):
-        # A run of purely unmatched leads contacted no configuration before the
-        # client was hoisted out of the loop, and must still contact none.
         self._unclassifiable_lead()
         with patch("project.app.services.outreach.get_llm_client") as get_client:
             plan_outreach()

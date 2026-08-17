@@ -13,14 +13,7 @@ export interface InboxHeaderProps {
   date: string;
 }
 
-/**
- * `03 / 14 today`, the count in mono, plus a thin progress bar.
- *
- * The queue being finite and visibly shrinking is what makes triage feel like
- * it ends, rather than like an inbox. The bar is the cheapest possible way to
- * say that, so it sits full-width along the bottom edge of the header where it
- * reads as a progress rail for the whole screen.
- */
+/** `03 / 14 today`, the count in mono, plus a thin progress bar. */
 export function InboxHeader({ counts, date }: InboxHeaderProps) {
   const { done_today: done, total_today: total } = counts;
   const percent = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -49,8 +42,7 @@ export function InboxHeader({ counts, date }: InboxHeaderProps) {
 
       <span className="inbox-header__spacer" />
 
-      {/* Visible chips, not a manual. Nobody reads a shortcut list they have
-          to go looking for. */}
+      {/* Visible chips, not a manual. */}
       <div className="inbox-header__hints">
         <span className="inbox-header__hint">
           <KeyHint keys={['J', 'K']} /> move
@@ -66,8 +58,7 @@ export function InboxHeader({ counts, date }: InboxHeaderProps) {
         </span>
       </div>
 
-      {/* The server decides which day this is; it is printed,
-          never recomputed. */}
+      {/* The server's day, printed as-is and never recomputed. */}
       <span className="inbox-header__hint" title="Queue date, server timezone">
         {date}
       </span>

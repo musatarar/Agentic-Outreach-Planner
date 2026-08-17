@@ -47,19 +47,10 @@ from project.app.services.llm.runtime import PlannerRuntime
 class AgentOutcome:
     """What the loop hands back to phase 3.
 
-    Deliberately carries no ``action_type``, ``priority`` or ``needs_human``:
-    the rules engine keeps sole authority over classification, and this package
-    never imports the send-gate module — both facts are pinned by
-    ``tests_agent_loop_assembly.py``.
-
-    ``attempts`` and ``elapsed_s`` are the two numbers phase 4's failure
-    sentence is built from ("gave up after 4 attempts over 31s"), and this
-    dataclass is the only thing that crosses back to phase 3 — so a failure
-    that does not carry them arrives as "0 attempt(s) over 0.0s", which tells a
-    reviewer the run never tried. They count *provider attempts for this lead*,
-    summed across every step of the loop, which is the honest reading of "how
-    hard we tried" for a path that can legitimately call the provider more than
-    once. Meaningful only on a failure, exactly like ``CopyOutcome``'s pair.
+    Carries no ``action_type``, ``priority`` or ``needs_human``: the rules
+    engine keeps sole authority over classification. ``attempts`` (provider
+    attempts summed across every step) and ``elapsed_s`` feed phase 4's failure
+    sentence and are meaningful only on a failure.
     """
 
     draft_text: str = ""
@@ -128,21 +119,17 @@ async def run_agent_lead(
 ) -> AgentOutcome:
     """Drive one lead's loop: claim, fold, call, execute tools, checkpoint.
 
-    Error mapping mirrors ``_agenerate_for`` (``services/outreach.py``):
     ``LLMError``, ``TimeoutError`` and ``UnknownTool`` become
     ``AgentOutcome(error=...)`` with the run checkpointed ``failed``;
-    ``AgentClaimLost`` (at claim time or surfacing from an append) becomes
-    ``AgentOutcome(error=...)`` with nothing written — the run belongs to
-    another worker, whose status this one must not trample.
+    ``AgentClaimLost`` does the same but writes nothing, since another worker
+    owns the run and its status must not be trampled.
     """
     steps = list(prior_steps)
     steps_used = sum(1 for step in steps if step.kind == KIND_LLM_CALL)
     tool_calls_used = sum(1 for step in steps if step.kind == KIND_TOOL_RESULT)
 
-    # What phase 4's failure sentence is built from. Counted here rather than
-    # derived from `steps_used` afterwards because the two differ exactly when
-    # it matters: a step that failed every retry persists no step record, so a
-    # lead that spent its whole budget and wrote nothing would report zero.
+    # Counted here rather than derived from `steps_used`: a step that failed
+    # every retry persists no step record and would otherwise report zero.
     attempts = 0
     started = time.monotonic()
 
@@ -164,19 +151,16 @@ async def run_agent_lead(
     if not await checkpoint.claim(lead_run_pk):
         return outcome(error=AgentClaimLost(f"run {lead_run_pk}: another worker owns the claim"))
 
-    # Function-local for the same reasons as in outreach.py — genai so the
-    # module imports with no telemetry configured, MAX_COPY_TOKENS because
-    # Task 8 makes outreach.py import this module, and a top-level import here
-    # would then be a cycle.
+    # Function-local: outreach.py imports this module, so a top-level import
+    # would be a cycle.
     from project.app.services.outreach import MAX_COPY_TOKENS
     from project.app.services.telemetry import genai
 
     # One AgentLeadRun claim epoch owns one gapless seq line; resume continues it.
     seq = steps[-1].seq if steps else 0
 
-    # One description of the call shared by every attempt for this lead
-    # (MUS-25): one `chat {model}` CLIENT span per HTTP attempt, unchanged
-    # retry policy — the same shape as agenerate_copy.
+    # Shared by every attempt for this lead: one CLIENT span per HTTP attempt
+    # (MUS-25), same shape as agenerate_copy.
     call_scope = genai.provider_call_scope(genai.ProviderCall.from_client(client, MAX_COPY_TOKENS))
 
     try:
@@ -247,17 +231,10 @@ async def run_agent_lead(
                     steps.extend(records)
                     continue
 
-                # A turn the provider marked as a tool-call turn is a tool-call
-                # turn whatever text rides along with it: that text is the model
-                # narrating its way to a call, not the email. The adapters
-                # already refuse a tool-call turn with nothing readable in it;
-                # what is left for the loop is the forced-final turn, where no
-                # tools are offered, the response's calls are therefore
-                # discarded above, and the preamble that came with them would
-                # otherwise be persisted as the draft — which is how four
-                # literal function-call markers reached a reviewer as Suggested
-                # Copy (MUS-66). Falling through marks the run exhausted, so
-                # phase 4 routes the lead to a human rather than to that text.
+                # Text riding along with a tool-call turn is the model narrating
+                # its way to a call, not the email; persisting it as the draft
+                # is how function-call markers once reached a reviewer (MUS-66).
+                # Falling through marks the run exhausted instead.
                 if result.text and result.finish_reason != FINISH_TOOL_CALLS:
                     seq += 1
                     records.append(
@@ -279,11 +256,9 @@ async def run_agent_lead(
                     )
                     return outcome(draft_text=result.text)
 
-                # A forced-final response with no usable final in it: no text at
-                # all, or text the provider labelled a tool-call turn. Either
-                # way the budget ran out before the model produced a draft.
-                # Persist the call, mark the run exhausted rather than inventing
-                # an empty final step or publishing a preamble as one.
+                # No usable final: the budget ran out before a draft. Persist
+                # the call and mark the run exhausted rather than inventing an
+                # empty final step.
                 await checkpoint.append(
                     lead_run_pk,
                     records,

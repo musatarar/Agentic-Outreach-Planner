@@ -12,12 +12,9 @@ export interface InputProps {
 }
 
 /**
- * A labelled text field. `label` and `id` are required rather than optional so
- * an unlabelled input cannot be built by accident.
- *
- * `error` is wired through aria-invalid and aria-describedby, so the message is
- * announced rather than merely coloured — the red here is the priority ramp's
- * red, and colour alone must never be the only signal.
+ * A labelled text field; `label` and `id` are required so an unlabelled input
+ * cannot be built by accident. `error` is wired through aria-invalid and
+ * aria-describedby so it is announced, not just coloured.
  */
 export function Input({
   label,
@@ -44,8 +41,7 @@ export function Input({
         placeholder={placeholder}
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? errorId : undefined}
-        // Opt-in only: sign-in and the inbox search are single-field screens,
-        // where focus belongs in the field. Never default it to true.
+        // Opt-in only; never default this to true.
         autoFocus={autoFocus}
       />
       {error && (

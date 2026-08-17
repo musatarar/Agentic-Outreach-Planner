@@ -1,10 +1,6 @@
 """Component artifact: agent_tools (MUS-29).
 
-Pins the four read-only agent tools as pure functions over a phase-2
-``ToolContext`` snapshot: sanitized-and-capped rendering, server-side lead
-binding (unknown tools raise, foreign arguments are dropped), deterministic
-similar-won-deals scoring, prompt-consistent product facts, and idempotent
-synthetic AE-slot seeding by ``ingest_data``.
+Pins the four read-only agent tools as pure functions over a ``ToolContext`` snapshot.
 """
 
 from datetime import datetime, timezone

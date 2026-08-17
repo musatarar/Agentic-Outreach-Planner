@@ -1,9 +1,6 @@
 """Component artifact: llm_tools (MUS-29).
 
-Planted red by the skeleton PR; this component PR stripped the
-``@unittest.expectedFailure`` markers and took the module to zero failures.
-Sibling artifacts keep their marker counts untouched
-(docs/contracts/agent-loop.md).
+Pins tool-call parsing across the Claude, OpenAI-compatible, and stub adapters.
 """
 
 import asyncio
@@ -191,25 +188,8 @@ class OpenAICompatibleToolCallTests(SimpleTestCase):
 
 
 class DegenerateCompletionTests(SimpleTestCase):
-    """A turn the provider says was a tool call, carrying no readable tool call.
-
-    Observed against groq/openai/gpt-oss-20b: the persisted trace holds
-    ``finish_reason: "tool_calls"`` with an empty ``tool_calls`` array and the
-    model's own planning prose in ``content`` ("To write a tailored outreach
-    email, I should start by gathering more context…"). The agent loop's
-    ``if result.text:`` then finalized that prose as the email, and it reached
-    the review queue as Suggested Copy — a reviewer one click away from sending
-    the model's inner monologue to a broker.
-
-    The check belongs in the adapter rather than the loop: it is a fact about
-    the wire response, and every caller needs it, not just ``run_agent_lead``.
-
-    These are **retryable**. A model that failed to emit a parseable tool call
-    on one sample very often succeeds on the next, which makes it a blip rather
-    than the contract disagreement `LLMMalformedResponseError` describes — so
-    the class is a subclass carrying its own retryability, and structural
-    breakage keeps the non-retryable parent.
-    """
+    """A turn the provider says was a tool call but carries no readable tool call is a
+    retryable ``LLMEmptyCompletionError``, never a draft."""
 
     def _oa_client(self):
         client = oa_mod.OpenAICompatibleClient.__new__(oa_mod.OpenAICompatibleClient)
@@ -263,8 +243,7 @@ class DegenerateCompletionTests(SimpleTestCase):
         self.assertTrue(caught.exception.retryable)
 
     def test_structural_breakage_stays_non_retryable(self):
-        """The distinction this subclass exists to preserve: a degenerate sample
-        is worth another roll of the dice, a wire format we cannot read is not."""
+        """An unreadable wire format stays a non-retryable ``LLMMalformedResponseError``."""
         body = {
             "choices": [
                 {

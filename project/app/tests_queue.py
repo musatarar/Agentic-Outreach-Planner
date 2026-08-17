@@ -1,8 +1,4 @@
-"""Tests for the triage queue state model and API (MUS-39).
-
-Kept in its own module: MUS-39 never edits ``tests_api.py``, so the two suites
-can be reviewed and merged independently.
-"""
+"""Tests for the triage queue state model and API (MUS-39)."""
 
 import json
 import os
@@ -49,9 +45,7 @@ GOOD_COPY = (
     "Best,\nDana"
 )
 
-# A midweek instant, for the one test whose assertion depends on which day it
-# runs. Wednesday because it is the furthest any weekday gets from making two
-# distinct snooze triggers collide.
+# Midweek instant: Wednesday keeps distinct snooze triggers from colliding.
 WEDNESDAY = datetime(2026, 8, 12, 12, 0, tzinfo=dt_timezone.utc)
 
 
@@ -276,9 +270,7 @@ class BuildVerificationTests(TestCase):
         self.assertIn("claims verified", report["summary"])
 
     def test_can_approve_fails_closed_on_a_blank_report(self):
-        # "We could not check this copy" must block approval loudly, not read
-        # as "nothing contradicts". Every caller rebuilds the report first, so
-        # a blank one means the verifier did not run.
+        # A blank report means the verifier did not run; it must block approval.
         self.assertFalse(queue_copy.can_approve(None))
         self.assertFalse(queue_copy.can_approve({}))
         self.assertFalse(queue_copy.can_approve({"can_approve": False}))
@@ -327,7 +319,6 @@ class PlanOutreachDedupeTests(TestCase):
         # A real trace from MUS-42's explain(), snapshotted once.
         self.assertEqual(action.rule_trace["version"], 1)
         self.assertTrue(action.rule_trace["priority"]["signals"])
-        # verification always describes the copy in play.
         self.assertEqual(action.verification["copy"], action.effective_copy)
 
     def test_a_second_run_does_not_double_the_inbox(self):
@@ -339,8 +330,8 @@ class PlanOutreachDedupeTests(TestCase):
         self.assertEqual(OutreachAction.objects.count(), 1)
 
     def test_a_second_run_reopens_nothing_for_an_approved_item(self):
-        # An approved item is no longer open, so the recommendation is eligible
-        # to be planned again -- that is the intended behaviour, unlike dismiss.
+        # An approved item is no longer open, so re-planning it is intended --
+        # unlike dismiss.
         self._lead()
         self._plan()
         OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
@@ -436,14 +427,8 @@ class QueueListViewTests(AuthenticatedAPITestCase):
     """GET /api/queue/."""
 
     def test_anonymous_gets_401_not_403(self):
-        """Section 9.4 -- the assertion MUS-38's route guard depends on.
-
-        DRF answers 403, not 401, when the first authenticator's
-        `authenticate_header()` returns None. A 403 here means MUS-38 ships 401
-        handling that never fires and the guard silently never redirects, with
-        every test still green. 401 exactly; `in (401, 403)` cannot tell them
-        apart.
-        """
+        """Section 9.4 -- 401 exactly; a 403 means MUS-38's route guard
+        silently never fires."""
         self.client.logout()
         resp = self.client.get(reverse("queue-list"))
         self.assertEqual(resp.status_code, 401)
@@ -801,8 +786,7 @@ class QueueVerifyViewTests(AuthenticatedAPITestCase):
         self.assertEqual(OutreachEdit.objects.count(), 0)
 
     def test_echoes_the_exact_copy_it_verified(self):
-        # So a debounced out-of-order response can be discarded as stale
-        # rather than rendered over newer text (section 9.2).
+        # Lets a debounced out-of-order response be discarded as stale.
         resp = self._verify({"copy": "Subject: Draft\r\n\r\nHi.\n"})
         self.assertEqual(resp.data["copy"], "Subject: Draft\n\nHi.\n")
 
@@ -967,11 +951,8 @@ class QueueSnoozeViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.data["code"], "invalid_snooze")
 
     def test_re_snoozing_refreshes_both_stamps(self):
-        # Pinned to a Wednesday. "next_week" resolves to the FOLLOWING MONDAY,
-        # so on a Sunday it lands on the same instant as "tomorrow" and this
-        # test's premise -- that the two triggers disagree -- is simply false.
-        # The server is right to answer Monday there; the test was wrong to
-        # assume a calendar it never fixed, and it went red one day in seven.
+        # Pinned to a Wednesday: on a Sunday "next_week" and "tomorrow" resolve
+        # to the same instant and the premise that they disagree is false.
         with patch("project.app.views_queue.timezone.now", return_value=WEDNESDAY):
             self._snooze({"trigger": "tomorrow"})
             self.action.refresh_from_db()
@@ -1082,12 +1063,8 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         self.assertEqual(OutreachEdit.objects.count(), 1)
 
     def test_undo_of_dismiss_revokes_the_suppression(self):
-        """Section 9.7 -- the highest-consequence silent bug in this ticket.
-
-        Asserting `status == pending` passes with the bug present. The only
-        assertion that catches it is that a fresh planner run raises the
-        recommendation again.
-        """
+        """Section 9.7 -- undoing a dismiss revokes the suppression, provable
+        only by a fresh planner run raising the recommendation again."""
         lead = make_lead("lead_undo", stage="demo_completed", signed_up_date=None)
         with patch("project.app.services.outreach.agenerate_copy", return_value=GOOD_COPY):
             plan_outreach()
@@ -1098,11 +1075,8 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
 
         self._post("queue-undo", action=action)
 
-        # The load-bearing assertion. The reviewer undoes, then approves; days
-        # later the planner runs again and must be free to raise this
-        # recommendation. Approving first is what makes the test real -- an
-        # undone row is itself "open", so leaving it pending would satisfy
-        # "an action exists" even with the suppression still in force.
+        # Approve first: an undone row is itself "open", so leaving it pending
+        # would pass even with the suppression still in force.
         self._post("queue-approve", action=action)
         with patch("project.app.services.outreach.agenerate_copy", return_value=GOOD_COPY):
             plan_outreach()
@@ -1114,13 +1088,8 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         self.assertIsNotNone(DismissedOutreachKey.objects.get().revoked_at)
 
     def test_un_snooze_is_not_time_boxed(self):
-        """A deferral reversed is a new decision, not a corrected mistake.
-
-        Paired deliberately with the approved case below: capping un-snooze at
-        the undo window would leave /done showing a dead control on nearly
-        every snoozed row it lists, since /done lists a whole day's decisions
-        and the window is five minutes.
-        """
+        """A deferral reversed is a new decision, not a corrected mistake --
+        un-snooze is not capped at the undo window (pair of the approved case)."""
         self._post("queue-snooze", {"trigger": "next_week"})
         self.action.refresh_from_db()
         self.action.status_changed_at = timezone.now() - timedelta(days=3)
@@ -1135,9 +1104,8 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         )
 
     def test_a_snoozed_row_reports_an_open_ended_undo(self):
-        # null expires_at means "no deadline", not "expired" -- the frontend
-        # hides the control when the countdown lapses, so this field has to say
-        # the server would still honour it.
+        # null expires_at means "no deadline", not "expired" -- the server
+        # would still honour the undo.
         self._post("queue-snooze", {"trigger": "next_week"})
         self.action.refresh_from_db()
         self.action.status_changed_at = timezone.now() - timedelta(days=3)
@@ -1162,8 +1130,7 @@ class QueueUndoViewTests(AuthenticatedAPITestCase):
         self.assertEqual(self.action.status, OutreachAction.STATUS_APPROVED)
 
     def test_a_dismissed_row_outside_the_window_is_still_a_409(self):
-        # Dismiss suppresses the recommendation permanently; that is exactly
-        # the class of mistake the window exists to catch.
+        # Dismiss suppresses permanently -- exactly what the window exists to catch.
         self._post("queue-dismiss", {"reason": "not_a_fit"})
         self.action.refresh_from_db()
         self.action.status_changed_at = timezone.now() - timedelta(days=3)
@@ -1482,14 +1449,8 @@ def make_grounded_lead(lead_id="lead_001"):
 
 
 class QueuePayloadIsWiredToTheServicesTests(AuthenticatedAPITestCase):
-    """The trace and the spans are REAL, not well-formed blanks.
-
-    Both were reached through indirection while MUS-42 was unmerged. The
-    failure mode of leaving that indirection in place is silent: `rule_trace`
-    and `verification` keep their keys, every existing assertion still passes,
-    and the inbox renders no trace rows and no underlines at all. These tests
-    assert content, not shape.
-    """
+    """The trace and the spans are REAL, not well-formed blanks: these tests
+    assert content, not shape."""
 
     def setUp(self):
         super().setUp()
@@ -1509,7 +1470,7 @@ class QueuePayloadIsWiredToTheServicesTests(AuthenticatedAPITestCase):
         self.assertTrue(trace["action"]["conditions"])
         self.assertTrue(trace["priority"]["signals"])
         # Every signal carries the server-rendered mono line the FE prints
-        # verbatim; an empty `display` means nothing renders (section 9.10).
+        # verbatim; an empty `display` means nothing renders.
         for signal in trace["priority"]["signals"]:
             self.assertTrue(signal["display"], signal)
             self.assertIn(signal["kind"], ("condition", "group"))
@@ -1528,8 +1489,7 @@ class QueuePayloadIsWiredToTheServicesTests(AuthenticatedAPITestCase):
         spans = [c for c in report["claims"] if c["start"] is not None]
         self.assertTrue(spans)
         for claim in spans:
-            # The offsets index into report["copy"] -- if they don't, every
-            # underline in the inbox lands on the wrong words.
+            # Offsets index into report["copy"], or every underline lands wrong.
             self.assertEqual(copy[claim["start"] : claim["end"]], claim["text"])
             self.assertEqual(claim["text"], claim["text"].strip())
 
@@ -1581,12 +1541,8 @@ class QueuePayloadIsWiredToTheServicesTests(AuthenticatedAPITestCase):
 
 
 class QueueVerifyThrottleTests(AuthenticatedAPITestCase):
-    """The `queue_verify` scope actually engages.
-
-    Same failure shape as the service shims: a `throttle_scope` with no
-    configured rate, or no DEFAULT_THROTTLE_CLASSES, throttles nothing at all
-    and nothing goes red.
-    """
+    """The `queue_verify` scope actually engages -- an unconfigured scope
+    throttles nothing and nothing goes red."""
 
     def setUp(self):
         super().setUp()

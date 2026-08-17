@@ -1,14 +1,7 @@
 """Serializers for the triage queue API (MUS-39).
 
-A separate module from ``serializers.py`` on purpose: MUS-37 and MUS-39 build
-in parallel, and new view/serializer modules are the whole conflict-avoidance
-strategy for this feature branch.
-
-Everything a reviewer needs to judge one recommendation is in ``QueueItem``:
-the lead, the structured rule trace, the verification spans and the copy.
-That is deliberate and load-bearing -- advancing a row in the inbox must
-perform zero network requests (section 9.14), which is only possible if the
-list endpoint already returned complete items.
+``QueueItem`` is complete on purpose: advancing a row in the inbox must
+perform zero network requests, so the list endpoint returns whole items.
 """
 
 from datetime import timedelta
@@ -21,13 +14,10 @@ from project.app.models import Lead, OutreachAction
 from project.app.services import queue_copy
 from project.app.services.actions import ACTION_META
 
-# Only the newest few events, rendered server-side. This is the ONLY event data
-# the frontend gets, and it exists so the inbox needs no second request.
+# The only event data the frontend gets -- the inbox needs no second request.
 RECENT_EVENT_LIMIT = 5
 
-# Human summaries for the event types the ingest pipeline produces. Rendered
-# here rather than in the frontend so the three surfaces that show activity
-# cannot drift.
+# Rendered server-side so the surfaces that show activity cannot drift.
 EVENT_SUMMARIES = {
     "login": "Portal login",
     "quote_created": "Quote created",
@@ -77,9 +67,8 @@ class QueueLeadSerializer(serializers.ModelSerializer):
         ]
 
     def get_recent_events(self, obj):
-        # Sliced in PYTHON, off a prefetched, already-ordered queryset. Slicing
-        # inside the Prefetch queryset instead would make Django re-query once
-        # per lead and blow the constant-query-count requirement (section 5.2).
+        # Sliced in Python off the prefetched queryset; slicing inside the
+        # Prefetch would re-query per lead and blow the constant query count.
         events = list(obj.events.all())[:RECENT_EVENT_LIMIT]
         return [
             {
@@ -149,11 +138,8 @@ class QueueItemSerializer(serializers.ModelSerializer):
     def _report(self, obj):
         """The verification report describing ``effective_copy``.
 
-        ``verification.copy == effective_copy`` is an invariant (section 9.2):
-        spans computed against one string and rendered over another underline
-        the wrong words. The stored report is authoritative and is rewritten on
-        every copy change; this only recomputes for a row written before the
-        verifier existed, so the invariant holds unconditionally.
+        ``verification.copy == effective_copy`` is an invariant; this only
+        recomputes for rows written before the verifier existed.
         """
         cached = getattr(obj, "_queue_report", None)
         if cached is not None:
@@ -168,8 +154,8 @@ class QueueItemSerializer(serializers.ModelSerializer):
         return self._report(obj)
 
     def get_can_approve(self, obj):
-        # A mirror of verification.can_approve, derived from the same value so
-        # the two can never disagree. The server, not the client, decides.
+        # Derived from the same report as verification.can_approve, so the two
+        # can never disagree.
         return queue_copy.can_approve(self._report(obj))
 
     # -- lifecycle fields ---------------------------------------------------
@@ -182,17 +168,11 @@ class QueueItemSerializer(serializers.ModelSerializer):
         }
 
     def get_undo(self, obj):
-        """Server-computed undo window (section 9.6).
+        """Server-computed undo window.
 
-        ``expires_at`` is an absolute server timestamp. Clock skew between a
-        browser and the server is real and unbounded, so the frontend renders a
-        countdown from it but never gates the request on it.
-
-        A SNOOZED row is ``{"available": true, "expires_at": null}`` -- null
-        meaning "no deadline", not "expired". Un-snoozing is a new decision
-        rather than the correction of a mistake, so it is never time-boxed, and
-        this field has to say so or the UI hides a control the server would
-        have honoured. See ``views_queue.UNDO_WINDOWED_STATUSES``.
+        ``expires_at`` is an absolute server timestamp (browser clock skew is
+        real). A SNOOZED row is ``{"available": true, "expires_at": null}`` --
+        null means "no deadline", not "expired".
         """
         if obj.status == OutreachAction.STATUS_PENDING or obj.status_changed_at is None:
             return {"available": False, "expires_at": None}

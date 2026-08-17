@@ -1,9 +1,6 @@
 """Bootstrap Django and populate the database with demo data.
 
-Single source of truth for demo state. Run after `manage.py migrate`:
-
-    ./venv/bin/python scripts/populate_demo_data.py
-
+Single source of truth for demo state; run after `manage.py migrate`.
 Idempotent: re-running refreshes leads and their events without duplicating.
 """
 

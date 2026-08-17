@@ -1,20 +1,5 @@
-"""Tests for the planner's runtime knobs (MUS-26a).
-
-What is worth pinning here:
-
-1. the defaults an unconfigured deployment gets, in both places they are written
-   down;
-2. that an override actually reaches the dataclass (a settings accessor that
-   silently ignores its setting is the classic way this goes wrong);
-3. that a bad value is rejected with the *setting name* in the message --
-   because the whole reason this accessor exists rather than constructing
-   ``RetryPolicy`` inline is to turn "multiplier must be at least 1" into
-   something an operator can act on -- and that the rejection happens at
-   ``manage.py check`` rather than mid-run; and
-4. that everything under ``services/llm/`` still imports with no Django
-   configured, which is an invariant three docstrings assert and, until
-   ``DjangoFreeImportTests``, nothing enforced.
-"""
+"""The planner's runtime knobs (MUS-26a): defaults, overrides, rejections that
+name the setting at ``manage.py check`` time, and Django-free imports."""
 
 import os
 import subprocess
@@ -35,8 +20,7 @@ class PlannerRuntimeDefaultsTests(SimpleTestCase):
     """The defaults, and the two places they are written down."""
 
     def test_defaults_apply_when_nothing_is_configured(self):
-        # No env vars are set in the test environment, so project/settings.py's
-        # own defaults are what these accessors see.
+        # No env vars in the test environment, so settings.py's defaults apply.
         policy = runtime.get_retry_policy()
         timeouts = runtime.get_timeouts()
 
@@ -49,12 +33,8 @@ class PlannerRuntimeDefaultsTests(SimpleTestCase):
         self.assertEqual(timeouts.per_lead_s, 150.0)
 
     def test_settings_defaults_match_the_module_level_fallbacks(self):
-        """The same numbers live in project/settings.py and in runtime.py.
-
-        Unavoidable: settings cannot import app code at settings-load time, so
-        the env-var defaults have to be literals. This test is what stops the
-        two copies drifting -- change one and it fails, naming which.
-        """
+        """The literals in settings.py and the fallbacks in runtime.py must not
+        drift (settings cannot import app code, so both copies exist)."""
         self.assertEqual(settings.OUTREACH_MAX_IN_FLIGHT, runtime.DEFAULT_MAX_IN_FLIGHT)
         self.assertEqual(settings.OUTREACH_MAX_ATTEMPTS, retry.DEFAULT_MAX_ATTEMPTS)
         self.assertEqual(settings.OUTREACH_INITIAL_BACKOFF_S, retry.DEFAULT_INITIAL_BACKOFF_S)
@@ -64,10 +44,8 @@ class PlannerRuntimeDefaultsTests(SimpleTestCase):
         self.assertEqual(settings.OUTREACH_PER_LEAD_TIMEOUT_S, runtime.DEFAULT_PER_LEAD_TIMEOUT_S)
 
     def test_a_missing_setting_falls_back_instead_of_exploding(self):
-        # A custom settings module that predates MUS-26 -- or a deployment
-        # pointing DJANGO_SETTINGS_MODULE somewhere else -- must still boot.
-        # `self.settings()` restores the whole settings object on exit, so
-        # deleting inside it is safe.
+        # A settings module predating MUS-26 must still boot. `self.settings()`
+        # restores the settings object on exit, so deleting inside it is safe.
         with self.settings():
             del settings.OUTREACH_MAX_IN_FLIGHT
             del settings.OUTREACH_PER_LEAD_TIMEOUT_S
@@ -108,14 +86,12 @@ class PlannerRuntimeOverrideTests(SimpleTestCase):
 
     @override_settings(OUTREACH_MAX_ATTEMPTS=1)
     def test_one_attempt_is_a_legal_configuration(self):
-        # "Call it once, surface whatever happens" -- the way to switch retries
-        # off. It must not be confused with the rejected 0.
+        # The way to switch retries off; distinct from the rejected 0.
         self.assertEqual(runtime.get_retry_policy().max_attempts, 1)
 
     @override_settings(OUTREACH_MAX_BACKOFF_S=30)
     def test_integers_are_accepted_where_a_float_is_expected(self):
-        # `OUTREACH_MAX_BACKOFF_S=30` in the environment parses to a float via
-        # settings.py, but a custom settings module may well write a bare int.
+        # A custom settings module may well write a bare int.
         policy = runtime.get_retry_policy()
         self.assertIsInstance(policy.max_backoff_s, float)
         self.assertEqual(policy.max_backoff_s, 30.0)
@@ -130,8 +106,6 @@ class PlannerRuntimeValidationTests(SimpleTestCase):
                 accessor()
         message = str(caught.exception)
         self.assertIn(setting, message)
-        # The offending value too: "must be at least 1" is much less useful
-        # without saying what it actually got.
         self.assertIn(repr(value), message)
 
     def test_max_in_flight_below_one_is_rejected(self):
@@ -150,8 +124,7 @@ class PlannerRuntimeValidationTests(SimpleTestCase):
         self.assertRejects("OUTREACH_MAX_BACKOFF_S", -1.0, accessor=runtime.get_retry_policy)
 
     def test_multiplier_below_one_is_rejected(self):
-        # A multiplier under 1 makes the backoff *shrink* with each attempt,
-        # which is a retry storm wearing a backoff's clothes.
+        # A multiplier under 1 makes the backoff *shrink* -- a retry storm.
         self.assertRejects("OUTREACH_BACKOFF_MULTIPLIER", 0.5, accessor=runtime.get_retry_policy)
 
     def test_zero_request_timeout_is_rejected(self):
@@ -176,8 +149,7 @@ class PlannerRuntimeValidationTests(SimpleTestCase):
         self.assertRejects("OUTREACH_MAX_IN_FLIGHT", True, accessor=runtime.get_max_in_flight)
 
     def test_an_absurd_pool_size_is_rejected(self):
-        # `>= 1` bounds one end of the range. A fat-fingered 80000 for 8 is a
-        # self-inflicted outage, not a fast run.
+        # `>= 1` bounds one end of the range; the ceiling bounds the other.
         self.assertRejects("OUTREACH_MAX_IN_FLIGHT", 80000, accessor=runtime.get_max_in_flight)
 
     @override_settings(OUTREACH_MAX_IN_FLIGHT=runtime.MAX_IN_FLIGHT_CEILING)
@@ -185,15 +157,13 @@ class PlannerRuntimeValidationTests(SimpleTestCase):
         self.assertEqual(runtime.get_max_in_flight(), runtime.MAX_IN_FLIGHT_CEILING)
 
     def test_a_per_lead_budget_shorter_than_one_attempt_is_rejected(self):
-        # Two individually-plausible numbers that together fail every lead: the
-        # outer deadline expires before a single attempt can complete.
+        # Two plausible numbers that together fail every lead.
         with override_settings(OUTREACH_REQUEST_TIMEOUT_S=600.0):
             self.assertRejects("OUTREACH_PER_LEAD_TIMEOUT_S", 5.0, accessor=runtime.get_timeouts)
 
     @override_settings(OUTREACH_REQUEST_TIMEOUT_S=30.0, OUTREACH_PER_LEAD_TIMEOUT_S=30.0)
     def test_equal_deadlines_are_allowed(self):
-        # "at least", not "greater than": one attempt with no retry budget is a
-        # legitimate configuration, not a mistake.
+        # "at least", not "greater than": one attempt, no retry budget.
         timeouts = runtime.get_timeouts()
         self.assertEqual(timeouts.request_s, timeouts.per_lead_s)
 
@@ -258,8 +228,7 @@ class BootTimeCheckTests(SimpleTestCase):
 
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0].id, "app.E002")
-        # The check reuses the accessor rather than re-implementing validation,
-        # so an operator reads the same sentence either way.
+        # The check reuses the accessor, so the message is the accessor's.
         self.assertIn("OUTREACH_BACKOFF_MULTIPLIER", errors[0].msg)
         self.assertIn("0.5", errors[0].msg)
 
@@ -270,14 +239,12 @@ class BootTimeCheckTests(SimpleTestCase):
 
 
 class EnvParsingTests(SimpleTestCase):
-    """`settings.py` reads these from the environment. That read must not be
-    the one place an operator gets an unhelpful error."""
+    """`settings.py`'s environment read must not be the one place an operator
+    gets an unhelpful error."""
 
     def test_a_blank_value_reads_as_unset(self):
-        # `.env.example` ships all seven pre-filled, so blanking a line out to
-        # "take the default" is the obvious thing to try -- and `int("")` would
-        # make it a hard boot failure instead. It is also what docker-compose's
-        # `${VAR:-}` passthrough produces for a variable nobody set.
+        # `.env.example` ships these pre-filled, so blanking a line out is the
+        # obvious way to take the default; it is also what `${VAR:-}` produces.
         with mock.patch.dict(os.environ, {"OUTREACH_MAX_IN_FLIGHT": "   "}):
             self.assertEqual(project_settings._env_int("OUTREACH_MAX_IN_FLIGHT", 8), 8)
 
@@ -303,14 +270,8 @@ class EnvParsingTests(SimpleTestCase):
 
 
 class DjangoFreeImportTests(SimpleTestCase):
-    """The invariant the whole design rests on, as a gate rather than a comment.
-
-    Every module under ``services/llm/`` must import with no Django settings
-    configured -- ``evals/run_rules_eval.py`` and the retry unit tests depend on
-    it. Hoisting ``from django.conf import settings`` out of ``_setting()`` to
-    module scope would pass ruff, mypy and every other test in this suite while
-    silently breaking both.
-    """
+    """Every module under ``services/llm/`` must import with no Django settings
+    configured -- ``evals/run_rules_eval.py`` and the retry unit tests need it."""
 
     def test_the_llm_package_imports_without_django_configured(self):
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}

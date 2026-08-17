@@ -1,18 +1,6 @@
-"""The benchmark's fake provider and its fixture (MUS-26e).
-
-Two things need pinning and they pull in opposite directions.
-
-The stub has to be **good enough to benchmark against**: its canned email must
-pass the same two output gates the real thing does, or the benchmark times a
-branch the demo never takes and reports a number about nothing.
-
-And it has to be **impossible to reach from the app**. A fake provider that can
-be selected in production is a way to ship an application that silently stops
-calling an LLM, which is the worst possible bug for this product: every symptom
-would be "the copy got a bit generic". The opt-in is ``OUTREACH_ALLOW_STUB_LLM``,
-and the allowlist test below enumerates every file permitted to mention it --
-including this one.
-"""
+"""The benchmark's fake provider and its fixture (MUS-26e): good enough to
+benchmark against, and impossible to reach from the app without the
+``OUTREACH_ALLOW_STUB_LLM`` opt-in."""
 
 import os
 import subprocess
@@ -49,8 +37,6 @@ class StubIsUnreachableFromTheAppTests(TestCase):
             with self.assertRaises(StubLLMNotAllowed) as caught:
                 StubClient()
 
-        # The message has to tell whoever hit it what to do, and -- more
-        # importantly -- that seeing it from the app means something is wrong.
         self.assertIn(ALLOW_ENV_VAR, str(caught.exception))
 
     def test_a_value_other_than_one_does_not_count(self):
@@ -61,15 +47,7 @@ class StubIsUnreachableFromTheAppTests(TestCase):
                         StubClient()
 
     def test_the_provider_catalog_never_offers_it(self):
-        """The structural barrier, and the one that actually matters.
-
-        ``get_llm_client()`` resolves its provider from an ``LLMConfiguration``
-        row whose ``provider`` is a foreign key to ``LLMProvider``. If the
-        catalog has no "stub" row, no configuration can point at one and the
-        Settings UI -- which lists providers from that same table -- can never
-        show it. A key cannot be satisfied by wishing, which is why this is a
-        stronger guard than the ``LLM_CONFIG_PATH`` file check it replaces.
-        """
+        """No catalog row means no configuration can point at the stub."""
         from project.app.models import LLMProvider
 
         call_command("seed_llm_catalog", verbosity=0)
@@ -81,8 +59,7 @@ class StubIsUnreachableFromTheAppTests(TestCase):
         )
 
     def test_only_the_benchmark_sets_the_opt_in(self):
-        # The gate is worth nothing if something else in the repo turns it on.
-        # `grep` rather than a mock, because this is a fact about the tree.
+        # `grep` rather than a mock: this is a fact about the tree.
         hits = subprocess.run(
             ["git", "grep", "-l", "--untracked", ALLOW_ENV_VAR],
             cwd=settings.BASE_DIR,
@@ -102,9 +79,8 @@ class StubIsUnreachableFromTheAppTests(TestCase):
         )
 
     def test_it_is_registered_so_it_cannot_drift_from_the_real_adapters(self):
-        # Registered on purpose: `build_client("stub")` goes through the same
-        # factory as every real adapter, so a change to the LLMClient interface
-        # breaks this the same way it would break Groq.
+        # Registered on purpose: it goes through the same factory as real
+        # adapters, so an LLMClient interface change breaks it too.
         self.assertIs(_REGISTRY[PROVIDER_NAME], StubClient)
 
         with _allowed():
@@ -115,12 +91,7 @@ class StubIsUnreachableFromTheAppTests(TestCase):
 
 
 class CannedEmailPassesTheRealGatesTests(TestCase):
-    """The stub's output has to survive the planner's two output gates.
-
-    Otherwise every benchmark lead takes the failure branch and the run
-    measures a code path the product never takes -- which would be a benchmark
-    that is not merely imprecise but about something else entirely.
-    """
+    """The stub's output has to survive the planner's two output gates."""
 
     def setUp(self):
         super().setUp()
@@ -143,8 +114,7 @@ class CannedEmailPassesTheRealGatesTests(TestCase):
     def test_the_email_names_the_actual_lead(self):
         email = canned_email(self.prompt)
 
-        # Found in the prompt, not hardcoded: proving the stub read a real
-        # prompt is what proves the prompt-building phase ran at all.
+        # These come from the prompt, not from hardcoded strings in the stub.
         self.assertIn("Priya Nair", email)
         self.assertIn("Summit Risk Advisors", email)
 
@@ -158,9 +128,7 @@ class CannedEmailPassesTheRealGatesTests(TestCase):
         self.assertEqual(violations, [], f"stub copy is not grounded: {violations}")
 
     def test_it_makes_no_numeric_claim(self):
-        # The specific way a fake email goes wrong. "your 47 closed deals" would
-        # be caught by the verifier and route every benchmark lead to a human --
-        # turning the benchmark into a measurement of the failure path.
+        # An invented number would fail the verifier and route the lead to a human.
         self.assertFalse(
             [ch for ch in canned_email(self.prompt) if ch.isdigit()],
             "the canned email contains a digit, which the verifier may contradict",
@@ -188,8 +156,7 @@ class StubBehaviourTests(SimpleTestCase):
         self.assertTrue(all(value > 0 for value in draws_a))
 
     def test_a_wide_distribution_is_still_clamped_above_zero(self):
-        # A gaussian around 1.87 with a fat spread has a negative tail, and a
-        # negative sleep is a TypeError, not a fast call.
+        # A fat-tailed gaussian draws negatives, and a negative sleep raises.
         with _allowed():
             client = StubClient(seed=1, latency_mean_s=0.01, latency_stddev_s=5.0)
 
@@ -220,9 +187,7 @@ class StubBehaviourTests(SimpleTestCase):
                 client._maybe_fail()
             except LLMError as exc:
                 raised += 1
-                # Both injected kinds are retryable on purpose: a benchmark run
-                # with failures switched on should measure the *retry path*, not
-                # degenerate into a run of dead leads.
+                # Both injected kinds are retryable, so the run measures retries.
                 self.assertTrue(exc.retryable)
         self.assertEqual(raised, 50)  # the two rates sum to 1.0
 
@@ -238,7 +203,6 @@ class StubBehaviourTests(SimpleTestCase):
 
         result = client.generate("- Contact: Dana Lee (dana@x.test)\n- Agency: Acme (CO, 2 p")
 
-        # MUS-25's token metric needs a number here, not a None.
         self.assertGreater(result.input_tokens, 0)
         self.assertGreater(result.output_tokens, 0)
         self.assertEqual(result.provider, PROVIDER_NAME)
@@ -246,13 +210,8 @@ class StubBehaviourTests(SimpleTestCase):
         self.assertGreater(result.latency_s, 0)
 
     def test_the_async_path_does_not_block_the_loop(self):
-        """The single most likely way for this file to quietly lie.
-
-        A stub calling `time.sleep` inside `agenerate` would serialize the pool
-        while looking correct, so every benchmark number would be a measurement
-        of one worker. Asserted by overlapping two calls: with a blocking sleep
-        the total is 2x, with a real await it is 1x.
-        """
+        """`agenerate` must await, not `time.sleep`: two overlapped calls take
+        1x the latency, not 2x."""
         import asyncio
         import time
 
@@ -279,13 +238,8 @@ class SeedSyntheticLeadsTests(TestCase):
         self.assertEqual(Lead.objects.filter(id__startswith="synth_").count(), 30)
 
     def test_the_action_mix_is_not_thirty_copies_of_one_lead(self):
-        """Two hundred identical leads would be a worse benchmark than twelve
-        real ones -- they would all take the same branch.
-
-        In particular the run has to include leads that classify as ``unknown``
-        and skip generation entirely, because that fraction is exactly the part
-        of the run concurrency cannot speed up.
-        """
+        """The seeded mix spans several actions, including some ``unknown``
+        (the fraction of the run concurrency cannot speed up)."""
         from project.app.services import actions
         from project.app.services.outreach import determine_action
 
@@ -299,27 +253,13 @@ class SeedSyntheticLeadsTests(TestCase):
         self.assertLess(unknown_share, 0.5)
 
     def test_each_synthetic_lead_classifies_exactly_as_its_template_does(self):
-        """The property that makes the golden set worth using as a template.
+        """Re-anchoring dates and adding padding events must not move a lead.
 
-        Compared against what ``determine_action`` says about the *template*,
-        not against the record's ``expected_action`` label. The two are not the
-        same thing -- the classifier does not score 100% on the golden set, which
-        is precisely why the rules eval exists -- and a test that conflated them
-        would fail for reasons that have nothing to do with this fixture.
-
-        What it isolates is whether *seeding* changed anything: the dates are
-        re-anchored on today and three padding events are added, and neither may
-        move a lead. It is also the guard on the padding specifically. Make one
-        an ``email_sent`` with ``outcome: no_reply``, or give it notes with a
-        stall phrase, and leads start flipping into ``follow_up_after_hold`` --
-        quietly corrupting the distribution this fixture exists to reproduce.
-
-        Each side is classified against its own anchor: the template against the
-        golden harness's frozen TODAY (exactly as the rules eval scores it), the
-        seeded lead against the real today it was re-anchored to. Classifying
-        both against the real today reads the template's dates through a
-        widening gap and starts failing of its own accord some number of days
-        after the golden file was written, with seeding blameless.
+        Compared against ``determine_action`` on the *template*, not the
+        record's ``expected_action`` label -- the classifier does not score 100%
+        on the golden set. Each side is classified against its own anchor: the
+        template against the harness's frozen TODAY, the seeded lead against the
+        real today it was re-anchored to.
         """
         from evals.run_rules_eval import GOLDEN_PATH, TODAY, build_lead, load_golden
         from project.app.services.outreach import determine_action
@@ -329,8 +269,7 @@ class SeedSyntheticLeadsTests(TestCase):
 
         for position, record in enumerate(templates, start=1):
             # Ids are assigned before the shuffle, so `synth_0001` is always the
-            # first template -- the seed decides which *row* carries it, not
-            # which template it came from.
+            # first template regardless of seed.
             lead = Lead.objects.prefetch_related("events").get(id=f"synth_{position:04d}")
             template_action, _ = determine_action(build_lead(record), today=TODAY)
             seeded_action, _ = determine_action(lead)
@@ -342,12 +281,7 @@ class SeedSyntheticLeadsTests(TestCase):
             )
 
     def test_flush_only_deletes_synthetic_rows(self):
-        """The reason the id prefix exists.
-
-        `--flush` runs against whatever database it is pointed at, and the demo
-        pipeline is the DEMO.md contract. Emptying the table would be a much
-        more convenient implementation and a much worse one.
-        """
+        """`--flush` clears the `synth_` prefix only, never the demo rows."""
         Lead.objects.create(
             id="lead_001",
             agency_name="Real Demo Agency",
@@ -372,9 +306,7 @@ class SeedSyntheticLeadsTests(TestCase):
         call_command("seed_synthetic_leads", count=40, seed=1, verbosity=0)
 
         self.assertGreater(Event.objects.count(), 0)
-        # Golden dates are relative to that harness's frozen TODAY; re-anchoring
-        # them on the real today is what preserves the classification each
-        # template was labelled with.
+        # Golden dates are relative to the harness's frozen TODAY.
         today = datetime.date.today()
         recent = Lead.objects.exclude(last_login_date=None).order_by("-last_login_date").first()
         if recent is not None:
@@ -389,12 +321,8 @@ class BenchmarkScriptTests(SimpleTestCase):
     """The benchmark's one safety-critical property, tested as a property."""
 
     def test_it_points_django_at_a_temporary_database_before_setup(self):
-        """`DATABASE_URL` must be set before `django.setup()`, not after.
-
-        `project/settings.py` reads it at import time, so an assignment
-        afterwards is decoration -- and the failure mode is 200 synthetic leads
-        in the demo database, which is the DEMO.md contract.
-        """
+        """`DATABASE_URL` must be set before `django.setup()`: settings reads it
+        at import time, and the failure mode is synthetic leads in the demo db."""
         source = (settings.BASE_DIR / "evals" / "bench_planner.py").read_text(encoding="utf-8")
         set_url = source.index('os.environ["DATABASE_URL"]')
         # The *call*, not the mention of it in the module docstring.
@@ -405,11 +333,8 @@ class BenchmarkScriptTests(SimpleTestCase):
         self.assertIn("Refusing to run", source)
 
     def test_the_benchmark_runs_end_to_end_on_a_temporary_database(self):
-        # A real subprocess: the point is the bootstrap sequence, and importing
-        # the module in-process would inherit this test run's already-configured
-        # Django. Tiny and fast -- 6 leads at 1ms of simulated latency. The
-        # result JSON goes to a temporary directory so this smoke artifact can
-        # never end up in evals/results/ beside the committed 200-lead numbers.
+        # A real subprocess: in-process would inherit this run's configured
+        # Django. Results go to a tmpdir, clear of evals/results/.
         with tempfile.TemporaryDirectory(prefix="bench-smoke-") as tmpdir:
             result = subprocess.run(
                 [

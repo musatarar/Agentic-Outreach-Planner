@@ -19,11 +19,8 @@ interface DayBucket {
 
 /**
  * Bucket by calendar day *in the server's triage zone*, preserving the
- * server's reverse-chronological order within and across buckets.
- *
- * Grouping on the browser's calendar day would split one evening triage
- * session across two headings for anyone west of UTC — the same class of bug
- * for the page date.
+ * server's reverse-chronological order. Grouping on the browser's day would
+ * split an evening session across two headings west of UTC.
  */
 function groupByDay(items: QueueItem[], timeZone: string): DayBucket[] {
   const buckets: DayBucket[] = [];
@@ -41,9 +38,8 @@ function groupByDay(items: QueueItem[], timeZone: string): DayBucket[] {
 
 /**
  * The record of the day. `/api/queue/done/` returns today only, so in practice
- * there is one bucket and the heading is suppressed — repeating the date
- * already in the page header would be noise. The grouping is here so that the
- * day the range widens, the headings appear with no further work.
+ * there is one bucket and its heading is suppressed; the grouping is here for
+ * when the range widens.
  */
 export function DoneList({ items, timeZone, onUndo, undoState }: DoneListProps) {
   const days = groupByDay(items, timeZone);

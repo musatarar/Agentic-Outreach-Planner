@@ -131,14 +131,12 @@ class OutreachListViewTests(AuthenticatedAPITestCase):
     def test_most_recent_action_per_lead_ordered_by_priority(self):
         resp = self.client.get(reverse("outreach-list"))
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        # One row per lead (most recent for lead1), so 2 rows total.
         self.assertEqual(len(resp.data), 2)
 
         ids = [row["id"] for row in resp.data]
         self.assertNotIn(self.old.id, ids)
         self.assertIn(self.recent.id, ids)
 
-        # Ordered by priority ascending: lead2 (priority 2) before lead1 (priority 3).
         self.assertEqual([row["priority"] for row in resp.data], [2, 3])
         self.assertEqual(resp.data[0]["id"], self.action2.id)
         self.assertEqual(resp.data[1]["id"], self.recent.id)
@@ -199,7 +197,6 @@ class OutreachRunViewTests(AuthenticatedAPITestCase):
         mock_plan.assert_called_once()
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(len(resp.data), 2)
-        # Ordered by priority ascending.
         self.assertEqual([row["priority"] for row in resp.data], [1, 3])
         self.assertEqual(resp.data[0]["id"], a_high.id)
         self.assertEqual(resp.data[1]["id"], a_low.id)
@@ -307,9 +304,7 @@ class ReviewQueueViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         ids = [row["id"] for row in resp.data["items"]]
         self.assertEqual(ids, [self.lead1_new.id])
-        # Older action for same lead excluded (dedupe keeps newest).
         self.assertNotIn(self.lead1_old.id, ids)
-        # Decided / non-human excluded.
         self.assertNotIn(self.lead2_action.id, ids)
         self.assertNotIn(self.lead3_action.id, ids)
 
@@ -536,8 +531,7 @@ class LLMCatalogViewTests(AuthenticatedAPITestCase):
                 "notes",
             },
         )
-        # Prices serialize as JSON numbers, not quoted strings (DRF's default
-        # Decimal handling would otherwise stringify them as "1.0000").
+        # Prices serialize as JSON numbers, not DRF's stringified Decimals.
         rendered_model = json.loads(resp.content)["providers"][0]["models"][0]
         self.assertIsInstance(rendered_model["input_price_per_mtok_usd"], float)
 
@@ -629,7 +623,6 @@ class LLMConfigViewTests(AuthenticatedAPITestCase):
             {"provider": "claude", "model": "opus", "max_tokens": 500, "api_key": secret_key},
             format="json",
         )
-        # Second PUT with no api_key field at all -- should keep the stored key.
         resp = self.client.put(
             reverse("llm-config"),
             {"provider": "claude", "model": "opus", "max_tokens": 700},
@@ -663,8 +656,7 @@ class LLMConfigViewTests(AuthenticatedAPITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        # MUS-37: every non-2xx body is now the {code, detail} contract envelope;
-        # the offending field name is carried in `detail` rather than as a key.
+        # Contract envelope (MUS-37): the offending field name rides in `detail`.
         self.assertEqual(resp.data["code"], "validation_error")
         self.assertIn("model", resp.data["detail"])
 

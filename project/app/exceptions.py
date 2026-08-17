@@ -1,22 +1,8 @@
 """The single error envelope every non-2xx response in this API uses (MUS-37).
 
-Contract MUS-35 section 5 pins one shape for every failure, from every
-endpoint:
-
-```json
-{"code": "machine_slug", "detail": "Human-readable sentence."}
-```
-
-``detail`` is always present because the frontend's ``toError`` reads it
-first; ``code`` is always present because that is what the frontend branches
-on. Without this handler DRF emits four different shapes -- ``{"detail": ...}``
-for APIException, ``{"field": ["msg"]}`` for validation errors, a bare list
-for some serializer failures -- and every consumer has to guess.
-
-The full code registry lives in contract section 5.3. Endpoints raise
-:class:`ContractError` when they know the code; everything else (404s, 405s,
-CSRF failures, throttles, un-annotated serializer errors) is mapped here from
-the HTTP status, so a code can never be *missing*.
+Every failure is ``{"code": "machine_slug", "detail": "sentence"}``. Views
+raise :class:`ContractError` when they know the code; everything else is
+mapped from the HTTP status here, so a code can never be missing.
 """
 
 from __future__ import annotations
@@ -29,8 +15,7 @@ from rest_framework.exceptions import APIException, PermissionDenied, Throttled
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
-#: Fallback ``code`` by HTTP status, for exceptions raised outside our own
-#: views (DRF's 404/405/throttling, Django's CSRF rejection, and so on).
+#: Fallback ``code`` by HTTP status, for exceptions raised outside our own views.
 STATUS_FALLBACK_CODES = {
     status.HTTP_400_BAD_REQUEST: "validation_error",
     status.HTTP_401_UNAUTHORIZED: "not_authenticated",
@@ -49,12 +34,7 @@ DEFAULT_THROTTLE_DETAIL = "Too many requests."
 
 
 class ContractError(APIException):
-    """An error whose ``code`` is pinned by the contract rather than inferred.
-
-    ``ContractError("expired_token", "This sign-in link has expired. …")``
-    keeps the machine slug and the human sentence adjacent at the raise site,
-    which is the only place that actually knows which of them is true.
-    """
+    """An error whose ``code`` is pinned by the contract rather than inferred."""
 
     status_code = status.HTTP_400_BAD_REQUEST
 
@@ -76,8 +56,7 @@ def contract_exception_handler(exc: Exception, context: dict[str, Any]) -> Respo
     """Wrap DRF's handler and normalise its four output shapes into one."""
     response = drf_exception_handler(exc, context)
     if response is None:
-        # Not a DRF-handled exception -- let Django's 500 path deal with it
-        # rather than dressing an unknown crash up as a contract error.
+        # Not a DRF-handled exception -- let Django's 500 path deal with it.
         return None
 
     code = getattr(exc, "contract_code", None) or _fallback_code(exc, response.status_code)
@@ -87,8 +66,7 @@ def contract_exception_handler(exc: Exception, context: dict[str, Any]) -> Respo
     body.update(getattr(exc, "extra", None) or {})
 
     if isinstance(exc, Throttled) and exc.wait is not None:
-        # Mirrored into the body as well as the `Retry-After` header DRF sets,
-        # because fetch() in a browser cannot always read response headers.
+        # Mirrors the `Retry-After` header: browser fetch() cannot always read headers.
         body["retry_after"] = int(math.ceil(exc.wait))
 
     response.data = body
@@ -97,8 +75,7 @@ def contract_exception_handler(exc: Exception, context: dict[str, Any]) -> Respo
 
 def _fallback_code(exc: Exception, status_code: int) -> str:
     if isinstance(exc, PermissionDenied) and "CSRF" in str(exc.detail):
-        # Django rejects the request before the view; DRF's SessionAuthentication
-        # re-raises it as PermissionDenied with the reason in the message.
+        # Django's CSRF rejection surfaces as PermissionDenied with the reason in the message.
         return "csrf_failed"
     return STATUS_FALLBACK_CODES.get(status_code, DEFAULT_CODE)
 
@@ -110,12 +87,7 @@ def _detail_sentence(exc: Exception, data: Any, context: dict[str, Any]) -> str:
 
 
 def _throttle_sentence(exc: Throttled, context: dict[str, Any]) -> str:
-    """Say which limit was hit and when to come back, in that order.
-
-    DRF's stock message ("Request was throttled. Expected available in 480
-    seconds.") is both vague about *what* was throttled and phrased in a unit
-    nobody thinks in.
-    """
+    """Say which limit was hit and when to come back, in that order."""
     view = context.get("view")
     lead = getattr(view, "throttle_detail", None) or DEFAULT_THROTTLE_DETAIL
     if exc.wait is None:

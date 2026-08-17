@@ -86,75 +86,43 @@ class OutreachAction(models.Model):  # what the planner decided/did
     status = models.CharField(
         max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True
     )
-    # Set on EVERY status write, including a re-snooze of an already-snoozed
-    # item. Drives both the undo window and the reverse-chron /done ordering.
+    # Set on every status write; drives the undo window and the /done ordering.
     status_changed_at = models.DateTimeField(null=True, blank=True, default=None)
 
-    # The reviewer's edit of `suggested_copy`. "" means never edited.
-    # `suggested_copy` is IMMUTABLE -- the eval corpus depends on being able to
-    # diff the model's original output against what a human actually sent.
+    # Reviewer's edit; "" means never edited. `suggested_copy` is IMMUTABLE --
+    # the eval corpus diffs it against what a human actually sent.
     edited_copy = models.TextField(blank=True, default="")
 
-    # Always non-NULL while status == "snoozed", including for on_activity
-    # (which uses a backstop -- see TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS),
-    # so the unsnooze sweep and the FE ordering never need a NULL branch.
+    # Non-NULL whenever status == "snoozed" (on_activity uses a backstop --
+    # see TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS).
     snooze_until = models.DateTimeField(null=True, blank=True, default=None, db_index=True)
     snooze_trigger = models.CharField(
         max_length=16, choices=SNOOZE_TRIGGER_CHOICES, blank=True, default=""
     )
-    # Watermark for trigger == "on_activity": the item returns to the queue as
-    # soon as the lead has an Event with timestamp > this value. Captured at
-    # snooze time so later events (not historical ones) are what wake it.
+    # Watermark for trigger == "on_activity": only events after this wake the item.
     snooze_activity_after = models.DateTimeField(null=True, blank=True, default=None)
 
     dismiss_reason = models.CharField(max_length=64, blank=True, default="")
 
-    # Stable identity of "this recommendation for this lead", used to suppress
-    # a permanently dismissed recommendation on later plan_outreach() runs and
-    # to stop a re-run duplicating an already-open item. See DismissedOutreachKey.
+    # Stable identity of "this recommendation for this lead". See DismissedOutreachKey.
     dedupe_key = models.CharField(max_length=128, blank=True, default="", db_index=True)
 
-    # The planner run that produced this row -- a UUID, also carried on that
-    # run's trace as `outreach.run.id` (MUS-25). One indexed column, and it
-    # exists to resolve a genuine ordering problem rather than for reporting.
-    #
-    # A lead's span has to close when that lead's work ends: at concurrency 8
-    # over 200 leads, holding every lead span open until the run finishes would
-    # give the lead processed at t=0 a 45-second span and destroy the per-lead
-    # latency signal entirely. But the span wants to reference the row it
-    # produced, and no primary key exists until the write at the *end* of the
-    # run. `trace_run_id` is the identity that is known *before* the row exists:
-    # the span records `outreach_action:{trace_run_id}:{lead_id}` and closes on
-    # time, and the row is resolvable later by
-    # `.get(trace_run_id=..., lead_id=...)`.
-    #
-    # Blank on rows written before this field existed, and on any write that
-    # does not come from a planner run.
+    # Planner run UUID, also on that run's trace as `outreach.run.id` (MUS-25).
+    # Known before the row exists, so a span can reference the row via
+    # (trace_run_id, lead_id). Blank on rows not written by a planner run.
     trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
 
-    # Structured rule trace snapshot (schema v1, section 3), produced by
-    # MUS-42's services/outreach.py::explain(). A SNAPSHOT: never recomputed
-    # after creation, because every relative figure in it ("28d since last
-    # contact") is only true as of `trace.today`.
+    # Rule trace snapshot (schema v1) from services/outreach.py::explain().
+    # Never recomputed: its relative figures are only true as of `trace.today`.
     rule_trace = models.JSONField(default=dict, blank=True)
 
-    # Verification report (schema v1, section 4) for `effective_copy`, produced
-    # by MUS-42's services/verify.py::verify_spans(). Rewritten on every /edit/
-    # and /approve/; regenerated, not appended.
+    # Verification report (schema v1) for `effective_copy`; rewritten on every
+    # /edit/ and /approve/.
     verification = models.JSONField(default=dict, blank=True)
 
-    # The state machine, in one place. Anything not listed here is a 409
-    # `invalid_transition` -- never a silent
-    # no-op, so "approve a dismissed action" is an error the caller sees.
-    #   pending    -> approved | snoozed | dismissed   (triage decisions)
-    #   snoozed    -> approved | snoozed | dismissed   (re-snooze is allowed)
-    #              -> pending                          (undo / unsnooze_due)
-    #   approved   -> pending                          (undo only)
-    #              -> sent                             (dispatch, MUS-29)
-    #   dismissed  -> pending                          (undo only, and it must
-    #                                                   revoke the suppression)
-    #   sent       -> (nothing)                        (terminal -- no undo
-    #                                                   past a send)
+    # The state machine. Anything not listed is a 409 `invalid_transition`,
+    # never a silent no-op. `sent` is terminal; undo of a dismissal must also
+    # revoke the suppression.
     ALLOWED_TRANSITIONS = {
         STATUS_PENDING: (STATUS_APPROVED, STATUS_SNOOZED, STATUS_DISMISSED),
         STATUS_SNOOZED: (STATUS_APPROVED, STATUS_SNOOZED, STATUS_DISMISSED, STATUS_PENDING),
@@ -163,8 +131,7 @@ class OutreachAction(models.Model):  # what the planner decided/did
         STATUS_SENT: (),
     }
 
-    # Statuses whose copy a reviewer may still change. Editing is not a status
-    # transition, so it needs its own guard.
+    # Editing is not a status transition, so it needs its own guard.
     EDITABLE_STATUSES = (STATUS_PENDING, STATUS_SNOOZED)
 
     def can_transition_to(self, new_status):
@@ -173,11 +140,7 @@ class OutreachAction(models.Model):  # what the planner decided/did
 
     @property
     def effective_copy(self):
-        """The copy that would actually be sent: the edit if there is one.
-
-        Computed server-side and serialized as its own field so no client ever
-        has to write ``edited_copy or suggested_copy``.
-        """
+        """The copy that would actually be sent: the edit if there is one."""
         return self.edited_copy or self.suggested_copy
 
     class Meta:
@@ -186,16 +149,8 @@ class OutreachAction(models.Model):  # what the planner decided/did
             models.Index(fields=["status", "-status_changed_at"], name="oa_done_order"),
         ]
         constraints = [
-            # A trace's `outreach.output.ref` promises that
-            # `.get(trace_run_id=..., lead_id=...)` resolves to one row. It is
-            # true by construction -- one WorkItem per lead per run -- but a
-            # promise a reader relies on should be enforced by the schema
-            # rather than by an invariant several modules away.
-            #
-            # Partial, because every row written before MUS-25 has
-            # trace_run_id="" and they are not unique per lead: an
-            # unconditional constraint would fail to apply on any existing
-            # database.
+            # Traces promise (trace_run_id, lead_id) resolves to one row.
+            # Partial: rows written before MUS-25 have trace_run_id="".
             models.UniqueConstraint(
                 fields=["trace_run_id", "lead"],
                 condition=~Q(trace_run_id=""),
@@ -210,8 +165,7 @@ class OutreachAction(models.Model):  # what the planner decided/did
 class LLMProvider(models.Model):
     """A supported LLM vendor (claude, chatgpt, deepseek, groq, ...).
 
-    Seeded by ``manage.py seed_llm_catalog`` (idempotent). Read-only from the
-    API's point of view — the catalog endpoint just serializes these rows.
+    Seeded by ``manage.py seed_llm_catalog`` (idempotent); read-only via the API.
     """
 
     key = models.CharField(max_length=32, primary_key=True)  # "claude", "groq", ...
@@ -255,20 +209,17 @@ class LLMModel(models.Model):
 class LLMConfiguration(models.Model):
     """Singleton row holding the active LLM provider/model/key selection.
 
-    Enforced as a singleton two ways: ``save()`` always forces ``pk=1``, and a
-    DB-level ``CheckConstraint`` blocks any row with a different pk (defence in
-    depth against a direct/bulk insert bypassing ``save()``).
+    Enforced two ways: ``save()`` forces ``pk=1``, and a DB ``CheckConstraint``
+    blocks any other pk.
     """
 
     provider = models.ForeignKey(LLMProvider, on_delete=models.PROTECT, related_name="+")
     model = models.ForeignKey(LLMModel, on_delete=models.PROTECT, related_name="+")
     max_tokens = models.IntegerField()
-    # Fernet ciphertext of the provider API key (see services/crypto.py). NULL
-    # means no key stored in the DB -- callers fall back to the provider's env
-    # var (see services/llm/config.py's precedence rules).
+    # Fernet ciphertext (services/crypto.py). NULL -> callers fall back to the
+    # provider's env var (services/llm/config.py).
     encrypted_api_key = models.BinaryField(null=True, blank=True)
-    # Last 4 characters of the plaintext key, kept alongside the ciphertext so
-    # the API/admin can show "...x7fQ" without ever decrypting for display.
+    # Last 4 chars of the plaintext key, so "...x7fQ" can be shown without decrypting.
     key_last_four = models.CharField(max_length=4, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -299,11 +250,8 @@ class ReviewDecision(models.Model):
     STATUS_RESOLVED = "resolved"
     STATUS_PENDING = "pending_engineering"
 
-    # ForeignKey, not OneToOne (MUS-29): an action must be able to hold BOTH a
-    # resolution decision ("which action type is this?") and a send decision
-    # ("may this copy leave the building?"). Per-category uniqueness moved to
-    # the two partial constraints below, so duplicate/racing submissions still
-    # die at the DB rather than in a read-then-write.
+    # ForeignKey, not OneToOne (MUS-29): an action can hold both a resolution
+    # and a send decision; per-category uniqueness is the partial constraints below.
     outreach_action = models.ForeignKey(
         OutreachAction, on_delete=models.CASCADE, related_name="review_decisions"
     )
@@ -318,27 +266,23 @@ class ReviewDecision(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     # ---- Send-decision fields (MUS-29); blank on resolution kinds ----------
-    # Snapshot of `effective_copy` at decision time: the exact bytes the human
-    # approved, hash-bound so dispatch can refuse to send anything else.
+    # Snapshot of `effective_copy` at decision time, hash-bound so dispatch
+    # refuses to send anything else.
     approved_copy = models.TextField(blank=True, default="")
     approved_body_sha256 = models.CharField(max_length=64, blank=True, default="")
-    # Stamped by undo. A voided approval is kept for audit and never
-    # authorizes a send.
+    # Stamped by undo; a voided approval is kept for audit and never authorizes a send.
     voided_at = models.DateTimeField(null=True, blank=True, default=None)
 
     class Meta:
         constraints = [
-            # One resolution per action, ever -- preserves the guarantee the
-            # old OneToOne gave the triage flow. Literal kind strings: Meta
-            # cannot see the enclosing class namespace. Partial-constraint
-            # precedent: oa_one_row_per_lead_per_run.
+            # One resolution per action, ever. Literal kind strings: Meta
+            # cannot see the enclosing class namespace.
             models.UniqueConstraint(
                 fields=["outreach_action"],
                 condition=Q(kind__in=("select_existing", "propose_new")),
                 name="rd_one_resolution_per_action",
             ),
-            # One LIVE send decision per action: undo voids rather than
-            # deletes, so the audit trail stays while the slot frees up.
+            # One LIVE send decision per action: undo voids rather than deletes.
             models.UniqueConstraint(
                 fields=["outreach_action"],
                 condition=Q(kind__in=("approve_send", "reject_send")) & Q(voided_at__isnull=True),
@@ -353,19 +297,13 @@ class ReviewDecision(models.Model):
 class LoginToken(models.Model):
     """A single-use, short-lived magic-link login token (MUS-37).
 
-    The raw token is NEVER stored: ``secrets.token_urlsafe(32)`` is generated,
-    emailed/printed, and only ``sha256(token).hexdigest()`` is persisted. A
-    plain SHA-256 (not a slow KDF) is correct here because the token is 256
-    bits of CSPRNG output -- there is no dictionary to attack, and the verify
-    path must stay cheap enough to be rate-limited rather than DoS'd.
-
-    Single-use is enforced by a conditional UPDATE (see views_auth.py), not by
-    read-then-write, so two concurrent consumes cannot both succeed.
+    Only ``sha256(token)`` is stored -- plain SHA-256 is fine for 256-bit
+    CSPRNG output. Single-use is enforced by a conditional UPDATE
+    (views_auth.py), so two concurrent consumes cannot both succeed.
     """
 
     email = models.EmailField(db_index=True)
-    # sha256 hexdigest of the raw token -- 64 chars, unique so a replayed
-    # insert fails loudly at the DB rather than silently.
+    # sha256 hexdigest of the raw token; unique so a replayed insert fails at the DB.
     token_hash = models.CharField(max_length=64, unique=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(db_index=True)
@@ -389,20 +327,9 @@ class LoginToken(models.Model):
 class DismissedOutreachKey(models.Model):
     """Permanent suppression ledger for dismissed recommendations (MUS-39).
 
-    Dismiss means "never show me this again". `plan_outreach()` consults this
-    table BEFORE generating copy, so a dismissed recommendation costs no LLM
-    call on a re-run and creates no row to filter out downstream.
-
-    TABLE, not a JSONField on Lead, because:
-      * it needs a UNIQUE index on `dedupe_key` -- the whole point is that a
-        second dismissal of the same recommendation is a no-op, enforced by
-        the DB rather than by read-modify-write;
-      * `plan_outreach()` reads the entire active set once per run
-        (`values_list("dedupe_key", flat=True)`) -- one query, O(1) in leads;
-      * undo must REVOKE a dismissal, and a revocation needs its own timestamp
-        and audit trail, which a blob cannot carry;
-      * it outlives the OutreachAction row that created it (SET_NULL), so
-        pruning old actions cannot silently resurrect dismissed work.
+    Consulted by `plan_outreach()` BEFORE generating copy, so a dismissed
+    recommendation costs no LLM call on a re-run. Outlives the OutreachAction
+    that created it (SET_NULL); undo revokes rather than deletes.
     """
 
     # sha256("v1|{lead_id}|{action_type}").hexdigest(). See services/dedupe.py.
@@ -415,8 +342,7 @@ class DismissedOutreachKey(models.Model):
     source_action = models.ForeignKey(
         OutreachAction, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
-    # Set by undo-of-dismiss. A revoked row no longer suppresses, but is kept
-    # so the audit trail shows the dismissal happened and was reversed.
+    # Set by undo-of-dismiss; a revoked row no longer suppresses but is kept for audit.
     revoked_at = models.DateTimeField(null=True, blank=True, default=None)
 
     class Meta:
@@ -429,21 +355,8 @@ class DismissedOutreachKey(models.Model):
 class OutreachEdit(models.Model):
     """Append-only log of reviewer edits to generated copy (MUS-39).
 
-    This is the eval corpus: "what did the model write, what did the human
-    actually send, and what changed" is the only honest signal we have about
-    copy quality, and it is only capturable at the moment of editing.
-
-    TABLE, not a JSONField on OutreachAction, because:
-      * it is 1:N -- a reviewer typically edits, re-verifies, edits again, then
-        approves, and every intermediate state is corpus-worthy;
-      * it is exported by date range for offline scoring, which is a query,
-        not a blob scan;
-      * the queue list endpoint has a CONSTANT-query-count requirement, and
-        diffs are large -- keeping them off the hot row means the queue payload
-        never carries them.
-
-    The `diff_ops` payload itself IS a JSONField: it is opaque to SQL, always
-    read whole, and its internal shape is versioned rather than queried.
+    This is the eval corpus: what the model wrote vs. what a human actually
+    sent. Its own table keeps large diffs off the constant-query-count queue payload.
     """
 
     outreach_action = models.ForeignKey(
@@ -452,14 +365,11 @@ class OutreachEdit(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     editor = models.EmailField(blank=True, default="")
 
-    # Full before/after so the corpus is self-contained and survives any later
-    # change to the diff algorithm.
+    # Full before/after so the corpus survives any change to the diff algorithm.
     before_text = models.TextField()
     after_text = models.TextField()
 
-    # difflib.SequenceMatcher opcodes, non-"equal" only. Schema v1:
-    # [{"op":"replace","a0":312,"a1":330,"b0":312,"b1":341,
-    #   "before":"volume pricing","after":"volume pricing tiers"}, ...]
+    # difflib.SequenceMatcher opcodes, non-"equal" only (schema v1).
     diff_ops = models.JSONField(default=list, blank=True)
 
     chars_added = models.IntegerField(default=0)
@@ -482,15 +392,9 @@ class OutreachEdit(models.Model):
 class AgentLeadRun(models.Model):
     """The per-lead resume unit of an agentic copy run (MUS-29).
 
-    One row per (trace_run_id, lead) -- the same UUID the planner stamps on
-    `OutreachAction.trace_run_id`, so run, action, and span all join on one
-    identity. A worker takes ownership with an epoch-CAS conditional UPDATE
-    (the same single-winner shape as `LoginToken` consume): read `claim_epoch`,
-    then `filter(pk, claim_epoch=seen, status__in=NON_TERMINAL_STATUSES)
-    .update(claim_epoch=seen + 1, claimed_by=token, status="claimed")` --
-    rowcount 1 means the caller owns the run. Sequential re-claim after a
-    crash succeeds (dead-worker takeover); two workers racing from the same
-    read epoch produce exactly one winner.
+    One row per (trace_run_id, lead). Ownership is taken by an epoch-CAS
+    conditional UPDATE: rowcount 1 means the caller owns the run, so racing
+    workers produce exactly one winner and dead-worker takeover still works.
     """
 
     STATUS_PENDING = "pending"
@@ -529,20 +433,15 @@ class AgentLeadRun(models.Model):
 class AgentStep(models.Model):
     """Append-only step log: crash-resume checkpoint and reasoning trace in one.
 
-    Payload shapes by `kind` (schema in docs/contracts/agent-loop.md):
-      llm_call:    {"text", "tool_calls": [{"id", "name", "arguments"}],
-                    "provider", "model", "input_tokens", "output_tokens",
-                    "raw_finish_reason", "latency_s"}
-      tool_result: {"tool_call_id", "name", "result"}  # sanitized + capped
-      final:       {"text"}
+    Payload shapes by ``kind`` are pinned in docs/contracts/agent-loop.md.
     """
 
     lead_run = models.ForeignKey(AgentLeadRun, on_delete=models.CASCADE, related_name="steps")
     seq = models.IntegerField()
     kind = models.CharField(max_length=16)  # llm_call | tool_result | final
     payload = models.JSONField(default=dict)
-    # The same `genai.sha256_of` hashes the OTel spans carry (MUS-25), so a
-    # span and a step cross-reference without either leaking content.
+    # The same `genai.sha256_of` hashes the OTel spans carry (MUS-25), so a span
+    # and a step cross-reference without leaking content.
     request_sha256 = models.CharField(max_length=64, blank=True, default="")
     result_sha256 = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -580,11 +479,8 @@ class AEAvailabilitySlot(models.Model):
 class OutboundSend(models.Model):
     """The single send record: the DB backstop against double-send (MUS-29).
 
-    The dispatch CAS on `OutreachAction.status` is the winner-picker; this
-    OneToOne is the schema-level guarantee behind it -- a second send row for
-    the same action cannot exist. PROTECT on both FKs: rows that record real
-    outbound mail must outlive everything that produced them, so deleting an
-    action or decision with a send on it is an error, not a cascade.
+    The OneToOne makes a second send row impossible. PROTECT on both FKs:
+    records of real outbound mail must outlive everything that produced them.
     """
 
     outreach_action = models.OneToOneField(

@@ -1,21 +1,8 @@
 """Composing outreach for ONE client, on demand (MUS-68).
 
-Step 1 of MUS-67: the Assess next action button needs a way to ask for a single
-client's mail. The planner's only entry point is all-or-nothing, so a button
-built on it would spend a provider call per lead in the database on every press.
-
-Two properties carry this ticket, and neither is free:
-
-* **the scope is real** -- exactly one lead is classified and exactly one lead
-  reaches the provider. A "scoped" run that quietly generated for everyone and
-  returned one row would pass any test that only counted the response, so every
-  test here asserts on the provider stub's call count, not just on the payload;
-* **the whole-book run is untouched** -- the scoping is an optional argument,
-  and with it absent ``plan_outreach()`` must behave exactly as it did before.
-
-The provider seam is ``outreach.agenerate_copy``, the same one
-``tests_planner_async`` patches: it is the function the planner actually calls,
-and patching anything above it would leave phase 3 unexercised.
+Pins that the scope is real (exactly one lead reaches the provider, asserted on the
+stub's call count) and that the unscoped whole-book run is unchanged. The provider seam
+is ``outreach.agenerate_copy``, so phase 3 stays exercised.
 """
 
 from unittest.mock import patch
@@ -32,12 +19,8 @@ from project.app.tests_auth_utils import AuthenticatedAPITestCase
 
 
 def _make_lead(lead_id, agency_name):
-    """A lead that classifies to ``complete_onboarding``.
-
-    ``demo_completed`` with no signup date is the one classification that is
-    date-independent (the same fixture ``tests_planner_async`` uses), so nothing
-    here drifts with the wall clock.
-    """
+    """A lead that classifies to ``complete_onboarding`` — ``demo_completed`` with no
+    signup date is the one date-independent classification, so nothing drifts."""
     return Lead.objects.create(
         id=lead_id,
         agency_name=agency_name,
@@ -87,13 +70,8 @@ def _copy_for(agency):
 
 
 class _ProviderStub:
-    """Records every prompt phase 3 sends, so "who reached the model" is testable.
-
-    Phase 3 is deliberately handed no lead object, so the prompt is the only
-    channel that identifies the lead -- which is the point: a stub that could
-    read ``lead.id`` would not notice the day someone hands phase 3 a lead and
-    reintroduces a lazy query inside the event loop.
-    """
+    """Records every prompt phase 3 sends; the prompt is the only channel that
+    identifies the lead, so "who reached the model" is testable."""
 
     def __init__(self):
         self.prompts = []
@@ -139,8 +117,6 @@ class ScopedPlanOutreachTests(TestCase):
         self.assertEqual(OutreachAction.objects.get().lead_id, self.bravo.id)
 
     def test_scoping_to_one_lead_sends_exactly_one_prompt_to_the_provider(self):
-        # The load-bearing assertion of this ticket. A run that generated for
-        # every lead and returned one row would satisfy every other test here.
         stub = _ProviderStub()
         with _stub_provider(stub):
             plan_outreach(lead_ids=[self.bravo.id])
@@ -152,8 +128,7 @@ class ScopedPlanOutreachTests(TestCase):
         )
 
     def test_an_unmatched_lead_still_writes_its_row_and_routes_to_a_human(self):
-        # UNKNOWN produces no prompt, so this must cost no provider call while
-        # still producing the row the whole-book run would have produced.
+        # UNKNOWN produces no prompt, so this costs no provider call.
         nomatch = _unmatched_lead()
         stub = _ProviderStub()
         with _stub_provider(stub):
@@ -165,8 +140,7 @@ class ScopedPlanOutreachTests(TestCase):
         self.assertTrue(planned[0].needs_human)
 
     def test_an_open_recommendation_suppresses_the_scoped_run(self):
-        # The "an open item wins" rule is consulted before the prompt is built,
-        # so a suppressed lead must cost no provider call.
+        # The suppression rule is consulted before the prompt is built.
         OutreachAction.objects.create(
             lead=self.bravo,
             priority=2,
@@ -247,8 +221,7 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
             resp = self.client.post(self.url_for(self.bravo.id))
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        # The same shape OutreachActionSerializer emits everywhere else, so the
-        # frontend needs no new type.
+        # The same shape OutreachActionSerializer emits everywhere else.
         self.assertEqual(
             set(resp.data.keys()),
             {

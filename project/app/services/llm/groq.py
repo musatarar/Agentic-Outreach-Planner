@@ -1,5 +1,4 @@
-"""Groq adapter (OpenAI Chat Completions-compatible)
-"""
+"""Groq adapter (OpenAI Chat Completions-compatible)"""
 
 from .openai_compatible import DEFAULT_TIMEOUT_SECONDS, OpenAICompatibleClient
 

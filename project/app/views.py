@@ -30,22 +30,14 @@ from project.app.services.llm import config as llm_config
 class OutreachRunView(APIView):
     """POST /api/outreach/run/ — run the planner and return created actions.
 
-    An optional JSON body ``{"resume_run_id": "<uuid>"}`` re-enters a crashed
-    agent run (MUS-29). Two ways it is refused, both 400 and both decided by
-    ``plan_outreach`` itself rather than here: ``unknown_run`` when no
-    ``AgentLeadRun`` row carries that id (a typo'd id would otherwise start a
-    silently fresh run, re-billing every call the resume existed to save), and
-    ``agent_disabled`` when ``OUTREACH_AGENT_ENABLED`` is off (the resume
-    machinery all sits inside the flag, so the run would re-plan every lead
-    single-shot while still stamping the resumed run's id on every row).
-
-    The guard lives at the mechanism because this view is not the only caller
-    reaching it — scripts and tests call ``plan_outreach`` directly.
+    Optional body ``{"resume_run_id": "<uuid>"}`` re-enters a crashed agent run
+    (MUS-29); ``plan_outreach`` itself decides the two 400s (``unknown_run``,
+    ``agent_disabled``) since scripts and tests call it directly too.
     """
 
     def post(self, request, *args, **kwargs):
-        # Imported inside the method so the view module loads even before the
-        # service module exists (it's built by another agent in parallel).
+        # Imported inside the method so this module loads independently of the
+        # service module.
         from project.app.services.outreach import AgentDisabled, UnknownRun, plan_outreach
 
         data = request.data if isinstance(request.data, dict) else {}
@@ -66,8 +58,7 @@ class OutreachListView(APIView):
     """GET /api/outreach/ — most recent action per lead, ordered by priority."""
 
     def get(self, request, *args, **kwargs):
-        # Most recent OutreachAction per lead: order so the newest action for a
-        # lead comes first, then keep the first occurrence per lead.
+        # Newest action per lead: order newest-first, keep the first per lead.
         latest = OutreachAction.objects.select_related("lead").order_by(
             "lead_id", "-created_at", "-id"
         )
@@ -97,10 +88,8 @@ class ReviewQueueView(APIView):
     """GET /api/review-queue/ — needs_human actions awaiting a decision."""
 
     def get(self, request, *args, **kwargs):
-        # Resolution kinds only (MUS-29): a send decision (approve_send /
-        # reject_send) answers "may this go out?", not "is the unknown
-        # resolved?", so it must never hide a needs_human row still awaiting
-        # triage.
+        # Resolution kinds only (MUS-29): send decisions answer "may this go
+        # out?", not "is the unknown resolved?", so they must not hide a row.
         decided_ids = set(
             ReviewDecision.objects.filter(kind__in=ReviewDecision.RESOLUTION_KINDS).values_list(
                 "outreach_action_id", flat=True
@@ -158,12 +147,12 @@ class ReviewDecisionListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         try:
             # Savepoint so the IntegrityError doesn't poison the surrounding
-            # transaction (ATOMIC_REQUESTS / TestCase) and we can return cleanly.
+            # transaction (ATOMIC_REQUESTS / TestCase).
             with transaction.atomic():
                 serializer.save()
         except IntegrityError:
             # OneToOne unique constraint: a decision already exists for this
-            # action (double-click / concurrent reviewers). It's already resolved.
+            # action (double-click / concurrent reviewers).
             return Response(
                 {"outreach_action": "A decision already exists for this action."},
                 status=status.HTTP_409_CONFLICT,
@@ -183,23 +172,9 @@ class LeadListView(APIView):
 class LeadComposeView(APIView):
     """POST /api/leads/{lead_id}/compose/ — compose outreach for ONE client (MUS-68).
 
-    What the "assess next action" button presses. Deliberately the same planner
-    ``/api/outreach/run/`` calls, scoped to a single lead, rather than a second
-    implementation: the rules, the dedupe ledger, the shape and grounding gates
-    and the row writer are all things a fork would eventually disagree with.
-
-    Three answers, and the two refusals both cost nothing:
-
-    * **200** — the action just written, in the shape every other outreach
-      endpoint already emits, so the frontend needs no new type.
-    * **404** — no such lead. Checked here rather than inferred from an empty
-      plan, because "you asked for a client we do not have" and "this client has
-      nothing new to say" are different facts and a caller acts on them
-      differently.
-    * **409** — the planner declined: this lead already has an open
-      recommendation in the queue, or the recommendation was permanently
-      dismissed. Both are decided before a prompt is built, so neither reaches
-      a provider.
+    The same planner ``/api/outreach/run/`` calls, scoped to one lead. 200 with
+    the new action, 404 for an unknown lead, 409 when the planner declines
+    (already queued or permanently dismissed) — no provider call in either refusal.
     """
 
     def post(self, request, lead_id, *args, **kwargs):
@@ -213,8 +188,7 @@ class LeadComposeView(APIView):
         if not planned:
             return Response({"error": "no_new_recommendation"}, status=status.HTTP_409_CONFLICT)
 
-        # Exactly one row: the planner writes at most one action per lead per
-        # run, and this run is scoped to one lead.
+        # At most one action per lead per run, and this run is one lead.
         serializer = OutreachActionSerializer(planned[0])
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -234,11 +208,7 @@ _ERROR_MESSAGES = {
 
 
 class LLMCatalogView(APIView):
-    """GET /api/llm/catalog/ — all enabled providers and their models.
-
-    Read-only reference data (seeded by ``manage.py seed_llm_catalog``).
-    Authenticated, same as the rest of this API since MUS-37.
-    """
+    """GET /api/llm/catalog/ — enabled providers and models (seeded reference data)."""
 
     def get(self, request, *args, **kwargs):
         providers = (
@@ -260,9 +230,8 @@ class LLMCatalogView(APIView):
 class LLMConfigView(APIView):
     """GET/PUT /api/llm/config/ — the active provider/model/key selection.
 
-    This is the one place a stored provider API key can be written. Since
-    MUS-37 it sits behind the same magic-link session as everything else --
-    see SECURITY.md; the separate Basic Auth credential is retired.
+    The one place a stored provider API key can be written; behind the same
+    magic-link session as the rest of the API (MUS-37).
     """
 
     def get(self, request, *args, **kwargs):
@@ -293,8 +262,7 @@ class LLMConfigView(APIView):
         return Response(self._current_state(), status=status.HTTP_200_OK)
 
     def _current_state(self):
-        """Build the GET/PUT response shape, whether or not a row is saved
-        yet (see services/llm/config.py's resolution precedence)."""
+        """Build the GET/PUT response shape, whether or not a row is saved yet."""
         config = LLMConfiguration.objects.select_related("provider", "model").filter(pk=1).first()
         if config is not None:
             if config.encrypted_api_key:
@@ -323,15 +291,9 @@ class LLMConfigTestView(APIView):
     """POST /api/llm/config/test/ — one minimal completion to verify a
     provider/model/key combination actually works.
 
-    Accepts an optional candidate body in the same shape as ``PUT
-    /api/llm/config/`` (``provider``, ``model``, ``max_tokens``, optional
-    ``api_key``) so a user can test a key *before* saving it. ``api_key``
-    omitted (not just blank) falls back to whatever key is currently
-    resolvable for that candidate provider (stored DB key if it's the active
-    provider, else that provider's env var) -- the same "omit = don't
-    change" semantics as PUT. A body with no ``provider`` at all falls back
-    to testing the already-saved configuration, preserving the previous
-    no-body behavior.
+    Optional candidate body in the same shape as ``PUT /api/llm/config/`` so a
+    key can be tested before saving; an omitted ``api_key`` falls back to the
+    resolvable key, and an omitted ``provider`` tests the saved configuration.
     """
 
     _TEST_PROMPT = "Reply with exactly one word: pong"
@@ -415,8 +377,8 @@ class LLMConfigTestView(APIView):
 
     @staticmethod
     def _classify(exc):
-        """Map a provider SDK/HTTP exception to one of the 4 documented
-        error kinds, without inspecting/echoing its message text."""
+        """Map a provider SDK/HTTP exception to one of the 4 documented error
+        kinds, without echoing its message text."""
         status_code = getattr(exc, "status_code", None)
         if status_code is None:
             response = getattr(exc, "response", None)

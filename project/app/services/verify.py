@@ -1,26 +1,9 @@
 """Deterministic grounding verifier for generated outreach copy (MUS-22).
 
-The LLM writes the email; these *rules* decide whether it may be sent. We
-extract every concrete claim the model made about the lead — dollar figures,
-counts, the contact/agency name, dates — and check each against the ``Lead``
-record. Anything the record does not support is a :class:`Violation`.
-
-Design notes:
-
-- **No LLM.** Verification is pure regex/string logic, so it adds no provider
-  calls and stays unit-testable without a database — duck-typed on the lead
-  attributes of the ``Lead`` model (plus ``lead.events``), exactly like
-  :func:`project.app.services.outreach.determine_action`.
-- **Fail closed.** ``plan_outreach`` turns any violation into
-  ``needs_human=True`` and routes the (still-populated) draft to the BD review
-  queue. A wrong number in a sales email is more expensive than a delayed one.
-- **Precision first.** Every check is anchored to a keyword ("47 closed deals",
-  not a bare "47"), so we flag genuine contradictions rather than good copy —
-  over-flagging would defeat the "rules decide, the model writes" split. Recall
-  is tunable via ``level`` (``off | standard | strict``); see below.
-
-This module must **not** import ``outreach`` — that module imports this one, so
-the trivial event/date helpers are re-implemented here to avoid a cycle.
+Pure regex/string logic, no LLM, duck-typed on lead attributes. Checks every
+concrete claim in the copy against the ``Lead`` record; ``plan_outreach`` fails
+closed on any :class:`Violation` (see SECURITY.md). Must not import
+``outreach`` — that module imports this one.
 """
 
 from __future__ import annotations
@@ -33,11 +16,9 @@ from typing import Any
 from project.app.services import actions
 
 # Strictness levels, surfaced to ops via the COPY_VERIFY_LEVEL setting.
-#   off      -> verification disabled (escape hatch); returns no violations.
-#   standard -> high-confidence contradictions only (the default; the four
-#               acceptance cases all fire here).
-#   strict   -> standard plus omission/loose signals (personalization checks,
-#               loose year grounding) — higher recall, lower precision.
+#   off      -> disabled (escape hatch); returns no violations.
+#   standard -> high-confidence contradictions only (the default).
+#   strict   -> standard plus omission/loose signals — higher recall, lower precision.
 LEVEL_OFF = "off"
 LEVEL_STANDARD = "standard"
 LEVEL_STRICT = "strict"
@@ -49,10 +30,7 @@ LEVELS = (LEVEL_OFF, LEVEL_STANDARD, LEVEL_STRICT)
 class Violation:
     """A single grounding problem found in generated copy.
 
-    ``kind`` is a machine-readable slug (e.g. ``"wrong_count"``); ``message``
-    is the human-readable explanation shown to the BD reviewer.
-
-    ``start`` / ``end`` / ``field`` are defaulted so positional two-argument
+    ``start``/``end``/``field`` are defaulted so positional two-argument
     construction still works (``tests_verify.py`` does exactly that).
     """
 
@@ -67,10 +45,8 @@ class Violation:
 class Claim:
     """One assertion the copy makes, checked against the lead record.
 
-    Unlike :class:`Violation` this records *passes* too — "which claims were
-    checked and survived" is what the reviewer's green underlines are drawn
-    from, and it is the only thing "N of M claims verified" can be computed
-    from.
+    Unlike :class:`Violation` this records *passes* too — the source of the
+    reviewer's green underlines and the "N of M claims verified" summary.
     """
 
     id: str
@@ -101,8 +77,7 @@ class Claim:
         }
 
 
-# Claim kind -> the `Violation.kind` slug a contradicted claim reports as. The
-# violation slugs are part of the frozen output `plan_outreach()` writes into
+# Claim kind -> `Violation.kind` slug. The slugs are frozen output written into
 # `further_action`, so they are deliberately NOT the claim kinds.
 _VIOLATION_KIND = {
     "amount": "unsupported_amount",
@@ -121,19 +96,13 @@ _OMISSION_VIOLATION_KIND = {
     "agency_name": "agency_name_absent",
 }
 
-# Claim kinds that are deliberately excluded from the "N of M" ratio: targets
-# and scheduling language are not assertions about the record, and a prohibition
-# is not a claim about it either.
+# Claim kinds excluded from the "N of M" ratio: not assertions about the record.
 _UNCOUNTED_KINDS = frozenset(
     {"goal_reference", "future_date", "unauthorized_offer", "omission", "unsupported_year"}
 )
 
 # Claim kinds that block approval on their own, whatever the "N of M" ratio says.
-# The summary ratio and the approve gate answer two different questions: "how
-# much of this copy did we grade against the record?" and "may a reviewer send
-# it?". An unauthorized commercial promise is the single most consequential
-# thing generated copy can contain — `plan_outreach()` already fails closed on
-# it via `needs_human=True`, and the approve gate must agree.
+# `plan_outreach()` already fails closed on these; the approve gate must agree.
 BLOCKING_KINDS = frozenset({"unauthorized_offer"})
 
 VERIFICATION_SCHEMA_VERSION = 1
@@ -165,8 +134,7 @@ _MULTIPLIERS = {
 _AMOUNT_TOLERANCE = 0.10
 
 # Counts are anchored to their noun *and* an achievement qualifier so goals and
-# incidental numbers ("close 5 more deals", "a 15-minute call", "5-deal
-# milestone") are ignored — only claims about the record are checked.
+# incidental numbers ("close 5 more deals", "a 15-minute call") are ignored.
 _DEALS_RE = re.compile(
     r"(?:(\d+)\s+closed\s+deals?|(\d+)\s+deals?\s+closed|closed\s+(\d+)\s+deals?)",
     re.IGNORECASE,
@@ -176,9 +144,8 @@ _QUOTES_RE = re.compile(
     re.IGNORECASE,
 )
 # Producer counts are anchored to the *lead's own team* (a possessive / second-
-# person cue) so comparisons ("agencies with 50 producers") and hypotheticals
-# ("as you add 2 producers") — which are not claims about this record — are not
-# flagged. Up to three words may sit between the cue and the count.
+# person cue) so comparisons and hypotheticals are not flagged. Up to three
+# words may sit between the cue and the count.
 _PRODUCERS_RE = re.compile(
     r"(?:your|team of|team's|roster of|staff of|you've|you have|you employ)\s+"
     r"(?:[\w'&/-]+\s+){0,3}?(\d+)\s+producers?\b",
@@ -189,14 +156,9 @@ _YEARS_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Aspiration / goal framing that turns a count into a *target* rather than a
-# claim about the record — e.g. "once you hit 20 closed deals", "toward 20
-# closed deals", "your goal of 20 closed deals", "the 20 closed deals
-# milestone". Milestones like this appear verbatim in HubSpot notes (lead_001:
-# "if she hits 20 closed deals") and are exactly what a power-user email should
-# echo, so they must not be flagged. Deliberately excludes the ambiguous
-# "hit"/"reach" (they also describe achievements: "congrats on hitting 47"),
-# relying on the conditional/directional words that actually precede them.
+# Goal framing that turns a count into a *target* rather than a claim about the
+# record ("once you hit 20 closed deals"). Deliberately excludes the ambiguous
+# "hit"/"reach", which also describe achievements ("congrats on hitting 47").
 _GOAL_MARKER = (
     r"if|once|when|whenever|until|till|toward|towards|nearing|approaching|"
     r"goals?|targets?|milestones?|aiming|aim|en route|on track|short of|"
@@ -319,9 +281,7 @@ def _first_group_int(match: re.Match) -> int | None:
 
 def _is_goal_context(copy: str, start: int, end: int) -> bool:
     """True when the count at ``copy[start:end]`` is framed as a target/goal
-    rather than a claim about the record. Checks the same clause just before the
-    count for a goal cue ("once you hit 20 ...") and just after it for a
-    milestone noun ("20 closed deals milestone")."""
+    (goal cue just before, or milestone noun just after)."""
     before = copy[max(0, start - 30) : start]
     after = copy[end : end + 16]
     return bool(_GOAL_BEFORE_RE.search(before) or _GOAL_AFTER_RE.search(after))
@@ -366,9 +326,7 @@ def _jsonable(value: Any) -> Any:
 def normalize_copy(copy: str) -> str:
     """Collapse ``\\r\\n`` / ``\\r`` to ``\\n`` before any offset is computed.
 
-    An LLM may emit ``\\r\\n`` and a ``<textarea>`` may submit it; Python counts
-    ``\\r\\n`` as two characters, so every span after the first line break would
-    be off by one per preceding line.
+    Python counts ``\\r\\n`` as two characters, which would skew every span.
     """
     if not copy:
         return copy
@@ -381,11 +339,8 @@ def _is_astral_safe(copy: str) -> bool:
 
 
 def _trim_span(copy: str, start: int, end: int) -> tuple[int, int]:
-    """Trim surrounding whitespace off a match span.
-
-    ``_CURRENCY_RE`` matches ``"$1,400,000 "`` because its optional magnitude
-    suffix is ``\\b``-terminated; an untrimmed span underlines into the next word.
-    """
+    """Trim surrounding whitespace off a match span (``_CURRENCY_RE`` can match
+    a trailing space; an untrimmed span underlines into the next word)."""
     text = copy[start:end]
     start += len(text) - len(text.lstrip())
     end -= len(text) - len(text.rstrip())
@@ -407,11 +362,8 @@ def _claim(
 ) -> Claim:
     """Record one inspected claim — passing, failing, or not-a-claim.
 
-    ``id`` is assigned later, once the report is sorted by offset, so it is
-    stable within a report. De-duplication is keyed on
-    ``(kind, start, end, message)``: keying on ``message`` alone (which is what
-    ``verify_copy`` still does for its ``Violation`` list) collapses two
-    genuinely different offsets that happen to read the same.
+    De-duplication is keyed on ``(kind, start, end, message)``, not message
+    alone, so identical text at different offsets survives.
     """
     if start is not None and end is not None:
         start, end = _trim_span(copy, start, end)
@@ -451,8 +403,7 @@ def _violation_kind(claim: Claim) -> str:
 
 
 def _grounded_amounts(lead: Any) -> list[float]:
-    """Dollar figures the model is allowed to cite: the book size and any event
-    premiums (both are shown to the model in the copy prompt)."""
+    """Dollar figures the model is allowed to cite: book size and event premiums."""
     grounded: list[float] = []
     book = _coerce_number(getattr(lead, "estimated_book_size_usd", None))
     if book is not None:
@@ -603,11 +554,8 @@ def _count_claim(claims, copy, match, *, kind, field, expected, claimed, message
 
 
 def _goal_claim(claims, copy, match, field, expected, claimed) -> None:
-    """A count framed as a target ("on track for the 20 closed deals mark").
-
-    Not an assertion about the record, so it is neither a violation nor part of
-    the "N of M" ratio — but the reviewer still wants to see it was inspected.
-    """
+    """A count framed as a target: neither a violation nor part of the "N of M"
+    ratio, but still shown to the reviewer as inspected."""
     _claim(
         claims,
         kind="goal_reference",
@@ -794,9 +742,7 @@ def _collect_claims(
 ) -> list[Claim]:
     """Run every check over ``copy``, recording passes as well as failures.
 
-    Check order is load-bearing: ``verify_copy`` derives its ``Violation`` list
-    from this list, and the order of the messages a BD reviewer reads must not
-    change.
+    Check order is load-bearing: it fixes the ``Violation`` message order.
     """
     claims: list[Claim] = []
     if level == LEVEL_OFF or not copy:
@@ -822,15 +768,10 @@ def verify_copy(
 ) -> list[Violation]:
     """Check generated ``copy`` against the ``lead`` record.
 
-    Returns a list of :class:`Violation` (empty means the copy is grounded).
-    ``level`` selects strictness (``off | standard | strict``); ``action_type``
-    gates the unauthorized-offer check (volume pricing is fine for a reward).
-    Pure and deterministic: no database, no LLM.
-
-    ``claims`` is a keyword-only *out*-parameter: pass a list to also receive
-    every inspected :class:`Claim`, including the ones that passed. The return
-    value, its order and its de-duplication are unchanged either way — see
-    ``tests_verify_spans.py``.
+    Returns :class:`Violation` s (empty means grounded). Pure and
+    deterministic: no database, no LLM. ``claims`` is a keyword-only
+    *out*-parameter: pass a list to also receive every inspected
+    :class:`Claim`, passes included; the return value is unchanged either way.
     """
     today = today or datetime.date.today()
     collected = _collect_claims(lead, normalize_copy(copy), action_type, level, today)
@@ -861,27 +802,18 @@ def verify_spans(
     level: str = DEFAULT_LEVEL,
     today: datetime.date | None = None,
 ) -> dict:
-    """Build the v1 verification report.
+    """Build the v1 verification report (reviewer underlines + "N of M" summary).
 
-    The report is what the reviewer's underlines and the
-    "N of M claims verified" summary are rendered from. ``copy`` is normalized
-    and echoed back: offsets index into ``report["copy"]``, never into
-    whatever the client currently has in its textarea.
-
-    ``can_approve`` has **two independent causes** and is false if either holds:
-    a contradicted claim about the record, or a claim of a
-    :data:`BLOCKING_KINDS` kind. The two compose — neither overrides the other —
-    so a reviewer's warning state may have to point at an offer span rather than
-    at a mismatched number.
-
-    Pure: no database, no LLM, duck-typed on the same lead attributes.
+    ``copy`` is normalized and echoed back: offsets index into
+    ``report["copy"]``, never the client's textarea. ``can_approve`` is false
+    on either a contradicted claim or a :data:`BLOCKING_KINDS` claim. Pure: no
+    database, no LLM.
     """
     today = today or datetime.date.today()
     copy = normalize_copy(copy)
     claims = _collect_claims(lead, copy, action_type, level, today)
 
-    # Offsets order the report; ids are assigned afterwards so they are stable
-    # within it. Omission claims have no span and sort last.
+    # Sort by offset, then assign ids. Omission claims have no span and sort last.
     claims.sort(key=lambda c: (c.start is None, c.start or 0, c.end or 0, c.kind))
     ordered = [
         replace(claim, id=f"claim-{index:04d}") for index, claim in enumerate(claims, start=1)

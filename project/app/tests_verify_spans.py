@@ -1,19 +1,7 @@
 """Verification-span tests (MUS-42).
 
-Two jobs:
-
-1. Prove ``verify_copy`` still behaves exactly as it did before the spans were
-   added. ``PRE_CHANGE_VIOLATIONS`` is a frozen table captured by running the
-   pre-change ``verify.py`` over ``CASES``; the kinds *and* messages, in order,
-   must match. ``tests_verify.py`` (58 tests) and ``tests_redteam.py``
-   (18 tests) additionally pass unmodified.
-2. Prove the new span output is usable — every span slices back to its own
-   ``text``, is whitespace-trimmed, survives ``\\r\\n`` and astral characters,
-   and round-trips through ``json.dumps``.
-
-Pure Python — no Django, no database. Run standalone::
-
-    ./.venv/bin/python -m unittest project.app.tests_verify_spans
+``verify_copy`` still matches ``PRE_CHANGE_VIOLATIONS``, a table frozen from the
+pre-span implementation, and every emitted span slices back to its own ``text``.
 """
 
 import datetime
@@ -65,8 +53,7 @@ def _lead(**kwargs):
     return SimpleNamespace(**defaults)
 
 
-# (name, lead, copy, action_type, level) — mirrors every fixture shape in
-# tests_verify.py plus the paths that only the span output can reach.
+# (name, lead, copy, action_type, level)
 CASES = [
     (
         "clean_standard",
@@ -314,9 +301,8 @@ CASES = [
     ),
 ]
 
-# Captured by running the PRE-CHANGE verify.py over CASES. `verify_copy`'s
-# return value, its order and its by-message de-duplication are frozen output:
-# plan_outreach() writes format_violations() straight into `further_action`.
+# Captured by running the PRE-CHANGE verify.py over CASES; order and by-message
+# de-duplication are part of the frozen output.
 PRE_CHANGE_VIOLATIONS = {
     "clean_standard": [],
     "inflated_deals": [
@@ -565,8 +551,6 @@ class ReportEnvelopeTests(unittest.TestCase):
         self.assertTrue(report["can_approve"])
 
     def test_uncounted_kinds_never_move_the_ratio(self):
-        # A goal reference, a future date and an unauthorized offer are all
-        # inspected, none of them is an assertion about the record.
         lead = _lead(deals_closed=4)
         copy = (
             "Hi there,\nOnce you hit 20 closed deals we should talk. "
@@ -585,14 +569,8 @@ class ReportEnvelopeTests(unittest.TestCase):
 
 
 class ApproveGateTests(unittest.TestCase):
-    """The summary ratio and the approve gate answer different questions.
-
-    "How much of this copy did we grade against the record?" is not "may a
-    reviewer send it?". An unauthorized commercial promise is not a claim about
-    the record — it must stay out of the ratio — but it is the single most
-    consequential thing generated copy can contain, and ``plan_outreach()``
-    already fails closed on it. The gate must agree.
-    """
+    """The summary ratio and the approve gate are independent: an unauthorized offer
+    stays out of the ratio but still blocks approval."""
 
     def _report(self, lead, copy, action_type, level=None):
         return verify.verify_spans(lead, copy, action_type, **_kwargs(level))
@@ -605,19 +583,18 @@ class ApproveGateTests(unittest.TestCase):
         )
         report = self._report(lead, copy, actions.REENGAGE_DORMANT)
 
-        # Everything the verifier actually graded is grounded...
         self.assertEqual(report["verified_count"], 4)
         self.assertEqual(report["unverified_count"], 0)
         self.assertEqual(report["checked_count"], 4)
         self.assertEqual(report["summary"], "4 of 4 claims verified")
 
-        # ...and the offer is excluded from BOTH counts.
+        # The offer is excluded from BOTH counts.
         offer = next(c for c in report["claims"] if c["kind"] == "unauthorized_offer")
         self.assertFalse(offer["counts_toward_summary"])
         self.assertIs(offer["verified"], False)
         self.assertEqual(report["copy"][offer["start"] : offer["end"]], "20% off")
 
-        # ...yet approval is blocked. This pairing is the surprising part.
+        # ...yet approval is blocked.
         self.assertFalse(report["can_approve"])
 
     def test_the_two_causes_compose_rather_than_override(self):
@@ -629,8 +606,7 @@ class ApproveGateTests(unittest.TestCase):
         self.assertFalse(report["can_approve"])
 
     def test_an_authorized_offer_does_not_block(self):
-        # Volume pricing is exactly what a power-user reward email is for, so no
-        # unauthorized_offer claim is recorded at all.
+        # Volume pricing is authorized for a power-user reward, so no claim is recorded.
         lead = _lead()
         copy = "Hi Priya,\nLet's talk volume pricing for Summit Risk Advisors."
         report = self._report(lead, copy, actions.POWER_USER_REWARD)
@@ -638,8 +614,7 @@ class ApproveGateTests(unittest.TestCase):
         self.assertTrue(report["can_approve"])
 
     def test_blocking_kinds_is_a_strict_subset_of_the_uncounted_kinds(self):
-        # A blocking kind that also counted would be double-punished: once in
-        # the ratio and once in the gate.
+        # A blocking kind that also counted would be punished twice.
         self.assertTrue(verify.BLOCKING_KINDS)
         for kind in verify.BLOCKING_KINDS:
             self.assertIn(kind, verify._UNCOUNTED_KINDS)
@@ -651,12 +626,8 @@ class ApproveGateTests(unittest.TestCase):
 
 
 class GoalReferenceTests(unittest.TestCase):
-    """Every count check routes a target through ``goal_reference``.
-
-    These produced no violation before the change either — they were a bare
-    ``continue``. The claim is the new part: the reviewer can now see the
-    number was looked at and deliberately not graded.
-    """
+    """Every count check routes a target through ``goal_reference`` — looked at,
+    deliberately not graded."""
 
     def _claims(self, lead, copy):
         claims: list = []
@@ -776,8 +747,7 @@ class WorkedExampleTests(unittest.TestCase):
         self.assertEqual(report["unverified_count"], 2)
         self.assertEqual(report["checked_count"], 4)
         self.assertEqual(report["summary"], "2 of 4 claims verified")
-        # Blocked purely by the unverified-claims path: this copy contains no
-        # blocking claim, so the two causes of can_approve are independent.
+        # Blocked purely by the unverified-claims path: no blocking claim here.
         self.assertFalse(report["can_approve"])
         self.assertFalse(
             any(c["kind"] in verify.BLOCKING_KINDS for c in report["claims"]),
@@ -811,8 +781,7 @@ class OffsetHazardTests(unittest.TestCase):
         for claim in report["claims"]:
             if claim["start"] is not None:
                 self.assertEqual(report["copy"][claim["start"] : claim["end"]], claim["text"])
-        # The FE must slice via Array.from() when this is false; a naive
-        # String.slice() would be one UTF-16 code unit off after the emoji.
+        # The FE must slice via Array.from() when is_astral_safe is false.
         deals = next(c for c in report["claims"] if c["kind"] == "deals_count")
         self.assertNotEqual(
             copy.encode("utf-16-le").decode("utf-16-le")[deals["start"] : deals["end"]],
@@ -879,8 +848,7 @@ class ClaimDedupeTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
 
     def test_an_identical_claim_at_an_identical_span_is_recorded_once(self):
-        # _ISO_DATE_RE and _YEAR_RE both scan the same text at strict level;
-        # nothing may record the same (kind, start, end, message) twice.
+        # Both the ISO-date and year scanners see this text at strict level.
         lead = _lead()
         copy = "Hi Priya,\nSummit Risk Advisors since 2005 and 2005."
         report = verify.verify_spans(

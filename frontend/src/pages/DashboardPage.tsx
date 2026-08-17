@@ -210,8 +210,7 @@ export function DashboardPage() {
 
   async function handleDecision(decision: ReviewDecisionInput) {
     await createReviewDecision(decision);
-    // Drop the card immediately for instant feedback, then let the server be
-    // the source of truth for the queue and both logs.
+    // Drop the card optimistically, then refetch as the source of truth.
     setQueue((items) => items.filter((item) => item.id !== decision.outreach_action));
     try {
       await refresh();

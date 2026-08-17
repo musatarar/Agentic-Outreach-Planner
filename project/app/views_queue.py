@@ -1,5 +1,4 @@
-"""Triage queue API (MUS-39).
-"""
+"""Triage queue API (MUS-39)."""
 
 import datetime
 import hashlib
@@ -42,7 +41,7 @@ SNOOZE_HOUR = 9
 
 
 def error(code, detail, status_code):
-    """The one error shape in this API (section 5)."""
+    """The one error shape in this API."""
     return Response({"code": code, "detail": detail}, status=status_code)
 
 
@@ -69,16 +68,14 @@ def body_of(request):
 
 
 def queue_queryset():
-    """The base queryset for every queue read.
-    """
+    """The base queryset for every queue read."""
     return OutreachAction.objects.select_related("lead").prefetch_related(
         Prefetch("lead__events", queryset=Event.objects.order_by("-timestamp", "-id"))
     )
 
 
 def triage_day():
-    """(now, today, start, end) for the server's idea of "today".
-    """
+    """(now, today, start, end) for the server's idea of "today"."""
     tz = ZoneInfo(settings.TRIAGE_TIMEZONE)
     now = timezone.now()
     today = now.astimezone(tz).date()
@@ -110,13 +107,7 @@ def day_counts(start, end):
 
 
 def snooze_target(trigger, until_raw, now):
-    """Resolve a snooze trigger to ``(snooze_until, snooze_activity_after)``.
-
-    Args:
-        trigger (string): trigger type
-        until_raw (string): raw string of timestamp when to trigger
-        now (date): current time
-    """
+    """Resolve a snooze trigger to ``(snooze_until, snooze_activity_after)``."""
     tz = ZoneInfo(settings.TRIAGE_TIMEZONE)
 
     if trigger == OutreachAction.TRIGGER_CUSTOM:
@@ -147,8 +138,7 @@ def snooze_target(trigger, until_raw, now):
 
 
 class QueueBaseView(APIView):
-    """Authenticated by default.
-    """
+    """Authenticated by default."""
 
     permission_classes = [IsAuthenticated]
 
@@ -233,7 +223,7 @@ class QueueDoneView(QueueBaseView):
 class QueueMutationView(QueueBaseView):
     """POST `/api/queue/{id}/<verb>/` -- one item, one lifecycle move.
 
-    Note: Subclasses must implement ``mutate``.
+    Subclasses implement ``mutate``.
     """
 
     def post(self, request, pk, *args, **kwargs):
@@ -247,8 +237,7 @@ class QueueMutationView(QueueBaseView):
 
 
 class QueueEditView(QueueMutationView):
-    """POST /api/queue/{id}/edit/ -- persist a reviewer's edit of the copy.
-    """
+    """POST /api/queue/{id}/edit/ -- persist a reviewer's edit of the copy."""
 
     def mutate(self, request, action):
         if action.status not in OutreachAction.EDITABLE_STATUSES:
@@ -301,8 +290,7 @@ class QueueEditView(QueueMutationView):
 
 
 class QueueVerifyView(QueueMutationView):
-    """POST /api/queue/{id}/verify/ -- a DRY RUN over candidate copy.
-    """
+    """POST /api/queue/{id}/verify/ -- a DRY RUN over candidate copy."""
 
     # Picked up by the global ScopedRateThrottle in settings.REST_FRAMEWORK, so
     # key repeat in the inline editor cannot hammer the verifier.
@@ -348,8 +336,7 @@ class QueueApproveView(QueueMutationView):
                 status.HTTP_409_CONFLICT,
             )
 
-        # Guarantees a session identity; defensive, because an
-        # approve_send decision with no recorded approver authorizes nothing.
+        # An approve_send decision with no recorded approver authorizes nothing.
         reviewer = editor_of(request)
         if not reviewer:
             return error(
@@ -385,8 +372,7 @@ class QueueApproveView(QueueMutationView):
 
 
 class QueueSnoozeView(QueueMutationView):
-    """POST /api/queue/{id}/snooze/ -- not skip.
-    """
+    """POST /api/queue/{id}/snooze/ -- not skip."""
 
     def mutate(self, request, action):
         if not action.can_transition_to(OutreachAction.STATUS_SNOOZED):
@@ -428,8 +414,7 @@ class QueueSnoozeView(QueueMutationView):
 
 
 class QueueDismissView(QueueMutationView):
-    """POST /api/queue/{id}/dismiss/ -- gone, and it does not come back.
-    """
+    """POST /api/queue/{id}/dismiss/ -- gone, and it does not come back."""
 
     def mutate(self, request, action):
         if not action.can_transition_to(OutreachAction.STATUS_DISMISSED):
@@ -483,8 +468,7 @@ UNDO_WINDOWED_STATUSES = (
 
 
 class QueueUndoView(QueueMutationView):
-    """POST /api/queue/{id}/undo/ -- reverse the last decision.
-    """
+    """POST /api/queue/{id}/undo/ -- reverse the last decision."""
 
     def mutate(self, request, action):
         if action.status == OutreachAction.STATUS_PENDING:
@@ -530,7 +514,6 @@ class QueueUndoView(QueueMutationView):
             action.snooze_trigger = ""
             action.snooze_activity_after = None
             action.dismiss_reason = ""
-            # Only update the relevant fields.
             action.save(
                 update_fields=[
                     "status",
