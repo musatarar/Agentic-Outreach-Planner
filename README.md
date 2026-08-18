@@ -79,8 +79,10 @@ key — you just can't run the LLM copy step until one is set.
 ### Or from GitHub Actions (a shareable live link)
 
 To hand someone a running instance instead of a screenshot, dispatch the
-**Demo tunnel** workflow (`.github/workflows/demo-tunnel.yml`): pick a ref (default
-`master`) and how long to keep it up. The job installs the app on a runner, seeds the demo
+**Demo tunnel** workflow (`.github/workflows/demo-tunnel.yml`): pick the branch from the
+dispatch form's own **Use workflow from** list (it defaults to `master`) and how long to keep
+it up — 15 minutes to 4 hours. There is an optional `ref` field for serving a tag or a SHA
+instead. The job installs the app on a runner, seeds the demo
 pipeline into a throwaway SQLite database, and publishes it through a
 [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
 — no Cloudflare account or token needed. The `https://<random>.trycloudflare.com` URL lands in
