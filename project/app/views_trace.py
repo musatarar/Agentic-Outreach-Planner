@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from project.app.models import AgentLeadRun, OutreachAction
-from project.app.serializers_queue import iso
+from project.app.serializers.queue import iso
 
 
 class OutreachTraceView(APIView):
