@@ -59,4 +59,5 @@ db.sqlite3
 # under evals/results/; these raw per-run transcripts are not.
 evals/.inspect-logs/
 
-.claude/worktree/
+# Per-branch worktrees (CLAUDE.md). The path is `worktrees`, plural.
+.claude/worktrees/
