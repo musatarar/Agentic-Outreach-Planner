@@ -38,6 +38,10 @@ DEFAULT_AGENT_MAX_STEPS = 6
 DEFAULT_AGENT_MAX_TOOL_CALLS = 8
 DEFAULT_AGENT_PER_LEAD_TIMEOUT_S = 300.0
 
+# Provider call content capture (MUS-72). Off by default: skeleton audit rows are
+# metadata, request/response bytes are lead PII at rest.
+DEFAULT_TRACE_CONTENT_ENABLED = False
+
 # Sanity ceiling on the pool -- a typo guard, not a capacity limit: `>= 1` alone
 # would let `80000` typed for `8` through.
 MAX_IN_FLIGHT_CEILING = 256
@@ -53,6 +57,7 @@ SETTING_AGENT_ENABLED = "OUTREACH_AGENT_ENABLED"
 SETTING_AGENT_MAX_STEPS = "OUTREACH_AGENT_MAX_STEPS"
 SETTING_AGENT_MAX_TOOL_CALLS = "OUTREACH_AGENT_MAX_TOOL_CALLS"
 SETTING_AGENT_PER_LEAD_TIMEOUT_S = "OUTREACH_AGENT_PER_LEAD_TIMEOUT_S"
+SETTING_TRACE_CONTENT_ENABLED = "OUTREACH_TRACE_CONTENT_ENABLED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,8 @@ class PlannerRuntime:
     agent_max_steps: int = DEFAULT_AGENT_MAX_STEPS
     agent_max_tool_calls: int = DEFAULT_AGENT_MAX_TOOL_CALLS
     agent_per_lead_s: float = DEFAULT_AGENT_PER_LEAD_TIMEOUT_S
+    # Whether a minted ProviderTrace also stores request/response bytes (MUS-72).
+    trace_content_enabled: bool = DEFAULT_TRACE_CONTENT_ENABLED
 
 
 def _setting(name: str, default: Any) -> Any:
@@ -216,6 +223,7 @@ def get_planner_runtime() -> PlannerRuntime:
     agent_max_steps = _as_int(SETTING_AGENT_MAX_STEPS, DEFAULT_AGENT_MAX_STEPS)
     agent_max_tool_calls = _as_int(SETTING_AGENT_MAX_TOOL_CALLS, DEFAULT_AGENT_MAX_TOOL_CALLS)
     agent_per_lead_s = _as_float(SETTING_AGENT_PER_LEAD_TIMEOUT_S, DEFAULT_AGENT_PER_LEAD_TIMEOUT_S)
+    trace_content_enabled = _as_bool(SETTING_TRACE_CONTENT_ENABLED, DEFAULT_TRACE_CONTENT_ENABLED)
     _require(agent_max_steps >= 1, SETTING_AGENT_MAX_STEPS, agent_max_steps, "at least 1")
     _require(
         agent_max_tool_calls >= 0,
@@ -241,6 +249,7 @@ def get_planner_runtime() -> PlannerRuntime:
         agent_max_steps=agent_max_steps,
         agent_max_tool_calls=agent_max_tool_calls,
         agent_per_lead_s=agent_per_lead_s,
+        trace_content_enabled=trace_content_enabled,
     )
 
 
@@ -255,6 +264,7 @@ __all__ = [
     "DEFAULT_AGENT_MAX_STEPS",
     "DEFAULT_AGENT_MAX_TOOL_CALLS",
     "DEFAULT_AGENT_PER_LEAD_TIMEOUT_S",
+    "DEFAULT_TRACE_CONTENT_ENABLED",
     "MAX_IN_FLIGHT_CEILING",
     "get_retry_policy",
     "get_timeouts",

@@ -19,8 +19,12 @@ from project.app.services.agent.state import (
     KIND_FINAL,
     KIND_LLM_CALL,
     KIND_TOOL_RESULT,
+    PAYLOAD_MODEL,
+    PAYLOAD_PROVIDER,
     PAYLOAD_REQUEST_SHA256,
     PAYLOAD_RESULT_SHA256,
+    PAYLOAD_TRACE_REQUEST,
+    PAYLOAD_TRACE_RESPONSE,
     STATUS_DONE,
     STATUS_DRAFTING,
     STATUS_EXHAUSTED,
@@ -81,7 +85,10 @@ def _rendered_request(messages: Sequence[Message]) -> str:
     )
 
 
-def _llm_call_payload(result: LLMResult, request_sha256: str | None) -> dict[str, Any]:
+def _llm_call_payload(
+    result: LLMResult, request_sha256: str | None, rendered_request: str | None
+) -> dict[str, Any]:
+    """``rendered_request`` is ``None`` unless content capture is on."""
     return {
         "text": result.text,
         "tool_calls": [
@@ -95,6 +102,14 @@ def _llm_call_payload(result: LLMResult, request_sha256: str | None) -> dict[str
         "raw_finish_reason": result.raw_finish_reason,
         "latency_s": result.latency_s,
         PAYLOAD_REQUEST_SHA256: request_sha256,
+        # Popped by the checkpoint into a ProviderTrace row (MUS-72); the
+        # payload's own "provider"/"model" above stay, for the reports page.
+        PAYLOAD_PROVIDER: result.provider,
+        PAYLOAD_MODEL: result.model,
+        # The same string `request_sha256` hashes -- the bytes actually sent,
+        # never a pre-sanitization reconstruction. `reasoning` awaits MUS-73.
+        PAYLOAD_TRACE_REQUEST: rendered_request,
+        PAYLOAD_TRACE_RESPONSE: result.text if rendered_request is not None else None,
     }
 
 
@@ -171,6 +186,7 @@ async def run_agent_lead(
                     or tool_calls_used >= runtime.agent_max_tool_calls
                 )
                 messages = fold_messages(prompt, steps, force_final=force_final)
+                rendered = _rendered_request(messages)
                 offered = () if force_final else TOOL_SPECS
 
                 async def attempt(
@@ -196,7 +212,9 @@ async def run_agent_lead(
                         seq=seq,
                         kind=KIND_LLM_CALL,
                         payload=_llm_call_payload(
-                            result, genai.sha256_of(_rendered_request(messages))
+                            result,
+                            genai.sha256_of(rendered),
+                            rendered if runtime.trace_content_enabled else None,
                         ),
                     )
                 ]

@@ -132,6 +132,7 @@ agent_enabled: bool = False              # OUTREACH_AGENT_ENABLED
 agent_max_steps: int = 6                 # OUTREACH_AGENT_MAX_STEPS
 agent_max_tool_calls: int = 8            # OUTREACH_AGENT_MAX_TOOL_CALLS
 agent_per_lead_s: float = 300.0          # OUTREACH_AGENT_PER_LEAD_TIMEOUT_S, validated ≥ request_s
+trace_content_enabled: bool = False      # OUTREACH_TRACE_CONTENT_ENABLED (MUS-72)
 
 # semconv.py / genai.py
 OPERATION_EXECUTE_TOOL = "execute_tool"; GEN_AI_TOOL_NAME = "gen_ai.tool.name"

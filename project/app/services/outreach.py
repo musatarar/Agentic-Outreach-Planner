@@ -2035,7 +2035,7 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
             )
             # One Checkpoint per run: its lock binds to phase 3's event loop and
             # its connection borrow captures THIS thread's wrapper.
-            checkpoint = agent_state.Checkpoint()
+            checkpoint = agent_state.Checkpoint(trace_run_id=run.run_id)
             agent_plans = {
                 item.lead.id: AgentLeadPlan(
                     lead_run_pk=run_pks[item.lead.id],
