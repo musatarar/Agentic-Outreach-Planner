@@ -1,6 +1,7 @@
 from django.urls import path
 
 from project.app.views import (
+    LeadAssessView,
     LeadComposeView,
     LeadListView,
     LLMCatalogView,
@@ -54,7 +55,8 @@ urlpatterns = [
     path("outreach/<int:pk>/trace/", OutreachTraceView.as_view(), name="outreach-trace"),
     path("outreach/", OutreachListView.as_view(), name="outreach-list"),
     path("leads/", LeadListView.as_view(), name="lead-list"),
-    # --- per-client composition (MUS-68) ---
+    # --- per-client composition (MUS-68) and assessment (MUS-70) ---
+    path("leads/<str:lead_id>/assess/", LeadAssessView.as_view(), name="lead-assess"),
     path("leads/<str:lead_id>/compose/", LeadComposeView.as_view(), name="lead-compose"),
     path("reports/", OutreachReportView.as_view(), name="outreach-reports"),
     path("review-queue/", ReviewQueueView.as_view(), name="review-queue"),
