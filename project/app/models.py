@@ -493,3 +493,70 @@ class OutboundSend(models.Model):
 
     def __str__(self):
         return f"send for action {self.outreach_action_id}"
+
+
+# --- Assess next action (MUS-70) ----------------------------------------------
+
+
+class LeadAssessment(models.Model):
+    """One press of "Assess next action": the rules' answer for a lead (MUS-70).
+
+    Its own table, not an OutreachAction: outreach rows back the triage queue,
+    so assessments there would pollute every queue query and the dedupe ledger.
+    Assess neither suppresses nor is suppressed -- `open_outreach_action` and
+    `dismissed` report the queue's state as context, they never gate the answer.
+    Append-only: every press writes a row, the history is the point.
+    """
+
+    # Advisory (MUS-70 PR 2) statuses. The deterministic half is always correct
+    # and always present, so a missing advisory degrades rather than refuses.
+    ADVISORY_OK = "ok"
+    ADVISORY_DISABLED = "disabled"  # not enabled, or no provider configured
+    ADVISORY_UNGROUNDED = "ungrounded"  # verifier rejected it; see `verification`
+    ADVISORY_PROVIDER_ERROR = "provider_error"  # never the raw provider text
+    ADVISORY_STATUS_CHOICES = [
+        (ADVISORY_OK, "Advisory present"),
+        (ADVISORY_DISABLED, "Advisory not enabled"),
+        (ADVISORY_UNGROUNDED, "Advisory dropped — ungrounded"),
+        (ADVISORY_PROVIDER_ERROR, "Advisory dropped — provider error"),
+    ]
+
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="assessments")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # The rules' answer. Authoritative: the advisory may never change these.
+    action_type = models.CharField(max_length=64)
+    priority = models.IntegerField()
+    reason = models.TextField()
+
+    # The whole v1 envelope from services/outreach.py::explain(). Never
+    # recomputed: its relative figures are only true as of `rule_trace.today`.
+    rule_trace = models.JSONField(default=dict, blank=True)
+
+    advisory_text = models.TextField(blank=True, default="")
+    advisory_status = models.CharField(
+        max_length=32, choices=ADVISORY_STATUS_CHOICES, default=ADVISORY_DISABLED
+    )
+    # verify.py report for `advisory_text`; {} when no advisory was verified.
+    verification = models.JSONField(default=dict, blank=True)
+
+    # Cost and audit for the advisory call. Blank on a deterministic-only row.
+    provider = models.CharField(max_length=32, blank=True, default="")
+    model_id = models.CharField(max_length=100, blank=True, default="")
+    trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
+
+    # The queue's state at assess time, reported not obeyed. SET_NULL: the
+    # assessment outlives the row it observed.
+    open_outreach_action = models.ForeignKey(
+        OutreachAction, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    dismissed = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["lead", "-created_at"], name="la_lead_recent"),
+        ]
+
+    def __str__(self):
+        return f"assessment of {self.lead_id} - {self.action_type} (p{self.priority})"

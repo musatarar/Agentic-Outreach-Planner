@@ -15,6 +15,7 @@ from project.app.models import (
     ReviewDecision,
 )
 from project.app.serializers import (
+    LeadAssessmentSerializer,
     LeadSerializer,
     LLMConfigurationSerializer,
     LLMProviderSerializer,
@@ -190,6 +191,29 @@ class LeadComposeView(APIView):
 
         # At most one action per lead per run, and this run is one lead.
         serializer = OutreachActionSerializer(planned[0])
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class LeadAssessView(APIView):
+    """POST /api/leads/{lead_id}/assess/ — what should happen with ONE client (MUS-70).
+
+    Proposes the next step; composing it is the separate ``/compose/`` press.
+    POST, not GET: it writes an assessment row (and, from PR 2, spends a
+    provider call). 200 with the assessment, 404 for an unknown lead, and never
+    a 409 — an open or dismissed recommendation is reported as context, not
+    treated as a refusal.
+    """
+
+    def post(self, request, lead_id, *args, **kwargs):
+        # Imported inside the method for the same reason OutreachRunView's is.
+        from project.app.services.assess import assess_lead
+
+        lead = Lead.objects.filter(pk=lead_id).first()
+        if lead is None:
+            return Response({"error": "unknown_lead"}, status=status.HTTP_404_NOT_FOUND)
+
+        assessment = assess_lead(lead)
+        serializer = LeadAssessmentSerializer(assessment)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

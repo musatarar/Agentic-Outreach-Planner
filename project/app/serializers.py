@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from project.app.models import (
     Lead,
+    LeadAssessment,
     LLMModel,
     LLMProvider,
     OutreachAction,
@@ -44,6 +45,49 @@ class OutreachActionSerializer(serializers.ModelSerializer):
             "further_action",
             "created_at",
         ]
+
+
+class LeadAssessmentSerializer(serializers.ModelSerializer):
+    """One assessment as the client dashboard reads it (MUS-70).
+
+    The rules' answer sits at the top level; the advisory and the queue's state
+    are nested so a missing advisory is a status the panel can render, never an
+    absent key.
+    """
+
+    lead = LeadSummarySerializer(read_only=True)
+    advisory = serializers.SerializerMethodField()
+    queue_state = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LeadAssessment
+        fields = [
+            "id",
+            "lead",
+            "created_at",
+            "action_type",
+            "priority",
+            "reason",
+            "rule_trace",
+            "advisory",
+            "queue_state",
+            "trace_run_id",
+        ]
+
+    def get_advisory(self, obj):
+        return {
+            "text": obj.advisory_text,
+            "status": obj.advisory_status,
+            "verification": obj.verification,
+            "provider": obj.provider,
+            "model": obj.model_id,
+        }
+
+    def get_queue_state(self, obj):
+        return {
+            "open_outreach_action_id": obj.open_outreach_action_id,
+            "dismissed": obj.dismissed,
+        }
 
 
 class LLMModelSerializer(serializers.ModelSerializer):

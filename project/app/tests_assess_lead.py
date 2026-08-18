@@ -166,6 +166,22 @@ class AssessLeadServiceTests(_ProviderSilenceMixin, TestCase):
 
         self.assertFalse(self._assess().dismissed)
 
+    def test_a_failed_generation_row_is_not_an_open_recommendation(self):
+        # A real action type + no copy + needs_human records a failed attempt,
+        # not something the AE has queued.
+        OutreachAction.objects.create(
+            lead=self.lead,
+            priority=2,
+            action_type=actions.COMPLETE_ONBOARDING,
+            reason="generation gave up",
+            suggested_copy="",
+            needs_human=True,
+            status=OutreachAction.STATUS_PENDING,
+            dedupe_key=dedupe_service.dedupe_key(self.lead.id, actions.COMPLETE_ONBOARDING),
+        )
+
+        self.assertIsNone(self._assess().open_outreach_action_id)
+
     def test_a_closed_outreach_row_is_not_an_open_recommendation(self):
         OutreachAction.objects.create(
             lead=self.lead,
