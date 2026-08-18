@@ -1,40 +1,9 @@
+"""The outreach decision audit trail: planner output through the send record."""
+
 from django.db import models
-from django.db.models import CheckConstraint, Q
+from django.db.models import Q
 
-
-class Lead(models.Model):
-    id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
-    agency_name = models.CharField(max_length=255)
-    contact_name = models.CharField(max_length=255)
-    contact_email = models.EmailField()
-    contact_phone = models.CharField(max_length=32)
-    state = models.CharField(max_length=2)
-    num_producers = models.IntegerField()
-    years_in_business = models.IntegerField()
-    estimated_book_size_usd = models.BigIntegerField()
-    stage = models.CharField(max_length=32)  # "active_trial" | "demo_completed"
-    signed_up_date = models.DateField(null=True)
-    last_login_date = models.DateField(null=True)
-    quotes_created = models.IntegerField(default=0)
-    quotes_submitted = models.IntegerField(default=0)
-    deals_closed = models.IntegerField(default=0)
-    last_contacted_date = models.DateField(null=True)
-    hubspot_notes = models.TextField(blank=True)
-
-    def __str__(self):
-        return f"{self.id} - {self.agency_name}"
-
-
-class Event(models.Model):
-    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="events")
-    type = models.CharField(max_length=32)  # login, quote_created, quote_submitted,
-    # deal_closed, call_logged, email_sent,
-    # demo_completed, onboarding_call
-    timestamp = models.DateTimeField()
-    meta = models.JSONField(default=dict, blank=True)
-
-    def __str__(self):
-        return f"{self.lead_id} - {self.type} @ {self.timestamp:%Y-%m-%d}"
+from .lead import Lead
 
 
 class OutreachAction(models.Model):  # what the planner decided/did
@@ -162,84 +131,6 @@ class OutreachAction(models.Model):  # what the planner decided/did
         return f"{self.lead_id} - {self.action_type} (p{self.priority})"
 
 
-class LLMProvider(models.Model):
-    """A supported LLM vendor (claude, chatgpt, deepseek, groq, ...).
-
-    Seeded by ``manage.py seed_llm_catalog`` (idempotent); read-only via the API.
-    """
-
-    key = models.CharField(max_length=32, primary_key=True)  # "claude", "groq", ...
-    label = models.CharField(max_length=100)  # "Anthropic Claude"
-    api_key_url = models.URLField()  # where an operator gets a key for this provider
-    api_key_label = models.CharField(max_length=100)  # "Anthropic API key"
-    api_key_prefix = models.CharField(max_length=16, blank=True)  # "sk-ant-"
-    sort_order = models.IntegerField(default=0)
-    enabled = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ["sort_order", "key"]
-
-    def __str__(self):
-        return self.label
-
-
-class LLMModel(models.Model):
-    """A specific model offered by an :class:`LLMProvider`."""
-
-    provider = models.ForeignKey(LLMProvider, on_delete=models.CASCADE, related_name="models")
-    model_id = models.CharField(max_length=100)  # "claude-opus-5" -- the API-facing id
-    label = models.CharField(max_length=100)  # "Opus 5"
-    context_window = models.IntegerField()
-    default_max_tokens = models.IntegerField(default=500)
-    input_price_per_mtok_usd = models.DecimalField(max_digits=10, decimal_places=4)
-    output_price_per_mtok_usd = models.DecimalField(max_digits=10, decimal_places=4)
-    tier = models.CharField(max_length=32, blank=True)  # "flagship" | "balanced" | "fast" | ...
-    notes = models.CharField(max_length=255, blank=True)
-    sort_order = models.IntegerField(default=0)
-    enabled = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ["sort_order", "model_id"]
-        unique_together = ("provider", "model_id")
-
-    def __str__(self):
-        return f"{self.provider_id}:{self.model_id}"
-
-
-class LLMConfiguration(models.Model):
-    """Singleton row holding the active LLM provider/model/key selection.
-
-    Enforced two ways: ``save()`` forces ``pk=1``, and a DB ``CheckConstraint``
-    blocks any other pk.
-    """
-
-    provider = models.ForeignKey(LLMProvider, on_delete=models.PROTECT, related_name="+")
-    model = models.ForeignKey(LLMModel, on_delete=models.PROTECT, related_name="+")
-    max_tokens = models.IntegerField()
-    # Fernet ciphertext (services/crypto.py). NULL -> callers fall back to the
-    # provider's env var (services/llm/config.py).
-    encrypted_api_key = models.BinaryField(null=True, blank=True)
-    # Last 4 chars of the plaintext key, so "...x7fQ" can be shown without decrypting.
-    key_last_four = models.CharField(max_length=4, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        constraints = [CheckConstraint(check=Q(pk=1), name="single_llm_configuration")]
-
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
-    @classmethod
-    def load(cls, **defaults):
-        """Return the singleton row, creating it (with ``defaults``) if absent."""
-        obj, _created = cls.objects.get_or_create(pk=1, defaults=defaults)
-        return obj
-
-    def __str__(self):
-        return f"LLM config: {self.provider_id}/{self.model.model_id}"
-
-
 class ReviewDecision(models.Model):
     KIND_SELECT = "select_existing"
     KIND_PROPOSE = "propose_new"
@@ -289,39 +180,6 @@ class ReviewDecision(models.Model):
                 name="rd_one_live_send_per_action",
             ),
         ]
-
-
-# --- Magic-link auth (MUS-37) -------------------------------------------------
-
-
-class LoginToken(models.Model):
-    """A single-use, short-lived magic-link login token (MUS-37).
-
-    Only ``sha256(token)`` is stored -- plain SHA-256 is fine for 256-bit
-    CSPRNG output. Single-use is enforced by a conditional UPDATE
-    (views_auth.py), so two concurrent consumes cannot both succeed.
-    """
-
-    email = models.EmailField(db_index=True)
-    # sha256 hexdigest of the raw token; unique so a replayed insert fails at the DB.
-    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField(db_index=True)
-    # NULL until redeemed; set exactly once by the conditional update.
-    consumed_at = models.DateTimeField(null=True, blank=True, default=None)
-    # Best-effort audit only -- never used for authorization decisions.
-    requested_ip = models.GenericIPAddressField(null=True, blank=True)
-    requested_user_agent = models.CharField(max_length=255, blank=True, default="")
-
-    class Meta:
-        ordering = ["-created_at"]
-        indexes = [
-            models.Index(fields=["email", "-created_at"], name="logintoken_email_recent"),
-            models.Index(fields=["expires_at", "consumed_at"], name="logintoken_sweep"),
-        ]
-
-    def __str__(self):
-        return f"LoginToken({self.email}, expires {self.expires_at:%Y-%m-%d %H:%M})"
 
 
 class DismissedOutreachKey(models.Model):
@@ -384,96 +242,6 @@ class OutreachEdit(models.Model):
 
     def __str__(self):
         return f"edit of action {self.outreach_action_id} @ {self.created_at:%Y-%m-%d %H:%M}"
-
-
-# --- Agentic loop (MUS-29) ----------------------------------------------------
-
-
-class AgentLeadRun(models.Model):
-    """The per-lead resume unit of an agentic copy run (MUS-29).
-
-    One row per (trace_run_id, lead). Ownership is taken by an epoch-CAS
-    conditional UPDATE: rowcount 1 means the caller owns the run, so racing
-    workers produce exactly one winner and dead-worker takeover still works.
-    """
-
-    STATUS_PENDING = "pending"
-    STATUS_CLAIMED = "claimed"
-    STATUS_GATHERING = "gathering"
-    STATUS_DRAFTING = "drafting"
-    STATUS_DONE = "done"
-    STATUS_FAILED = "failed"
-    STATUS_EXHAUSTED = "exhausted"
-    NON_TERMINAL_STATUSES = (STATUS_PENDING, STATUS_CLAIMED, STATUS_GATHERING, STATUS_DRAFTING)
-
-    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="agent_runs")
-    trace_run_id = models.CharField(max_length=36, db_index=True)
-    status = models.CharField(max_length=16, default=STATUS_PENDING)
-    claimed_by = models.CharField(max_length=32, blank=True, default="")  # worker token (uuid4 hex)
-    claim_epoch = models.IntegerField(default=0)  # CAS counter: bumps on every claim
-    steps_used = models.IntegerField(default=0)
-    tool_calls_used = models.IntegerField(default=0)
-    started_at = models.DateTimeField(auto_now_add=True)
-    finished_at = models.DateTimeField(null=True, blank=True, default=None)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["trace_run_id", "lead"], name="alr_one_run_per_lead_per_trace"
-            ),
-        ]
-        indexes = [
-            models.Index(fields=["trace_run_id", "status"], name="alr_resume_scan"),
-        ]
-
-    def __str__(self):
-        return f"agent run {self.trace_run_id}/{self.lead_id} [{self.status}]"
-
-
-class AgentStep(models.Model):
-    """Append-only step log: crash-resume checkpoint and reasoning trace in one.
-
-    Payload shapes by ``kind`` are pinned in docs/contracts/agent-loop.md.
-    """
-
-    lead_run = models.ForeignKey(AgentLeadRun, on_delete=models.CASCADE, related_name="steps")
-    seq = models.IntegerField()
-    kind = models.CharField(max_length=16)  # llm_call | tool_result | final
-    payload = models.JSONField(default=dict)
-    # The same `genai.sha256_of` hashes the OTel spans carry (MUS-25), so a span
-    # and a step cross-reference without leaking content.
-    request_sha256 = models.CharField(max_length=64, blank=True, default="")
-    result_sha256 = models.CharField(max_length=64, blank=True, default="")
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["seq"]
-        constraints = [
-            models.UniqueConstraint(fields=["lead_run", "seq"], name="astep_one_seq_per_run"),
-        ]
-
-    def __str__(self):
-        return f"step {self.seq} ({self.kind}) of run {self.lead_run_id}"
-
-
-class AEAvailabilitySlot(models.Model):
-    """Synthetic calendar slots backing the `check_ae_calendar` tool (MUS-29).
-
-    Seeded only by `ingest_data` (idempotent delete-and-recreate of
-    `synthetic=True` rows) -- never written by the agent loop.
-    """
-
-    ae_name = models.CharField(max_length=100)
-    ae_email = models.EmailField()
-    slot_start = models.DateTimeField()
-    slot_end = models.DateTimeField()
-    synthetic = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ["slot_start"]
-
-    def __str__(self):
-        return f"{self.ae_name}: {self.slot_start:%Y-%m-%d %H:%M}"
 
 
 class OutboundSend(models.Model):
