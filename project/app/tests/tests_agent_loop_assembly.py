@@ -25,7 +25,7 @@ from project.app.services.llm.chat_types import ToolCallRequest
 from project.app.services.llm.errors import LLMAuthError, LLMRateLimitError
 from project.app.services.llm.runtime import get_planner_runtime
 from project.app.services.llm.stub import canned_email
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 # The prompt is the only channel to the client; _seed_leads pairs SYNTH-NNN with lead_NNN.
 _AGENCY_IN_PROMPT = re.compile(r"^- Agency: (SYNTH-\d+)", re.MULTILINE)

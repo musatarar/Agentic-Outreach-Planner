@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from evals import run_rules_eval as rules_eval
 from project.app.services import actions, outreach
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 PARITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "reason_parity.json"
 
 TODAY = rules_eval.TODAY  # datetime.date(2026, 6, 12)

@@ -26,7 +26,7 @@ from rest_framework.throttling import SimpleRateThrottle
 from project.app import urls as app_urls
 from project.app.models import LoginToken
 from project.app.services import login_links
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.throttling import LoginEmailRateThrottle
 
 ALLOWED = "tester@example.com"

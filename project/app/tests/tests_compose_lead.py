@@ -15,7 +15,7 @@ from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import actions
 from project.app.services import dedupe as dedupe_service
 from project.app.services.outreach import plan_outreach
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
 def _make_lead(lead_id, agency_name):

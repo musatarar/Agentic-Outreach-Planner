@@ -16,7 +16,7 @@ warn_unused_ignores = true
 
 [tool.coverage.run]
 source = ["project.app"]
-omit = ["*/migrations/*", "*/tests*.py"]
+omit = ["*/migrations/*", "*/tests/*"]
 
 [tool.coverage.report]
 fail_under = 90

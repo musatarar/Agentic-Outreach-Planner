@@ -13,7 +13,7 @@ from django.utils import timezone
 from project.app import models as app_models  # OutboundSend: lazy until Task 3 lands
 from project.app.models import Lead, OutreachAction, ReviewDecision
 from project.app.services import dispatch
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 _ids = itertools.count(1)
 

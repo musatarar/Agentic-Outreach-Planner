@@ -27,7 +27,7 @@ from project.app.models import (
 )
 from project.app.services import dedupe, queue_copy
 from project.app.services.outreach import plan_outreach
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.views.queue import QueueVerifyView
 
 # A well-shaped, grounded draft: passes both the shape gate (MUS-23) and the

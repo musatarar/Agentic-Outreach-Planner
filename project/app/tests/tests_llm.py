@@ -20,7 +20,7 @@ from project.app.services import crypto, llm
 from project.app.services.llm import base, config, errors
 from project.app.services.llm import claude as claude_mod
 from project.app.services.llm.groq import GroqClient
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 # ---------------------------------------------------------------------------
 # Claude adapter (anthropic SDK mocked)
