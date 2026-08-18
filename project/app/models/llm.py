@@ -1,4 +1,4 @@
-"""The LLM catalog and the singleton provider/model/key selection."""
+"""The LLM catalog, the singleton provider/model/key selection, and the call audit."""
 
 from django.db import models
 from django.db.models import CheckConstraint, Q
@@ -80,3 +80,42 @@ class LLMConfiguration(models.Model):
 
     def __str__(self):
         return f"LLM config: {self.provider_id}/{self.model.model_id}"
+
+
+class ProviderTrace(models.Model):
+    """One audit row per LLM provider call; consumers reference it by FK (MUS-71).
+
+    Snapshot strings, not catalog FKs: the catalog is mutable seeded data, and a
+    reseed or edit must not rewrite what actually ran.
+    """
+
+    provider = models.CharField(max_length=32)  # snapshot of LLMProvider.key
+    model_id = models.CharField(max_length=100)  # snapshot of LLMModel.model_id
+    # Run-level id shared by every call the run makes -- indexed, never unique.
+    trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.provider}:{self.model_id}"
+
+
+class ProviderTraceContent(models.Model):
+    """What the model was asked, how it reasoned, and what it answered (MUS-71).
+
+    A side table, not columns on :class:`ProviderTrace`: consumers PROTECT the
+    audit row, so the skeleton is effectively permanent, while these bytes carry
+    lead PII and third-party CRM text and must stay purgeable on their own. Never
+    trust this text -- it is stored post-sanitization but sanitization is partial
+    (SECURITY.md), so anything replaying it inherits the injection problem.
+    """
+
+    trace = models.OneToOneField(ProviderTrace, on_delete=models.CASCADE, related_name="content")
+    request = models.TextField(blank=True, default="")  # the bytes actually sent
+    reasoning = models.TextField(blank=True, default="")  # "" where the provider exposes none
+    response = models.TextField(blank=True, default="")
+
+    def __str__(self):
+        return f"content of trace {self.trace_id}"
