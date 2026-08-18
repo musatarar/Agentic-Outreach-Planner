@@ -1,0 +1,214 @@
+name: Demo tunnel
+
+# Boots the app from a ref (master by default) on a runner and publishes it over
+# a Cloudflare quick tunnel, so a reviewer can click a link and drive the real
+# thing instead of reading a screenshot. Manual dispatch only: while the job
+# runs the URL is public, and the sign-in allowlist is the whole gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to serve"
+        required: false
+        default: master
+      minutes:
+        description: "How long to hold the tunnel open"
+        type: choice
+        default: "30"
+        options: ["15", "30", "60", "120", "240"]
+      login_email:
+        description: "The one address allowed to sign in (delivery is console, so the link lands in this job's log -- any address works)"
+        required: false
+        default: demo@example.com
+
+permissions:
+  contents: read
+
+# One tunnel at a time: a fresh dispatch replaces the running one.
+concurrency:
+  group: demo-tunnel
+  cancel-in-progress: true
+
+jobs:
+  serve:
+    name: Serve ${{ inputs.ref }}
+    runs-on: ubuntu-latest
+    # The hold step ends on its own; this is the backstop if it cannot.
+    timeout-minutes: ${{ fromJSON(inputs.minutes) + 10 }}
+    env:
+      DJANGO_SETTINGS_MODULE: project.settings
+      # Debug pages on a public URL would hand out settings and tracebacks.
+      DJANGO_DEBUG: "False"
+      # SQLite: DATABASE_URL stays unset, and the file dies with the runner.
+      LOGIN_LINK_DELIVERY: console
+      LOGIN_ALLOWED_EMAILS: ${{ inputs.login_email }}
+      # Optional. Set any of these as repo secrets to make the LLM copy step
+      # work; without one the app still serves the seeded demo pipeline.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Mint per-run secrets
+        run: |
+          set -euo pipefail
+          SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(50))')
+          FERNET=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
+          echo "::add-mask::$SECRET_KEY"
+          echo "::add-mask::$FERNET"
+          # Generated per run and thrown away with the runner -- nothing they
+          # protect (session cookies, saved provider keys) outlives the job.
+          echo "DJANGO_SECRET_KEY=$SECRET_KEY" >> "$GITHUB_ENV"
+          echo "LLM_KEY_ENCRYPTION_KEY=$FERNET" >> "$GITHUB_ENV"
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/cloudflared.deb" \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i "$RUNNER_TEMP/cloudflared.deb"
+
+      - name: Open the tunnel
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/cloudflared.log"
+
+          # Quick tunnel: no Cloudflare account, no token, a random
+          # *.trycloudflare.com hostname that dies with the process. It starts
+          # before Django because every allowlist below is keyed to that
+          # hostname, which only exists once Cloudflare hands it out.
+          cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8000 \
+            --logfile "$LOG" >/dev/null 2>&1 &
+          echo "CLOUDFLARED_PID=$!" >> "$GITHUB_ENV"
+
+          URL=""
+          for _ in $(seq 60); do
+            URL=$(grep -ohE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" 2>/dev/null | head -1 || true)
+            if [ -n "$URL" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$URL" ]; then
+            echo "::error::cloudflared never reported a URL"
+            cat "$LOG" || true
+            exit 1
+          fi
+
+          echo "TUNNEL_URL=$URL" >> "$GITHUB_ENV"
+          echo "DJANGO_ALLOWED_HOSTS=${URL#https://},127.0.0.1,localhost" >> "$GITHUB_ENV"
+          # TLS terminates at Cloudflare, so the browser's Origin is https while
+          # the app sees http: without this every authenticated POST is a 403.
+          echo "DJANGO_CSRF_TRUSTED_ORIGINS=$URL" >> "$GITHUB_ENV"
+          # Magic links must point at the tunnel, not at 127.0.0.1.
+          echo "LOGIN_LINK_BASE_URL=$URL" >> "$GITHUB_ENV"
+
+      - name: Migrate and seed the demo pipeline
+        run: |
+          set -euo pipefail
+          python manage.py migrate --noinput
+          python scripts/populate_demo_data.py
+
+      - name: Start the app
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/django.log"
+
+          # --insecure because DEBUG is off: the dev server otherwise refuses to
+          # serve the committed React bundle, and the SPA renders blank without it.
+          nohup python manage.py runserver 0.0.0.0:8000 --noreload --insecure \
+            > "$LOG" 2>&1 &
+          echo "DJANGO_PID=$!" >> "$GITHUB_ENV"
+
+          READY=""
+          for _ in $(seq 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8000/; then READY=1; break; fi
+            sleep 1
+          done
+          if [ -z "$READY" ]; then
+            echo "::error::the app never came up"
+            cat "$LOG" || true
+            exit 1
+          fi
+
+          # The same check from the outside: proves the edge reaches the origin
+          # and that the tunnel hostname survived ALLOWED_HOSTS.
+          EDGE=""
+          for _ in $(seq 30); do
+            if curl -fsS -o /dev/null "$TUNNEL_URL/"; then EDGE=1; break; fi
+            sleep 2
+          done
+          if [ -z "$EDGE" ]; then
+            echo "::error::the tunnel never reached the app"
+            tail -50 "$RUNNER_TEMP/cloudflared.log" || true
+            tail -50 "$LOG" || true
+            exit 1
+          fi
+
+      - name: Publish the link
+        run: |
+          set -euo pipefail
+          {
+            echo "## Demo tunnel is up"
+            echo
+            echo "### $TUNNEL_URL"
+            echo
+            echo "Serving \`${{ inputs.ref }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.minutes }} minutes."
+            echo
+            echo "1. Open the link and request a sign-in link for \`${{ inputs.login_email }}\`."
+            echo "2. Delivery is \`console\`, so the magic link is printed in this job's live"
+            echo "   log (the **Hold the tunnel open** step). Paste it into the browser."
+            echo
+            echo "Cancel the run to take the tunnel down early. The URL stops resolving the"
+            echo "moment the job ends, and the SQLite database goes with it."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Demo tunnel: $TUNNEL_URL"
+
+      - name: Hold the tunnel open
+        run: |
+          set -uo pipefail
+          END=$(( $(date +%s) + ${{ inputs.minutes }} * 60 ))
+
+          # The server log is the sign-in channel: LOGIN_LINK_DELIVERY=console
+          # prints each magic link here and nowhere else, so live-tail it and
+          # whoever is driving the demo can read their link out of this step.
+          tail -f "$RUNNER_TEMP/django.log" &
+          TAIL_PID=$!
+
+          while [ "$(date +%s)" -lt "$END" ]; do
+            if ! kill -0 "$DJANGO_PID" 2>/dev/null; then
+              echo "::error::the app exited"
+              kill "$TAIL_PID" 2>/dev/null || true
+              exit 1
+            fi
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "::error::cloudflared exited"
+              kill "$TAIL_PID" 2>/dev/null || true
+              exit 1
+            fi
+            echo "--- $TUNNEL_URL is up, $(( (END - $(date +%s) + 59) / 60 )) min left ---"
+            sleep 60
+          done
+
+          kill "$TAIL_PID" 2>/dev/null || true
+          echo "Time is up; taking the tunnel down."
+
+      - name: Tear down
+        if: always()
+        run: |
+          kill "${DJANGO_PID:-}" 2>/dev/null || true
+          kill "${CLOUDFLARED_PID:-}" 2>/dev/null || true
+          echo "::group::Server log"
+          tail -200 "$RUNNER_TEMP/django.log" 2>/dev/null || true
+          echo "::endgroup::"
