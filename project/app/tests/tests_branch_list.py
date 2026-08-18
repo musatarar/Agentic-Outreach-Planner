@@ -5,6 +5,7 @@
 """
 
 import sys
+import textwrap
 from pathlib import Path
 
 import yaml
@@ -49,10 +50,11 @@ class RenderTests(SimpleTestCase):
         self.assertEqual(refresh.render_options(["feat/a"], limit=10)[0], "master")
 
     def test_a_branch_name_that_could_break_the_yaml_is_quoted(self):
+        """Branch names are free to look like YAML syntax (`*odd`, `a: b`)."""
         rendered = refresh.rewrite(TEMPLATE, ["master", "feat/*odd: name"], limit=10)
 
-        block = yaml.safe_load("dummy:\n" + rendered.replace("      branch:", "  branch:", 1))
-        self.assertIn("feat/*odd: name", block["branch"]["options"])
+        parsed = yaml.safe_load(textwrap.dedent(rendered))
+        self.assertIn("feat/*odd: name", parsed["branch"]["options"])
 
 
 class RewriteTests(SimpleTestCase):

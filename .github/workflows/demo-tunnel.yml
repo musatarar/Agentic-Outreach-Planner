@@ -5,16 +5,26 @@ name: Demo tunnel
 # screenshot. Manual dispatch only: while the job runs the URL is public, and
 # the sign-in allowlist is the whole gate.
 #
-# The branch comes from the dispatch form's own "Use workflow from" picker,
-# which lists every branch and defaults to master. That is a real list to choose
-# from, which a text field cannot be -- workflow_dispatch has no branch-typed
-# input, and a `choice` would be a hardcoded list going stale the day it merged.
+# The branch dropdown is a `choice` input, because workflow_dispatch has no
+# branch-typed one and the form is rendered from this file before any runner
+# exists -- nothing chosen at dispatch time can fill it in. demo-tunnel-branches.yml
+# keeps the list current by rewriting it here and opening a PR.
 
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Branch to serve"
+        type: choice
+        default: master
+        # demo-tunnel-branches.yml rewrites everything between the markers when
+        # branches come or go, and opens a PR. Do not edit it by hand.
+        # <<< generated
+        options:
+          - master
+        # >>> generated
       ref:
-        description: "Optional: a tag or SHA to serve instead of the branch picked above"
+        description: "Optional: a tag or SHA to serve instead of the branch chosen above"
         required: false
         default: ""
       duration:
@@ -42,7 +52,7 @@ concurrency:
 
 jobs:
   serve:
-    name: Serve ${{ inputs.ref || github.ref_name }}
+    name: Serve ${{ inputs.ref || inputs.branch }}
     runs-on: ubuntu-latest
     # The hold step ends on its own; this is the backstop if it cannot. The
     # expression language has no arithmetic, so the chosen duration maps to its
@@ -69,8 +79,8 @@ jobs:
       - uses: actions/checkout@v4
         id: code
         with:
-          # Empty override -> the branch the run was dispatched from.
-          ref: ${{ inputs.ref || github.ref }}
+          # The dropdown names the code; the override wins when set.
+          ref: ${{ inputs.ref || inputs.branch }}
 
       # A mistyped override otherwise fails with checkout's own "couldn't find
       # remote ref" and nothing to compare it against. `ls-remote`, not
@@ -79,7 +89,7 @@ jobs:
         if: failure() && steps.code.outcome == 'failure'
         run: |
           set -uo pipefail
-          echo "::error::no ref named '${{ inputs.ref }}' -- the branches and tags this repo has:"
+          echo "::error::no ref named '${{ inputs.ref || inputs.branch }}' -- the branches and tags this repo has:"
           git ls-remote --heads --tags --refs \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" \
             | sed 's|.*refs/heads/|  branch: |; s|.*refs/tags/|  tag:    |'
@@ -194,7 +204,7 @@ jobs:
             echo
             echo "### $TUNNEL_URL"
             echo
-            echo "Serving \`${{ inputs.ref || github.ref_name }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.duration }}."
+            echo "Serving \`${{ inputs.ref || inputs.branch }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.duration }}."
             echo
             echo "1. Open the link and request a sign-in link for \`${{ inputs.login_email }}\`."
             echo "2. Delivery is \`console\`, so the magic link is printed in this job's live"
