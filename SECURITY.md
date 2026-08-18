@@ -137,6 +137,18 @@ well-formed, fully-grounded, on-policy email are the accepted residual: at that
 point the output is, by every check we can apply deterministically,
 indistinguishable from a legitimate one.
 
+## Provider call content at rest (MUS-72)
+
+`OUTREACH_TRACE_CONTENT_ENABLED` (default **off**) makes each `ProviderTrace`
+also store the request bytes and the response. Off, audit rows are metadata
+only. On, what is stored is the post-sanitization, post-`wrap_untrusted` string
+actually sent — never a pre-sanitization reconstruction — so a planted injection
+lands already neutralized and fenced. It is stored, never re-fed: anything that
+replays this text inherits the residual risk above, and it carries lead PII plus
+third-party CRM prose, which is why capture is an operator decision. The bytes
+live in `ProviderTraceContent`, a `CASCADE` side table, so they stay purgeable
+without touching the audit row its consumers `PROTECT`.
+
 ---
 
 # Security: API Authentication (MUS-32, superseded by MUS-37)

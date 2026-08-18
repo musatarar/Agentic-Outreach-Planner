@@ -52,6 +52,12 @@ PAYLOAD_RESULT_SHA256 = "result_sha256"
 PAYLOAD_PROVIDER = "trace_provider"
 PAYLOAD_MODEL = "trace_model"
 
+#: Carried only when ``PlannerRuntime.trace_content_enabled`` is on; the loop
+#: decides, so this layer just writes what it is handed. The request is the
+#: post-sanitization, post-``wrap_untrusted`` string actually sent.
+PAYLOAD_TRACE_REQUEST = "trace_request"
+PAYLOAD_TRACE_RESPONSE = "trace_response"
+
 # Appended once, in the first user message: extends the copy prompt's
 # spotlighting rule to tool results. The delimiters are described here, never
 # emitted — a literal fence in the instruction region would stop meaning
@@ -280,7 +286,12 @@ class Checkpoint:
         steps_used: int,
         tool_calls_used: int,
     ) -> None:
-        from project.app.models import AgentLeadRun, AgentStep, ProviderTrace
+        from project.app.models import (
+            AgentLeadRun,
+            AgentStep,
+            ProviderTrace,
+            ProviderTraceContent,
+        )
 
         with transaction.atomic():
             rows = []
@@ -301,6 +312,14 @@ class Checkpoint:
                     if provider or model_id
                     else None
                 )
+                trace_request = str(payload.pop(PAYLOAD_TRACE_REQUEST, "") or "")
+                trace_response = str(payload.pop(PAYLOAD_TRACE_RESPONSE, "") or "")
+                if trace is not None and (trace_request or trace_response):
+                    ProviderTraceContent.objects.create(
+                        trace=trace,
+                        request=trace_request,
+                        response=trace_response,
+                    )
                 rows.append(
                     AgentStep(
                         lead_run_id=lead_run_pk,

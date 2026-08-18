@@ -31,6 +31,7 @@ from project.app.services.agent import state, tools
 from project.app.services.llm.base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
 from project.app.services.llm.chat_types import ToolCallRequest
 from project.app.services.llm.runtime import get_planner_runtime
+from project.app.services.telemetry import genai
 
 TRACE_RUN_ID = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
 
@@ -223,8 +224,12 @@ class TraceContentTests(_TraceWriterCase):
         self._run([_final("Subject: Hi\n\nBody.")])
 
         content = ProviderTraceContent.objects.get()
+        # The stored request is the same canonical JSON render `request_sha256`
+        # hashes, so the addendum appears JSON-escaped rather than verbatim.
         self.assertIn("PROMPT", content.request)
-        self.assertIn(state.AGENT_ADDENDUM, content.request)
+        self.assertIn(state.AGENT_ADDENDUM[-40:], content.request)
+        step = AgentStep.objects.get(kind=state.KIND_LLM_CALL)
+        self.assertEqual(step.request_sha256, genai.sha256_of(content.request))
         self.assertEqual(content.response, "Subject: Hi\n\nBody.")
         self.assertEqual(content.reasoning, "")  # its own ticket
 
@@ -240,9 +245,11 @@ class TraceContentTests(_TraceWriterCase):
         )
         self._run([_tool_result(), _final()])
 
-        # The second call is the one that carried the tool result back.
+        # The second call is the one that carried the tool result back; the fence
+        # only ever appears there, so its presence proves the note really landed.
         second = ProviderTraceContent.objects.order_by("trace_id").last()
         self.assertIn(sanitize.UNTRUSTED_OPEN, second.request)
+        self.assertIn("[redacted:", second.request)
         self.assertNotIn(payload.injected_text, second.request)
 
 

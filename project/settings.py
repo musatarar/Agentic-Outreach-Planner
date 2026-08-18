@@ -82,6 +82,18 @@ OUTREACH_AGENT_MAX_STEPS = _env_int("OUTREACH_AGENT_MAX_STEPS", 6)
 OUTREACH_AGENT_MAX_TOOL_CALLS = _env_int("OUTREACH_AGENT_MAX_TOOL_CALLS", 8)
 OUTREACH_AGENT_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_AGENT_PER_LEAD_TIMEOUT_S", 300.0)
 
+# --- Provider call content capture (MUS-72) ------------------------------------
+# Off means ProviderTrace rows stay skeletons. On, each row also stores the bytes
+# actually sent and the answer returned -- lead PII plus third-party CRM text at
+# rest, so it is an operator decision, never a default.
+OUTREACH_TRACE_CONTENT_ENABLED = (
+    os.environ.get("OUTREACH_TRACE_CONTENT_ENABLED") or ""
+).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # The key formerly hardcoded here is committed to git and must never be reused.
