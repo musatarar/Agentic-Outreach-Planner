@@ -34,8 +34,10 @@ jobs:
   serve:
     name: Serve ${{ inputs.ref }}
     runs-on: ubuntu-latest
-    # The hold step ends on its own; this is the backstop if it cannot.
-    timeout-minutes: ${{ fromJSON(inputs.minutes) + 10 }}
+    # The hold step ends on its own; this is the backstop if it cannot. The
+    # expression language has no arithmetic, so each duration maps to its own
+    # ceiling (the chosen minutes plus setup headroom) by hand.
+    timeout-minutes: ${{ fromJSON('{"15":25,"30":40,"60":70,"120":130,"240":250}')[inputs.minutes] }}
     env:
       DJANGO_SETTINGS_MODULE: project.settings
       # Debug pages on a public URL would hand out settings and tracebacks.
