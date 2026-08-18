@@ -67,9 +67,22 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+        id: code
         with:
           # Empty override -> the branch the run was dispatched from.
           ref: ${{ inputs.ref || github.ref }}
+
+      # A mistyped override otherwise fails with checkout's own "couldn't find
+      # remote ref" and nothing to compare it against. `ls-remote`, not
+      # `branch -r`: there is no clone to read when the clone is what failed.
+      - name: Say what could have been served
+        if: failure() && steps.code.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          echo "::error::no ref named '${{ inputs.ref }}' -- the branches and tags this repo has:"
+          git ls-remote --heads --tags --refs \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" \
+            | sed 's|.*refs/heads/|  branch: |; s|.*refs/tags/|  tag:    |'
 
       - uses: actions/setup-python@v5
         with:
