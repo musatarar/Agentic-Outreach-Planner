@@ -86,7 +86,7 @@ def normalize_email(email: str) -> str:
 def is_allowed(email: str) -> bool:
     """True when ``email`` may be sent a link at all (no signup flow; the
     allowlist decides). The caller must NOT vary its response on this -- see
-    ``views_auth.AuthRequestLinkView``."""
+    ``views.auth.AuthRequestLinkView``."""
     return normalize_email(email) in settings.LOGIN_ALLOWED_EMAILS
 
 

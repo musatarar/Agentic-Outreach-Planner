@@ -3,7 +3,7 @@
 from django.contrib import admin
 from django.urls import include, path
 
-from project.app.views_frontend import (
+from project.app.views.frontend import (
     auth_consume,
     done,
     inbox,

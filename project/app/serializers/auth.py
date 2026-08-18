@@ -8,7 +8,7 @@ from rest_framework import serializers
 
 class RequestLinkSerializer(serializers.Serializer):
     """Body of ``POST /api/auth/request-link/``. Syntax only; whether the address
-    is *allowed* must never change the response (views_auth.AuthRequestLinkView).
+    is *allowed* must never change the response (views.auth.AuthRequestLinkView).
     """
 
     email = serializers.EmailField(max_length=254)

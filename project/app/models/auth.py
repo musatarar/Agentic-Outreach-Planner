@@ -8,7 +8,7 @@ class LoginToken(models.Model):
 
     Only ``sha256(token)`` is stored -- plain SHA-256 is fine for 256-bit
     CSPRNG output. Single-use is enforced by a conditional UPDATE
-    (views_auth.py), so two concurrent consumes cannot both succeed.
+    (views/auth.py), so two concurrent consumes cannot both succeed.
     """
 
     email = models.EmailField(db_index=True)
