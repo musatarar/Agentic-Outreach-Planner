@@ -5,7 +5,9 @@
  */
 
 const DESTINATION_KEY = 'auth:destination';
-const DEFAULT_DESTINATION = '/inbox';
+// The leads table is the top of the funnel — signing in lands you on the book
+// you are working, not on the queue of drafts a previous run produced.
+const DEFAULT_DESTINATION = '/leads/';
 
 /**
  * Same-origin absolute paths only. `//evil.example` is protocol-relative and

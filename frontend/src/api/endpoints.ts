@@ -9,6 +9,7 @@ import type {
   DismissInput,
   DoneResponse,
   EditCopyInput,
+  LeadRecord,
   LLMCatalog,
   LLMConfig,
   LLMConfigInput,
@@ -25,6 +26,9 @@ import type {
 } from './types';
 
 export const fetchOutreach = () => getJson<OutreachAction[]>('/api/outreach/');
+
+/** Every lead in the book, full records (MUS-68's `LeadSerializer`). */
+export const fetchLeads = () => getJson<LeadRecord[]>('/api/leads/');
 
 export const runOutreachPlan = () =>
   postJson<OutreachAction[]>('/api/outreach/run/', {});

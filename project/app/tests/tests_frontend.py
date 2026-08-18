@@ -26,6 +26,20 @@ class FrontendTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "BD Dashboard")
 
+    def test_leads_shell_renders(self):
+        """The leads table's shell loads, uses the SPA template, and sets the CSRF cookie.
+
+        Load-bearing beyond the usual: /leads/ is where signing in lands you
+        (`DEFAULT_DESTINATION` in frontend/src/hooks/authDestination.ts), so a
+        missing route here is not one broken page — it is a 404 immediately
+        after every magic link, on the one path nobody navigates to by hand.
+        """
+        response = self.client.get("/leads/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "app/leads.html")
+        self.assertContains(response, "<title>Leads · Locked In</title>", html=False)
+        self.assertIn("csrftoken", response.cookies)
+
     def test_settings_view_renders(self):
         """Settings page loads, uses the SPA shell template, and sets the CSRF cookie."""
         response = self.client.get("/settings/")

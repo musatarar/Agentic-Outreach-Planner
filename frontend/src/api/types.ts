@@ -2,11 +2,44 @@
 
 export type Priority = 1 | 2 | 3;
 
+/** Mirrors `LeadSummarySerializer` — the lead nested inside an outreach action. */
 export interface Lead {
-  id: number;
+  // `Lead.id` is a CharField primary key ("lead_001"), not an integer. It was
+  // typed `number` here and never caught, because every use is a Map or React
+  // key and both are happy either way.
+  id: string;
   agency_name: string;
   contact_name: string;
   contact_email: string;
+}
+
+/**
+ * Mirrors `LeadSerializer` (`fields = "__all__"`) — what `GET /api/leads/`
+ * returns. Distinct from `Lead` above, which is the compact nested form.
+ *
+ * `hubspot_notes` is lead-controlled text. It is carried here for completeness
+ * but must never be interpolated into a prompt on this side of the wire — see
+ * SECURITY.md.
+ */
+export interface LeadRecord {
+  id: string;
+  agency_name: string;
+  contact_name: string;
+  contact_email: string;
+  contact_phone: string;
+  state: string;
+  num_producers: number;
+  years_in_business: number;
+  estimated_book_size_usd: number;
+  stage: string;
+  /** DRF DateFields: "YYYY-MM-DD", or null when never recorded. */
+  signed_up_date: string | null;
+  last_login_date: string | null;
+  quotes_created: number;
+  quotes_submitted: number;
+  deals_closed: number;
+  last_contacted_date: string | null;
+  hubspot_notes: string;
 }
 
 export interface OutreachAction {

@@ -5,6 +5,7 @@ import { SignOutButton } from './SignOutButton';
 // load-bearing: a mismatch 404s on hard refresh even though client-side
 // navigation looks fine.
 const LINKS = [
+  { to: '/leads/', label: 'Leads' },
   { to: '/inbox', label: 'Inbox' },
   { to: '/done', label: 'Done' },
   { to: '/', label: 'Planner' },
