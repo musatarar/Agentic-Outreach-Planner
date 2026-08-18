@@ -1,17 +1,22 @@
 name: Demo tunnel
 
-# Boots the app from a ref (master by default) on a runner and publishes it over
-# a Cloudflare quick tunnel, so a reviewer can click a link and drive the real
-# thing instead of reading a screenshot. Manual dispatch only: while the job
-# runs the URL is public, and the sign-in allowlist is the whole gate.
+# Boots the app on a runner and publishes it over a Cloudflare quick tunnel, so
+# a reviewer can click a link and drive the real thing instead of reading a
+# screenshot. Manual dispatch only: while the job runs the URL is public, and
+# the sign-in allowlist is the whole gate.
+#
+# The branch comes from the dispatch form's own "Use workflow from" picker,
+# which lists every branch and defaults to master. That is a real list to choose
+# from, which a text field cannot be -- workflow_dispatch has no branch-typed
+# input, and a `choice` would be a hardcoded list going stale the day it merged.
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch, tag or SHA to serve"
+        description: "Optional: a tag or SHA to serve instead of the branch picked above"
         required: false
-        default: master
+        default: ""
       duration:
         description: "How long to hold the tunnel open"
         type: choice
@@ -37,7 +42,7 @@ concurrency:
 
 jobs:
   serve:
-    name: Serve ${{ inputs.ref }}
+    name: Serve ${{ inputs.ref || github.ref_name }}
     runs-on: ubuntu-latest
     # The hold step ends on its own; this is the backstop if it cannot. The
     # expression language has no arithmetic, so the chosen duration maps to its
@@ -63,7 +68,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          # Empty override -> the branch the run was dispatched from.
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -175,7 +181,7 @@ jobs:
             echo
             echo "### $TUNNEL_URL"
             echo
-            echo "Serving \`${{ inputs.ref }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.duration }}."
+            echo "Serving \`${{ inputs.ref || github.ref_name }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.duration }}."
             echo
             echo "1. Open the link and request a sign-in link for \`${{ inputs.login_email }}\`."
             echo "2. Delivery is \`console\`, so the magic link is printed in this job's live"
