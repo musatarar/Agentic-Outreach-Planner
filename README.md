@@ -76,6 +76,24 @@ This starts Postgres, builds the app image, applies migrations, seeds the demo p
 serves the app at **http://127.0.0.1:8000/**. The server starts even without an LLM provider
 key — you just can't run the LLM copy step until one is set.
 
+### Or from GitHub Actions (a shareable live link)
+
+To hand someone a running instance instead of a screenshot, dispatch the
+**Demo tunnel** workflow (`.github/workflows/demo-tunnel.yml`): pick a ref (default
+`master`) and how long to keep it up. The job installs the app on a runner, seeds the demo
+pipeline into a throwaway SQLite database, and publishes it through a
+[Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+— no Cloudflare account or token needed. The `https://<random>.trycloudflare.com` URL lands in
+the run summary, and the hostname stops resolving the moment the job ends.
+
+Sign-in works the same as locally, with the job log standing in for the server log: request a
+link for the address you passed as the `login_email` input, then read the printed link out of
+the live **Hold the tunnel open** step. Nothing else gets in — the allowlist is the gate, and
+`DJANGO_DEBUG` stays off so the URL never serves a debug page. Set `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GROQ_API_KEY` or `DEEPSEEK_API_KEY` as repo secrets if you want the LLM copy
+step live in the demo; without one the app still serves the seeded pipeline. Cancel the run to
+take the tunnel down early.
+
 ### Signing in
 
 The API is authenticated by **magic link** — one operator, no passwords to store, reset or
