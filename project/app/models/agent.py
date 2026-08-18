@@ -3,6 +3,7 @@
 from django.db import models
 
 from .lead import Lead
+from .llm import ProviderTrace
 
 
 class AgentLeadRun(models.Model):
@@ -60,6 +61,11 @@ class AgentStep(models.Model):
     # and a step cross-reference without leaking content.
     request_sha256 = models.CharField(max_length=64, blank=True, default="")
     result_sha256 = models.CharField(max_length=64, blank=True, default="")
+    # The provider call this step made, for `llm_call` steps only; NULL on
+    # `tool_result`/`final` and on every row written before the audit existed.
+    provider_trace = models.ForeignKey(
+        ProviderTrace, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

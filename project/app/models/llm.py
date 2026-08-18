@@ -100,3 +100,22 @@ class ProviderTrace(models.Model):
 
     def __str__(self):
         return f"{self.provider}:{self.model_id}"
+
+
+class ProviderTraceContent(models.Model):
+    """What the model was asked, how it reasoned, and what it answered (MUS-71).
+
+    A side table, not columns on :class:`ProviderTrace`: consumers PROTECT the
+    audit row, so the skeleton is effectively permanent, while these bytes carry
+    lead PII and third-party CRM text and must stay purgeable on their own. Never
+    trust this text -- it is stored post-sanitization but sanitization is partial
+    (SECURITY.md), so anything replaying it inherits the injection problem.
+    """
+
+    trace = models.OneToOneField(ProviderTrace, on_delete=models.CASCADE, related_name="content")
+    request = models.TextField(blank=True, default="")  # the bytes actually sent
+    reasoning = models.TextField(blank=True, default="")  # "" where the provider exposes none
+    response = models.TextField(blank=True, default="")
+
+    def __str__(self):
+        return f"content of trace {self.trace_id}"
