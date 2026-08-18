@@ -12,11 +12,16 @@ on:
         description: "Branch, tag or SHA to serve"
         required: false
         default: master
-      minutes:
+      duration:
         description: "How long to hold the tunnel open"
         type: choice
-        default: "30"
-        options: ["15", "30", "60", "120", "240"]
+        default: "30 minutes"
+        options:
+          - "15 minutes"
+          - "30 minutes"
+          - "1 hour"
+          - "2 hours"
+          - "4 hours"
       login_email:
         description: "The one address allowed to sign in (delivery is console, so the link lands in this job's log -- any address works)"
         required: false
@@ -35,10 +40,14 @@ jobs:
     name: Serve ${{ inputs.ref }}
     runs-on: ubuntu-latest
     # The hold step ends on its own; this is the backstop if it cannot. The
-    # expression language has no arithmetic, so each duration maps to its own
-    # ceiling (the chosen minutes plus setup headroom) by hand.
-    timeout-minutes: ${{ fromJSON('{"15":25,"30":40,"60":70,"120":130,"240":250}')[inputs.minutes] }}
+    # expression language has no arithmetic, so the chosen duration maps to its
+    # own ceiling (itself plus setup headroom) by hand. Keep in step with
+    # HOLD_MINUTES below: each ceiling has to stay the larger of the two.
+    timeout-minutes: ${{ fromJSON('{"15 minutes":25,"30 minutes":40,"1 hour":70,"2 hours":130,"4 hours":250}')[inputs.duration] }}
     env:
+      # The duration reads as English in the dispatch form; the hold step needs
+      # it as a number of minutes.
+      HOLD_MINUTES: ${{ fromJSON('{"15 minutes":15,"30 minutes":30,"1 hour":60,"2 hours":120,"4 hours":240}')[inputs.duration] }}
       DJANGO_SETTINGS_MODULE: project.settings
       # Debug pages on a public URL would hand out settings and tracebacks.
       DJANGO_DEBUG: "False"
@@ -166,7 +175,7 @@ jobs:
             echo
             echo "### $TUNNEL_URL"
             echo
-            echo "Serving \`${{ inputs.ref }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.minutes }} minutes."
+            echo "Serving \`${{ inputs.ref }}\` (\`$(git rev-parse --short HEAD)\`) for ${{ inputs.duration }}."
             echo
             echo "1. Open the link and request a sign-in link for \`${{ inputs.login_email }}\`."
             echo "2. Delivery is \`console\`, so the magic link is printed in this job's live"
@@ -180,7 +189,7 @@ jobs:
       - name: Hold the tunnel open
         run: |
           set -uo pipefail
-          END=$(( $(date +%s) + ${{ inputs.minutes }} * 60 ))
+          END=$(( $(date +%s) + HOLD_MINUTES * 60 ))
 
           # The server log is the sign-in channel: LOGIN_LINK_DELIVERY=console
           # prints each magic link here and nowhere else, so live-tail it and
