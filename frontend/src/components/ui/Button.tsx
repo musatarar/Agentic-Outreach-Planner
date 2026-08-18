@@ -14,11 +14,8 @@ export interface ButtonProps {
 }
 
 /**
- * The only button in the app. `primary` is the one accent fill on a screen —
- * if two primaries are visible at once, one of them is wrong.
- *
- * `loading` implies disabled, so a double-submit is impossible by construction,
- * and keeps the label mounted so the button does not resize mid-click.
+ * The only button in the app; at most one `primary` per screen. `loading`
+ * implies disabled and keeps the label mounted so the button does not resize.
  */
 export function Button({
   variant = 'secondary',

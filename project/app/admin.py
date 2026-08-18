@@ -79,8 +79,6 @@ class LLMConfigurationAdmin(admin.ModelAdmin):
     """The stored (or plaintext) API key must never render here."""
 
     list_display = ("provider", "model", "max_tokens", "key_last_four", "updated_at")
-    # encrypted_api_key is deliberately excluded from every admin form/list --
-    # this is the only thing standing between "safe" and "leaks a ciphertext
-    # blob (or worse, gets accidentally decrypted in a custom admin action)".
+    # encrypted_api_key must never appear in any admin form or list.
     exclude = ("encrypted_api_key",)
     readonly_fields = ("key_last_four", "updated_at")

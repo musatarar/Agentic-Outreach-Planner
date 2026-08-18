@@ -18,9 +18,7 @@ import { EmptyState, ErrorMessage } from '../components/Messages';
 import { PageHeader } from '../components/PageHeader';
 import { TierBadge } from '../components/TierBadge';
 
-/** Best-effort mapping from provider key to the env var it reads, for the
- * "using X from the environment" message. Falls back to a guess for any
- * provider the catalog adds later. */
+/** Provider key to the env var it reads; guesses for unknown providers. */
 const ENV_VAR_NAMES: Record<string, string> = {
   claude: 'ANTHROPIC_API_KEY',
   groq: 'GROQ_API_KEY',
@@ -213,9 +211,8 @@ export function SettingsPage() {
         (editingKey && apiKey.trim() !== '')),
   );
 
-  // Warn on a hard navigate-away (reload/close/external link) with unsaved
-  // changes. react-router v6 here has no data router, so useBlocker isn't
-  // available for in-app navigation — this only covers the browser-level case.
+  // Browser-level navigate-away only: no data router here, so `useBlocker`
+  // is unavailable for in-app navigation.
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
       if (!dirty) return;

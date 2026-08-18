@@ -1,29 +1,17 @@
 """Resolve the active LLM provider/model/key configuration from the database.
 
-Replaces the old ``config.toml`` file. Precedence, per provider:
-
-1. An :class:`~project.app.models.LLMConfiguration` row exists, is set to
-   this provider, and has a stored (encrypted) key -> ``"database"``.
-2. A row exists but has no stored key, and the provider's own env var is
-   set -> ``"environment"``.
-3. No row (or the row is for a different provider) -> the provider's env var
-   if set (``"environment"``), else its catalog default model with no key
-   (``"none"``).
-
-``get_provider()`` / ``get_provider_config(name)`` keep the same names and
-call signature the old ``config.toml`` loader had, so callers elsewhere in
-the repo (the LLM client factory, the copy-eval harness) didn't need to
-change -- only the resolution logic underneath did.
+Key precedence per provider: a stored (encrypted) key on the active
+:class:`~project.app.models.LLMConfiguration` row (``"database"``), else the
+provider's env var (``"environment"``), else its catalog default model with no
+key (``"none"``).
 """
 
 import os
 
 from project.app.services.crypto import decrypt_key
 
-# Provider -> env var name(s) its adapter accepts, in priority order. "claude"
-# keeps the CLAUDE_API_KEY alias that used to be normalized in
-# project/settings.py; that normalization is gone now that adapters take an
-# explicit api_key, so the alias is handled here instead.
+# Provider -> env var name(s) its adapter accepts, in priority order.
+# CLAUDE_API_KEY is a legacy alias handled here.
 PROVIDER_ENV_VARS = {
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
     "chatgpt": ("OPENAI_API_KEY",),
@@ -31,9 +19,7 @@ PROVIDER_ENV_VARS = {
     "groq": ("GROQ_API_KEY",),
 }
 
-# Used only when no LLMConfiguration row exists at all (fresh DB, nothing
-# saved via the API yet). Groq matches the free, no-credit-card-required
-# provider this repo has always defaulted new setups to.
+# Used only when no LLMConfiguration row exists at all (fresh DB).
 _DEFAULT_PROVIDER = "groq"
 _DEFAULT_MAX_TOKENS = 500
 
@@ -61,11 +47,9 @@ def get_provider():
 def get_provider_config(name):
     """Model/max_tokens for ``name`` (not necessarily the active provider).
 
-    Returns the active configuration's model/max_tokens when ``name`` is the
-    active provider; otherwise ``name``'s catalog default model (lowest
-    ``sort_order`` among its enabled models). Empty dict when ``name`` has no
-    catalog entries at all -- e.g. an unconfigured/unknown provider name, same
-    as the old "no section in config.toml" behavior.
+    The active configuration's values when ``name`` is active; otherwise
+    ``name``'s catalog default model (lowest ``sort_order`` among enabled
+    models), or ``{}`` when ``name`` has no catalog entries.
     """
     from project.app.models import LLMModel
 

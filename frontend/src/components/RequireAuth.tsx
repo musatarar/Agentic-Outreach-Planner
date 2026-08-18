@@ -8,19 +8,10 @@ import { useAuth } from '../hooks/useAuth';
 import '../pages/auth.css';
 
 /**
- * Route guard for every authenticated surface.
- *
- * Two ways in to the same redirect:
- *
- *  1. The up-front session check. `useAuth` asks the server once on mount;
- *     `anonymous` sends you to /signin before any page code runs.
- *  2. A 401 mid-session — the cookie expired while the tab sat open. Any API
- *     call from anywhere raises it, so `client.ts` routes them all through one
- *     handler installed here rather than leaving each call site to render its
- *     own broken screen.
- *
- * Both remember where you were headed, so signing in resumes the journey
- * instead of dumping you on the default page.
+ * Route guard for every authenticated surface. Redirects to /signin on the
+ * mount-time session check and on any mid-session 401 (via the one handler
+ * installed into client.ts); both remember the destination so signing in
+ * resumes the journey.
  */
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { status } = useAuth();
@@ -30,18 +21,16 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      // Read from `window.location` rather than the closed-over value: the 401
-      // may fire long after this effect ran, from a page the user has since
-      // navigated to within the guarded area.
+      // Read `window.location`, not the closed-over value: the 401 may fire
+      // long after this effect ran, from a page navigated to since.
       rememberDestination(`${window.location.pathname}${window.location.search}`);
       navigate('/signin', { replace: true });
     });
     return () => setUnauthorizedHandler(null);
   }, [navigate]);
 
-  // Redirect from an effect rather than by rendering <Navigate>, so remembering
-  // the destination is guaranteed to happen before the navigation, not merely
-  // to be scheduled alongside it.
+  // Redirect from an effect, not <Navigate>, so the destination is remembered
+  // strictly before the navigation.
   useEffect(() => {
     if (status !== 'anonymous') return;
     rememberDestination(destination);
@@ -50,9 +39,8 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 
   if (status === 'authenticated') return <>{children}</>;
 
-  // Covers both the session check and the frame between deciding to redirect
-  // and the router acting on it. Quiet on purpose: this is usually one frame,
-  // and a card or spinner flashing on every page load is worse than nothing.
+  // Covers the session check and the redirect frame; quiet on purpose — this
+  // is usually one frame.
   return (
     <div className="auth-shell">
       <main className="auth-shell__main">

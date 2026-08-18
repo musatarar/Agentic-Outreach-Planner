@@ -29,7 +29,7 @@ python manage.py runserver            # dev server (http://127.0.0.1:8000)
 python manage.py migrate
 python scripts/populate_demo_data.py  # single source of demo state
 python manage.py test project.app     # full backend suite
-python manage.py test project.app.tests_logic.SomeCase.test_name  # single test
+python manage.py test project.app.tests.tests_logic.SomeCase.test_name  # single test
 ruff check . && ruff format --check .
 mypy project/app/services/            # CI runs exactly this target
 python evals/run_rules_eval.py        # rules regression vs committed baseline
@@ -60,6 +60,14 @@ An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]*
 6. **Plans follow the planning discipline** [convention]. Before writing any
    implementation plan (ticket plan, multi-PR breakdown, ADR), invoke the
    `planning-discipline` skill and hold the plan to it.
+
+## Comments & docstrings
+
+- **Verbosity != clarity** [convention]. Assume the reader understands the code
+  generally. Module/class docstrings state purpose in 1–3 lines; test docstrings pin
+  the behavior in one line; non-obvious or security-critical facts survive as
+  compressed one-liners (point at SECURITY.md rather than re-arguing it). No design
+  history, no alternatives considered, no restating what the code shows.
 
 ## Testing & database
 

@@ -20,10 +20,7 @@ function Fact({ label, value }: { label: string; value: string }) {
 
 export interface LeadCardProps {
   item: QueueItem;
-  /**
-   * The report backing the underlines. Normally `item.verification`; during
-   * live editing it is the `/verify/` response instead.
-   */
+  /** The report backing the underlines; the `/verify/` response during live editing. */
   report: VerificationReport;
   /** `QueueResponse.date`, for the stale-trace note. */
   queueDate: string;
@@ -39,13 +36,8 @@ export interface LeadCardProps {
 }
 
 /**
- * One lead, focused. The card is the whole job: who this is, what the machine
- * concluded, what it wrote, and what you can do about it.
- *
- * `reason` is deliberately not rendered. The structured rule trace above the
- * draft is the same explanation with its arithmetic showing, and printing both
- * would put a prose summary next to its own evidence, inviting the reader to
- * trust the sentence over the numbers.
+ * One lead, focused. `reason` is deliberately not rendered — the rule trace
+ * is the same explanation with its arithmetic showing.
  */
 export function LeadCard({
   item,
@@ -63,8 +55,7 @@ export function LeadCard({
     <section
       className="inbox__center"
       aria-labelledby="lead-card-heading"
-      // Announced on every advance, so a screen-reader user hears which lead
-      // they landed on rather than silence.
+      // Announced on every advance, so screen readers hear which lead landed.
       aria-label={`Lead ${position} of ${total}`}
     >
       <Card padding="lg">
@@ -83,8 +74,7 @@ export function LeadCard({
 
           <p className="lead-card__action">{item.action_label}</p>
 
-          {/* The record the draft's claims are checked against. Mono, because
-              every figure here is something the verifier compared. */}
+          {/* The record the draft's claims are checked against. */}
           <div className="lead-card__facts">
             <Fact label="id" value={lead.id} />
             <Fact label="stage" value={lead.stage} />
@@ -100,9 +90,9 @@ export function LeadCard({
           <div className="inbox-section">
             <div className="inbox-section__label">Draft</div>
             {draft ?? (
-              // A mouse affordance only. Giving this a button role would make a
-              // screen reader announce the entire email as one control label;
-              // `E` and the Edit button are the accessible ways in.
+              // Mouse affordance only: a button role would make a screen reader
+              // announce the entire email as one control label; `E`/Edit are
+              // the accessible ways in.
               <div className="draft-open" onClick={onDraftClick}>
                 <VerifiedDraft report={report} />
               </div>

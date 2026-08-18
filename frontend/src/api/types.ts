@@ -1,7 +1,4 @@
-/**
- * Mirrors the DRF serializers in project/app/serializers.py. The backend is a
- * frozen contract for this app
- */
+/** Mirrors the DRF serializers in project/app/serializers.py (frozen contract). */
 
 export type Priority = 1 | 2 | 3;
 
@@ -81,9 +78,8 @@ export interface LLMModel {
 }
 
 /**
- * One provider entry from GET /api/llm/catalog/. sort_order is optional in
- * the type (not shown in the single-item contract example) — display code
- * falls back to array order when it's absent.
+ * One provider entry from GET /api/llm/catalog/. sort_order is optional;
+ * display code falls back to array order when it's absent.
  */
 export interface LLMProvider {
   key: string;

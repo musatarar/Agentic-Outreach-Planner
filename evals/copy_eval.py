@@ -1,27 +1,12 @@
 #!/usr/bin/env python3
 """Inspect task for the outreach-copy quality eval (MUS-21).
 
-`generate_copy` (project/app/services/outreach.py) asks the model for six
-properties -- Subject line, ~120-word body, concrete lead detail, helpful-peer
-voice, exactly one CTA matching the planned action, no commentary -- and nothing
-verifies any of them. This task does: it scores each generated email with cheap
-deterministic checks first, then an LLM judge (three dimensions, 1-5).
+Scores each generated email with cheap deterministic checks first, then an LLM
+judge (three dimensions, 1-5). Inspect is scaffolding only: all real LLM traffic
+flows through the repo's provider-agnostic layer, one configured provider per run.
 
-Design constraints (see evals/README.md):
-
-* **Inspect is scaffolding only.** All real LLM traffic -- both generation and
-  judging -- flows through the repo's provider-agnostic layer
-  (``get_llm_client`` / ``build_client``), never Inspect's own model providers.
-  The Inspect task model is ``mockllm/model`` so the harness needs no key for
-  Inspect itself.
-* **LLM-agnostic.** No provider is hardcoded anywhere. Generation uses the
-  active database-configured provider (or an explicit ``--provider``); the
-  judge uses the same layer (an explicit ``--judge-provider``, or a fallback
-  to the generation provider).
-* **Only the configured provider runs.** One provider per invocation.
-
-Run standalone via Inspect (``inspect eval evals/copy_eval.py -T provider=groq``)
-or, preferably, via ``evals/run_copy_eval.py`` which adds baselines + the gate.
+Run via ``evals/run_copy_eval.py`` (adds baselines + the gate) or standalone:
+``inspect eval evals/copy_eval.py -T provider=groq``.
 """
 
 import json
@@ -54,9 +39,8 @@ JUDGE_MAX_TOKENS = 800
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 JUDGE_DIMENSIONS = ("concrete_facts", "tone", "cta_match")
 
-# Fallback extractor: pull "dim": N (flat) or "dim": {"score": N} (nested) out of
-# text even when the surrounding JSON is malformed -- weak judges (e.g. llama)
-# occasionally mis-close a brace. Recovers the score rather than dropping the sample.
+# Fallback: regex-extract "dim": N (flat or nested) from malformed judge JSON
+# rather than dropping the sample.
 _DIM_SCORE_RE = {
     dim: re.compile(rf'"{dim}"\s*:\s*(?:\{{\s*"?score"?\s*:\s*)?([1-5])', re.IGNORECASE)
     for dim in JUDGE_DIMENSIONS
@@ -74,36 +58,27 @@ def active_provider():
 
 
 def resolve_judge_provider(gen_provider):
-    """Judge provider when the caller (see ``run_copy_eval.py``'s
-    ``--judge-provider`` flag) didn't pick one explicitly: falls back to the
-    generation provider, so a run never calls an unconfigured provider."""
+    """Judge provider fallback: config ``[llm.judge]``, else the generation
+    provider -- a run never calls an unconfigured provider."""
     judge_cfg = llm_config.get_provider_config("judge")
     return judge_cfg.get("provider") or gen_provider
 
 
 def _estimate_tokens(text):
-    """Rough token estimate (~chars/4). The provider interface returns text
-    only, so exact usage isn't available; this feeds the est. cost column."""
+    """Rough token estimate (~chars/4); the provider interface returns text only."""
     return max(1, len(text) // 4)
 
 
-# Six attempts, matching the budget this harness has always used. An eval run
-# over the full golden set is long-lived and unattended, so it can afford to
-# wait out a free-tier throttle where the planner (a user is watching) cannot --
-# hence a local policy rather than llm/retry.py's default of four.
+# Six attempts vs llm/retry.py's default four: an unattended eval run can
+# afford to wait out a free-tier throttle where the planner cannot.
 _EVAL_RETRY_POLICY = retry.RetryPolicy(max_attempts=6, initial_backoff_s=2.0, max_backoff_s=65.0)
 
 
 def _attempt_scope(client, max_tokens):
     """A traced attempt scope for this eval's provider calls (MUS-25).
 
-    ``telemetry.configure_from_env()`` normally runs from ``AppConfig.ready()``,
-    and this harness never calls ``django.setup()`` -- so without this the scope
-    would run against the API's no-op provider for the whole eval and emit
-    nothing at all. Called here rather than at import time because import-time
-    side effects are exactly what ``ready()`` exists to avoid; it is idempotent
-    and a no-op unless an OTLP endpoint is configured, so the cost per call is
-    an environment read.
+    ``configure_from_env()`` runs here because this harness never calls
+    ``django.setup()``; it is idempotent and a no-op without an OTLP endpoint.
     """
     telemetry_setup.configure_from_env()
     return telemetry_genai.provider_call_scope(
@@ -114,24 +89,14 @@ def _attempt_scope(client, max_tokens):
 async def _generate_with_retry(client, prompt, max_tokens):
     """Call the provider natively async, retrying only retryable failures.
 
-    Returns the :class:`LLMResult`, whose ``latency_s`` times the successful API
-    call alone -- back-off/throttle sleeps are excluded, so the reported latency
-    reflects the model rather than the free tier's rate limiting.
-
-    Two things changed here when the shared helper landed (MUS-46). The call is
-    genuinely async instead of ``asyncio.to_thread(client.complete, ...)``, so
-    ``--max-samples`` is no longer capped by a thread pool; and a non-retryable
-    failure surfaces immediately, so a missing API key costs one attempt instead
-    of six attempts and ~40 seconds of sleeping to produce the message it
-    already had.
+    The returned ``LLMResult.latency_s`` times the successful API call alone --
+    back-off sleeps are excluded, so it reflects the model, not rate limiting.
     """
     return await retry.acall_with_retry(
         lambda: client.agenerate(prompt, max_tokens=max_tokens),
         policy=_EVAL_RETRY_POLICY,
-        # One CLIENT span per HTTP attempt (MUS-25). A no-op unless an OTLP
-        # endpoint is configured, so an unattended eval run costs nothing for it
-        # -- but a run against a live Phoenix shows exactly how much of a long
-        # eval was the model and how much was the free tier throttling us.
+        # One CLIENT span per HTTP attempt (MUS-25); a no-op unless an OTLP
+        # endpoint is configured.
         attempt_scope=_attempt_scope(client, max_tokens),
     )
 
@@ -144,10 +109,8 @@ async def _generate_with_retry(client, prompt, max_tokens):
 def build_dataset(golden_path=None):
     """Golden leads -> Inspect Samples, reusing the MUS-20 loader.
 
-    Drops ``unknown`` leads (no copy is generated for those). Each Sample's
-    input is the exact production prompt; ground-truth ``expected_action`` is the
-    planned action and ``rationale`` is the "why now" reason, so copy quality is
-    judged independently of any rules bug.
+    Drops ``unknown`` leads (no copy is generated for those); each Sample's input
+    is the exact production prompt, so copy is judged independently of rules bugs.
     """
     path = Path(golden_path) if golden_path else GOLDEN_PATH
     records = load_golden(path)
@@ -185,10 +148,8 @@ def build_dataset(golden_path=None):
 def generate_copy_solver(provider):
     """Generate the email via ``build_client(provider).complete(...)`` and stash
     latency + token estimates + model id in the sample store."""
-    # The client now holds a pooled async transport for the length of the run.
-    # Inspect gives a solver no teardown hook, so it is released when the
-    # process exits rather than by an explicit aclose(); the eval is a
-    # short-lived CLI process, so that is the whole of its lifetime anyway.
+    # Inspect gives a solver no teardown hook; the client's pooled transport is
+    # released at process exit.
     client = build_client(provider)
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
@@ -196,17 +157,12 @@ def generate_copy_solver(provider):
         result = await _generate_with_retry(client, prompt, MAX_COPY_TOKENS)
 
         state.output = ModelOutput.from_content(model=provider, content=result.text)
-        # None when the adapter did not measure -- kept as None rather than
-        # coerced to 0.0, so a missing measurement never reads as a zero-second
-        # call in the report (the same distinction LLMResult draws for tokens).
+        # None (not measured) stays distinct from 0.0 in the report.
         state.store.set(
             "latency_s", None if result.latency_s is None else round(result.latency_s, 4)
         )
-        # LLMResult now carries the provider's real counts. Switching the est.
-        # cost column over to them is a follow-up: the committed baselines in
-        # evals/baselines/copy.json were recorded against the estimate, and
-        # changing the metric and the baseline in one PR makes a regression
-        # indistinguishable from a units change.
+        # The committed baselines were recorded against the estimate; switching
+        # to the provider's real token counts is a follow-up.
         state.store.set("est_input_tokens", _estimate_tokens(prompt))
         state.store.set("est_output_tokens", _estimate_tokens(result.text))
         state.store.set("model", getattr(client, "model", provider))
@@ -289,12 +245,9 @@ def _score_from_json(data):
 
 
 def _parse_judge(raw):
-    """Parse the judge output into ``(dims, notes)``, robustly.
-
-    Prefers clean JSON (flat ``{"tone": 5}`` or nested ``{"tone": {"score": 5}}``);
-    if the JSON is malformed, falls back to regex-extracting each dimension's
-    score. Raises only when no score can be recovered for a dimension.
-    """
+    """Parse the judge output into ``(dims, notes)``, falling back to regex
+    extraction when the JSON is malformed. Raises only when no score can be
+    recovered for a dimension."""
     text = raw.strip()
     candidate = text
     m = _JSON_RE.search(text)
@@ -380,9 +333,7 @@ def copy_quality_task(provider=None, judge_provider=None, golden_path=None):
         dataset=build_dataset(golden_path),
         solver=[generate_copy_solver(gen_provider)],
         scorer=[deterministic_scorer(), judge_scorer(judge)],
-        # Inspect requires a task model, but our solver/scorer never call it --
-        # all real LLM traffic goes through the repo layer. Mock keeps Inspect
-        # key-free.
+        # Inspect requires a task model but nothing calls it; mock keeps Inspect key-free.
         model="mockllm/model",
         metadata={"gen_provider": gen_provider, "judge_provider": judge},
     )

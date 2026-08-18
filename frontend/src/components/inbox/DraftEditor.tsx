@@ -18,25 +18,11 @@ export interface DraftEditorProps {
 }
 
 /**
- * In-place editing. Not a modal — same position, same typography, no shift.
- *
- * Three layers share one grid cell so the text never moves when the mode
- * changes:
- *
- *   1. a hidden sizer that gives the cell the height of the current text,
- *   2. the mirror, which draws the text *and its underlines*,
- *   3. the textarea, whose own glyphs are transparent so only its caret and
- *      selection show through.
- *
- * The point of the overlay is that verification stays visible while typing:
- * change `6 deals` to `9 deals` and the underline goes red under the caret,
- * about a quarter-second later. A plain textarea would hide the one signal the
- * user most needs while they are in the act of introducing the error.
- *
- * The mirror only draws underlines when the report describes exactly the text
- * on screen. Mid-keystroke the two differ, so it falls back to plain text —
- * spans from an older string laid over a newer one would mark the wrong words,
- * which is worse than no marks at all.
+ * In-place editing. Three layers share one grid cell: a hidden sizer for
+ * height, a mirror that draws the text with its underlines, and a textarea
+ * with transparent glyphs so only its caret shows. The mirror underlines only
+ * when the report matches the on-screen text exactly; mid-keystroke it falls
+ * back to plain text so stale spans never mark the wrong words.
  */
 export function DraftEditor({
   value,
@@ -54,13 +40,11 @@ export function DraftEditor({
     const node = input.current;
     if (!node) return;
     node.focus();
-    // Land the caret at the end rather than selecting everything, so the first
-    // keystroke does not wipe the draft.
+    // Caret at the end, not select-all, so the first keystroke keeps the draft.
     node.setSelectionRange(node.value.length, node.value.length);
   }, [autoFocus]);
 
-  // These two are the pair that `useHotkeys` allow-lists through the global
-  // hotkey guard precisely so this editor can hear them from inside a textarea.
+  // The pair `useHotkeys` allow-lists through its text-field guard.
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -74,8 +58,8 @@ export function DraftEditor({
   }
 
   const aligned = report.copy === value;
-  // A trailing newline has no height of its own; the zero-width space gives the
-  // sizer the empty last line the textarea reserves for the caret.
+  // The zero-width space gives the sizer the empty last line the textarea
+  // reserves for the caret; a trailing newline has no height of its own.
   const sizerText = value.endsWith('\n') ? `${value}\u200b` : value;
 
   return (
@@ -97,10 +81,8 @@ export function DraftEditor({
           ref={input}
           className="draft draft-edit__layer draft-edit__input"
           value={value}
-          // Off deliberately: the browser's misspelling indicator is a red wavy
-          // underline, which is exactly the mark this design reserves for an
-          // unverified claim. Two different meanings in one glyph is worse than
-          // no spellcheck.
+          // Off: the browser's red wavy misspelling underline would collide
+          // with the mark reserved for an unverified claim.
           spellCheck={false}
           aria-label="Draft copy"
           onChange={(event) => onChange(event.target.value)}

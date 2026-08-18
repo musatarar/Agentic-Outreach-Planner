@@ -1,23 +1,14 @@
 #!/usr/bin/env python3
 """Rules regression eval for the lead classifier (MUS-20).
 
-`determine_priority` / `determine_action` in ``project.app.services.outreach``
-are the actual product -- the LLM only writes copy. They are tuned by
-hand-picked threshold constants (``DORMANT_DAYS``, ``POWER_USER_DEALS``, ...)
-with no measurement of whether the *classification* is correct. This harness
-scores the classifier against a hand-labeled golden dataset of ground-truth
-answers, prints a per-action-type score table + confusion matrix, and fails
-(exit 1) if any action type regresses below a committed baseline.
-
-Pure Python: no Django, no database, no network. The classifier duck-types on
-lead-like objects, so we feed it ``SimpleNamespace`` stubs built from
-``evals/golden/leads.jsonl`` and the whole run finishes in milliseconds.
+Scores ``determine_action`` / ``determine_priority`` against the hand-labeled
+golden dataset, prints per-action scores + confusion matrices, and exits 1 if
+any action type regresses below the committed baseline. Pure Python -- no
+Django, no database, no network -- so the whole run finishes in milliseconds.
 
 Usage::
 
-    python evals/run_rules_eval.py                    # score + gate vs baseline
-    python evals/run_rules_eval.py --update-baseline  # (re)write the baseline
-    python evals/run_rules_eval.py --golden PATH       # score a different set
+    python evals/run_rules_eval.py [--update-baseline] [--golden PATH]
 """
 
 import argparse
@@ -39,17 +30,13 @@ GOLDEN_PATH = EVALS_DIR / "golden" / "leads.jsonl"
 BASELINE_PATH = EVALS_DIR / "baselines" / "rules.json"
 
 # Frozen "today" so every date-based rule is deterministic. Integer date fields
-# in the golden file are read as "this many days before TODAY" (see _coerce_date),
-# which makes threshold-boundary cases self-documenting: ``"last_login_date": 21``
-# means exactly DORMANT_DAYS days ago.
+# in the golden file mean "this many days before TODAY" (see _coerce_date).
 TODAY = datetime.date(2026, 6, 12)
 
 ACTION_TYPES = list(actions.ACTION_TYPES)
 VALID_PRIORITIES = (1, 2, 3)
 
-# Metrics are stored/compared rounded to this many decimals; the gate tolerance
-# only has to absorb floating-point noise because a genuine per-action change is
-# at least 1/support (>= ~0.02 for this dataset), far above ROUND/EPSILON.
+# EPSILON only absorbs float noise; a genuine per-action change is >= 1/support.
 ROUND_NDIGITS = 4
 EPSILON = 1e-9
 
@@ -63,9 +50,8 @@ ACTION_CODE = {
     actions.UNKNOWN: "UNK",
 }
 
-# Lead field defaults mirror project/app/tests_logic.py::_lead so a golden record
-# only needs to specify the fields that matter for its case; everything else
-# behaves like the real stubs.
+# Mirrors project/app/tests/tests_logic.py::_lead so a golden record only needs to
+# specify the fields that matter for its case.
 LEAD_DEFAULTS = dict(
     id="gold_x",
     agency_name="Agency",
@@ -90,7 +76,7 @@ ALLOWED_LEAD_KEYS = set(LEAD_DEFAULTS) | {"events"}
 
 
 # ---------------------------------------------------------------------------
-# lead construction (duck-typed, mirrors project/app/tests_logic.py)
+# lead construction (duck-typed, mirrors project/app/tests/tests_logic.py)
 # ---------------------------------------------------------------------------
 
 
@@ -128,8 +114,7 @@ def _build_event(raw, ctx):
         except ValueError:
             ts = datetime.datetime.combine(_coerce_date(ts, ctx), datetime.time(9))
     elif ts is None:
-        # Classifiers never read event timestamps (only the copy path does), but
-        # keep the attribute present so any accidental access doesn't blow up.
+        # Classifiers never read event timestamps; keep the attribute present anyway.
         ts = datetime.datetime.combine(TODAY, datetime.time(9))
     return SimpleNamespace(type=raw.get("type", ""), timestamp=ts, meta=raw.get("meta") or {})
 
@@ -221,11 +206,8 @@ def _round(value):
 
 
 def per_action_metrics(rows):
-    """Per-action precision/recall/f1/support (rounded to ROUND_NDIGITS).
-
-    Precision is ``None`` when an action is never predicted (0/0); recall is
-    defined whenever the golden set contains at least one example of it.
-    """
+    """Per-action precision/recall/f1/support; precision is ``None`` when an
+    action is never predicted (0/0)."""
     metrics = {}
     for label in ACTION_TYPES:
         tp = sum(
@@ -341,9 +323,8 @@ def check_gate(results, baseline):
             if base_val is None:
                 continue  # nothing recorded to regress against
             if cur_val is None:
-                # Precision only: action is no longer predicted at all. The
-                # matching recall check already flags this as a 0.0 regression,
-                # so skip here to avoid a confusing duplicate failure.
+                # Precision only; the recall check already flags a never-predicted
+                # action, so skip the duplicate failure.
                 continue
             if cur_val < base_val - EPSILON:
                 failures.append((label, metric, base_val, cur_val))
@@ -365,7 +346,6 @@ def print_report(records, rows, results, baseline):
     out(f"Rules regression eval  —  golden: {results['n']} leads, today={results['today']}")
     out("=" * 74)
 
-    # Per-action score table.
     out()
     out("Per-action-type scores")
     out("-" * 74)

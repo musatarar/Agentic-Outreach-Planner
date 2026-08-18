@@ -1,10 +1,8 @@
 """Provider-neutral chat/tool-calling data shapes (MUS-29).
 
-Pure stdlib on purpose: these dataclasses cross the LLM adapter boundary in both
-directions (request messages out, tool-call requests back), so they must not
-import Django, a provider SDK, or anything above ``services/llm``. Each adapter
-translates them into its own wire format; nothing outside the adapters may
-depend on a provider's block/message types.
+Pure stdlib on purpose: nothing here may import Django, a provider SDK, or
+anything above ``services/llm``, and nothing outside the adapters may depend on
+a provider's own block/message types.
 """
 
 from __future__ import annotations

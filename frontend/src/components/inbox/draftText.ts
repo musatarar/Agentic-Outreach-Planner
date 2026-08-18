@@ -1,13 +1,7 @@
 /**
- * Splitting the draft's "Subject:" prefix off the prose.
- *
- * The label is chrome and the subject it introduces is voice, so they take
- * different type families — sans and serif — even though they are one string
- * in the payload. The split is by literal prefix rather than by parsing, so
- * copy that does not start with a subject line is simply left whole.
- *
- * The prefix is pure ASCII, so its length is identical in code points and in
- * UTF-16 code units; this offset is safe to use against either indexing scheme.
+ * Splits the draft's "Subject:" prefix off the prose so the two can take
+ * different type families. Pure ASCII, so its length is identical in code
+ * points and UTF-16 units — safe against either indexing scheme.
  */
 export const SUBJECT_PREFIX = 'Subject:';
 

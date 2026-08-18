@@ -17,15 +17,8 @@ export interface DismissPopoverProps {
 }
 
 /**
- * Why this lead is going away.
- *
- * The reason is optional — an unexplained dismissal is still better data than
- * a forced one — but it is offered first, because "copy unusable" and "not a
- * fit" are the difference between a generation problem and a targeting problem,
- * and only the person dismissing knows which it was.
- *
- * Dismissing suppresses this lead's dedupe key server-side, so it does not
- * come back on the next planning run.
+ * Why this lead is going away. The reason is optional. Dismissing suppresses
+ * the lead's dedupe key server-side, so it does not return on the next run.
  */
 export function DismissPopover({ onDismiss, onClose }: DismissPopoverProps) {
   return (

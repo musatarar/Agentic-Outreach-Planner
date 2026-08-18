@@ -1,22 +1,9 @@
 """Bulk synthetic leads for the planner benchmark (MUS-26e).
 
-A benchmark needs a few hundred leads. Two hundred *identical* leads would be a
-worse benchmark than twelve real ones: they would all take the same branch, so
-the run would never exercise the skip path, never build a prompt for a lead the
-rules reject, and never show what a mixed queue actually costs.
-
-So the template pool is ``evals/golden/leads.jsonl`` -- the same hand-labeled
-records the rules eval scores against. Cycling through them means the synthetic
-action-type mix mirrors the labelled distribution, **including the ~7% that
-classify as ``unknown`` and skip generation entirely**. That proportion is the
-single most important thing about this data: it is the fraction of the run that
-costs no LLM call, and a benchmark that assumed 100% generation would overstate
-the win from concurrency.
-
-IDs are ``synth_0001…``, which cannot collide with the demo pipeline's
-``lead_001…`` or the golden set's ``gold_*``. That is what lets ``--flush``
-safely target ``id__startswith="synth_"`` instead of emptying the table -- so
-running this against a database that also holds demo data destroys nothing.
+Templates come from ``evals/golden/leads.jsonl``, so the synthetic action-type
+mix mirrors the labelled distribution -- including the ~7% that classify as
+``unknown`` and skip generation entirely. IDs are ``synth_0001…``, which cannot
+collide with demo or golden ids, so ``--flush`` can safely target that prefix.
 """
 
 import datetime
@@ -42,11 +29,8 @@ if str(REPO_ROOT) not in sys.path:
 def _golden_records():
     """The template pool, read through the rules eval's own loader.
 
-    Reusing ``load_golden``/``build_lead`` rather than re-parsing the JSONL is
-    deliberate: those two functions define what a valid golden record *is*
-    (including the "integer means N days before TODAY" convention), and a second
-    parser here would be a second thing to keep in step with a file neither of
-    us owns.
+    Reused rather than re-parsed so there is only one definition of what a
+    valid golden record is.
     """
     from evals.run_rules_eval import GOLDEN_PATH, build_lead, load_golden
 
@@ -91,10 +75,8 @@ class Command(BaseCommand):
         )
 
     def _build(self, count, templates, rng):
-        # Dates in the golden file are relative to that harness's frozen TODAY.
-        # Re-anchoring them on the real today keeps the *classification* the
-        # golden record was labelled with, which is the whole reason for using
-        # it as a template -- a lead labelled "dormant" has to still be dormant.
+        # Golden dates are relative to that harness's frozen TODAY; re-anchoring
+        # on the real today preserves the labelled classification.
         today = datetime.date.today()
         from evals.run_rules_eval import TODAY as GOLDEN_TODAY
 
@@ -139,41 +121,24 @@ class Command(BaseCommand):
                     )
                 )
             events.extend(_padding_events(lead_id, index, today))
-        # `rng` currently only shuffles which template lands on which id, so a
-        # different seed produces a different assignment with the same mix. It
-        # is threaded through rather than dropped because the alternative --
-        # adding randomness later and finding there is nowhere to seed it from --
-        # is how benchmark fixtures stop being reproducible.
+        # Only shuffles which template lands on which id: a different seed
+        # gives a different assignment with the same mix.
         rng.shuffle(leads)
         return leads, events
 
 
-#: Extra events per lead, on top of whatever the golden template carried.
-#: The golden set is written for rules testing, so most of its records have no
-#: events at all -- 41 templates yield about five between them. A benchmark on
-#: event-less leads would understate the prefetch (which exists precisely
-#: because events are re-read four times a run) and give the grounding verifier
-#: nothing to walk.
+#: Extra events per lead, on top of whatever the golden template carried --
+#: most golden records have none, and event-less leads would understate the
+#: prefetch and give the grounding verifier nothing to walk.
 PADDING_EVENTS_PER_LEAD = 3
 
 
 def _padding_events(lead_id, index, today):
     """Neutral ``login`` events, chosen so they cannot change a classification.
 
-    That constraint is the whole design. The synthetic mix is only meaningful
-    because each lead inherits its template's labelled action type, so padding
-    must be invisible to the rules. ``login`` is read by no action rule, and
-    these carry no ``meta`` -- so they contribute nothing to ``_notes_blob``
-    (which scans notes/subject/outcome for hold and stall phrases) and nothing
-    to ``_had_no_reply_email`` (which looks for ``email_sent`` with
-    ``outcome == "no_reply"``). Anything richer would risk flipping a lead into
-    ``follow_up_after_hold`` and quietly corrupting the distribution this
-    fixture exists to reproduce.
-
-    They are *not* the most recent activity either: each is at least a day older
-    than today, so they cannot make a dormant lead look active. ``last_login_date``
-    is a trusted lead field and is what the dormancy rule actually reads, but
-    keeping the two consistent costs nothing and avoids a confusing fixture.
+    ``login`` is read by no action rule and these carry no ``meta``, so they
+    feed neither the notes scan nor the no-reply check. Each is at least a day
+    old, so they cannot make a dormant lead look active.
     """
     base = datetime.datetime.combine(today, datetime.time(9), tzinfo=datetime.timezone.utc)
     return [

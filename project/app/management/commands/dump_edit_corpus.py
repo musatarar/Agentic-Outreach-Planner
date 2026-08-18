@@ -1,14 +1,8 @@
 """Dump (suggested, edited) copy pairs as JSONL for the copy eval (MUS-39).
 
-This is the quiet payoff of the triage queue. Every correction a reviewer makes
-to a generated draft is labeled data about what the model got wrong, and it is
-only capturable at the moment of editing -- which is why ``suggested_copy`` is
-immutable and edits live in their own append-only table.
-
-The output feeds MUS-21's LLM-judge harness. One JSON object per line, so it
-streams and diffs cleanly:
-
-    python manage.py dump_edit_corpus --committed-only > corpus.jsonl
+Reviewer corrections are labeled data about what the model got wrong -- hence
+``suggested_copy`` being immutable and edits living in an append-only table.
+One JSON object per line, feeding the LLM-judge harness.
 """
 
 import json

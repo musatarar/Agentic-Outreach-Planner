@@ -1,34 +1,13 @@
 #!/usr/bin/env python3
 """Wall-clock benchmark for the concurrent planner (MUS-26e).
 
-Measures ``plan_outreach()`` end to end against the stub provider, at a given
-concurrency, on a given number of synthetic leads. Everything real runs: the
-rules, the prompt building, the semaphore, the retry loop, both output gates,
-and the bulk write. Only the provider is fake, and it is fake in a way that
-still returns a well-formed, grounded email so the gates do real work (see
-``project/app/services/llm/stub.py``).
+Measures ``plan_outreach()`` end to end against the stub provider on synthetic
+leads in a throwaway SQLite database -- never the dev database. ``--concurrency 1``
+is the "before" number (a semaphore of one, not a separate serial planner).
 
 Usage::
 
     python evals/bench_planner.py --leads 200 --concurrency 8
-    python evals/bench_planner.py --leads 200 --concurrency 1   # the "before"
-    python evals/bench_planner.py --table                       # render from results
-
-**`--concurrency 1` is the honest "before" number.** It is a semaphore of one,
-not a genuinely serial implementation -- and that is fine, because the stub
-sleeps ~1.9s per call over 200 calls, so provider time dominates the difference
-between the two by three orders of magnitude. Maintaining a second, serial
-planner just to make a table look rigorous would mean shipping a code path
-nobody runs, and the honest thing is to say which number is which. The N+1 fix
-is reported separately, as an archaeological measurement, for the same reason:
-a ``--no-prefetch`` flag kept alive in production code to make a benchmark
-prettier is a worse trade than a sentence in the README.
-
-**It never touches the dev database.** ``DATABASE_URL`` is pointed at a fresh
-temporary SQLite file *before* ``django.setup()``, migrated, seeded, measured
-and deleted. The twelve-lead demo pipeline is the DEMO.md contract, and a
-benchmark that dropped two hundred synthetic rows into it would break the demo
-for the sake of a number.
 """
 
 import argparse
@@ -47,8 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 RESULTS_DIR = REPO_ROOT / "evals" / "results"
 RESULT_GLOB = "bench-planner-*.json"
 
-# Markers in README.md between which --table writes. Same idiom
-# run_copy_eval.py --table already uses.
+# Markers in README.md between which --table writes.
 TABLE_START = "<!-- PLANNER-BENCH-TABLE -->"
 TABLE_END = "<!-- /PLANNER-BENCH-TABLE -->"
 
@@ -56,16 +34,13 @@ TABLE_END = "<!-- /PLANNER-BENCH-TABLE -->"
 def bootstrap_django(db_path):
     """Point Django at a throwaway SQLite file, then set it up.
 
-    Order matters and is the whole safety property: ``DATABASE_URL`` is read by
-    ``project/settings.py`` at import time, so it has to be in the environment
-    *before* ``django.setup()`` -- after that, the connection is already
-    configured and any later assignment is decoration.
+    ``DATABASE_URL`` must be in the environment *before* ``django.setup()`` --
+    ``project/settings.py`` reads it at import time.
     """
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     os.environ.setdefault("DJANGO_SECRET_KEY", "benchmark-only-not-a-real-key")
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
-    # The stub provider refuses to be constructed without this. Set here and
-    # nowhere else in the repo.
+    # The stub provider refuses to be constructed without this.
     os.environ["OUTREACH_ALLOW_STUB_LLM"] = "1"
 
     import django
@@ -76,9 +51,6 @@ def bootstrap_django(db_path):
 
     configured = settings.DATABASES["default"]["NAME"]
     if str(configured) != str(db_path):
-        # Belt and braces. If a settings module ever stops honouring
-        # DATABASE_URL, this benchmark must refuse to run rather than seed two
-        # hundred synthetic leads into whatever database it did get.
         raise SystemExit(
             f"Refusing to run: expected the temporary database {db_path}, "
             f"but Django is configured for {configured}."
@@ -95,10 +67,8 @@ def prepare(db_path, leads, seed):
 def run_once(concurrency, request_timeout_s, per_lead_timeout_s, stub_kwargs):
     """One measured ``plan_outreach()``, with the stub injected.
 
-    The stub is injected by patching ``get_llm_client`` rather than by writing a
-    "stub" row into ``LLMConfiguration``. That keeps the benchmark from ever
-    creating a database state the app could accidentally inherit, and means the
-    provider registry's only "stub" consumer is ``build_client("stub")``.
+    The stub is patched in via ``get_llm_client`` rather than written into
+    ``LLMConfiguration``, so the benchmark never creates database state.
     """
     from unittest.mock import patch
 
@@ -114,18 +84,14 @@ def run_once(concurrency, request_timeout_s, per_lead_timeout_s, stub_kwargs):
     for name, value in stub_kwargs.items():
         setattr(client, name, value)
 
-    # A previous run leaves `pending` rows, which suppress a re-plan. Cleared
-    # rather than worked around, so every measured run does the same amount of
-    # work.
+    # A previous run's `pending` rows would suppress a re-plan; clear them.
     OutreachAction.objects.all().delete()
 
     with override_settings(
         OUTREACH_MAX_IN_FLIGHT=concurrency,
         OUTREACH_REQUEST_TIMEOUT_S=request_timeout_s,
         OUTREACH_PER_LEAD_TIMEOUT_S=per_lead_timeout_s,
-        # The stub's simulated 429s carry Retry-After: 0.05, and the schedule is
-        # left at its defaults otherwise -- a benchmark that switched retries
-        # off would not be measuring the planner that ships.
+        # Retry schedule left at defaults; the stub's simulated 429s carry Retry-After: 0.05.
         COPY_VERIFY_LEVEL="standard",
     ):
         with patch.object(outreach, "get_llm_client", return_value=client):
@@ -178,10 +144,7 @@ def measure(args):
         "with_copy": last["with_copy"],
         "needs_human": last["needs_human"],
         "provider_calls": last["provider_calls"],
-        # The number that makes the table interpretable: sequential provider
-        # time is what the run would have cost with no concurrency at all, so
-        # elapsed / this is the speedup, and it is derived from the same run
-        # rather than from a separate serial implementation.
+        # Sequential provider time from the same run; elapsed / this is the speedup.
         "sequential_provider_s": round(last["provider_calls"] * args.latency, 2),
     }
 
@@ -274,8 +237,7 @@ def main(argv=None):
         return 0
 
     # NamedTemporaryFile would hold an open handle SQLite does not want; a
-    # directory that is removed wholesale is simpler and leaves nothing behind
-    # even if the run raises.
+    # removed directory leaves nothing behind even if the run raises.
     with tempfile.TemporaryDirectory(prefix="bench-planner-") as tmpdir:
         db_path = Path(tmpdir) / "bench.sqlite3"
         bootstrap_django(db_path)

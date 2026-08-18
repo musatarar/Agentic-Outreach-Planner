@@ -13,12 +13,8 @@ interface Props {
 
 /**
  * The logged-out chrome: a wordmark, the theme control, and one centred card.
- *
- * Deliberately not `PageHeader`. That header renders `Nav`, and every link in
- * it goes somewhere a signed-out visitor cannot reach — offering six dead ends
- * on the screen whose entire job is one email field is worse than offering
- * none. The theme toggle stays, because the choice should survive being
- * signed out.
+ * Not `PageHeader` — that renders `Nav`, whose links all go somewhere a
+ * signed-out visitor cannot reach.
  */
 export function AuthShell({ title, children }: Props) {
   useEffect(() => {

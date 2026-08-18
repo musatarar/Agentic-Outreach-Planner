@@ -1,8 +1,7 @@
 """Return snoozed triage items to the queue when they are due (MUS-39).
 
 Safe to run every minute: both filters require ``status="snoozed"``, which the
-update itself clears, so a second run in the same second finds nothing. Two
-conditional UPDATEs, constant query count, no per-row Python.
+update itself clears, so a concurrent second run finds nothing.
 """
 
 from django.core.management.base import BaseCommand
@@ -26,15 +25,14 @@ class Command(BaseCommand):
         now = timezone.now()
         dry_run = options["dry_run"]
 
-        # 1. Time-based. This also catches the on_activity backstop, which is
-        #    the point: a lead that never does anything still comes back.
+        # 1. Time-based. Also catches the on_activity backstop, so a lead that
+        #    never does anything still comes back.
         due = OutreachAction.objects.filter(
             status=OutreachAction.STATUS_SNOOZED, snooze_until__lte=now
         )
 
-        # 2. Activity-based: the lead did something AFTER the reviewer said
-        #    "come back when they do". Compared against the watermark captured
-        #    at snooze time, so historical events cannot wake it.
+        # 2. Activity-based, against the watermark captured at snooze time, so
+        #    historical events cannot wake it.
         woke = Event.objects.filter(
             lead=OuterRef("lead"), timestamp__gt=OuterRef("snooze_activity_after")
         )

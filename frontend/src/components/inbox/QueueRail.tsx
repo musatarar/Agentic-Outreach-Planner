@@ -12,19 +12,11 @@ export interface QueueRailProps {
   onSelect: (index: number) => void;
 }
 
-/**
- * The left pane: where you are in the queue, and what is coming.
- *
- * Deliberately not a data table. Two lines per row — who, then the machine's
- * classification in mono — is enough to recognise a lead you just saw and to
- * know roughly what the next one is about. Anything more turns the rail into a
- * second thing to read, and the card is the thing to read.
- */
+/** The left pane: where you are in the queue, and what is coming. */
 export function QueueRail({ items, index, onSelect }: QueueRailProps) {
   const activeRow = useRef<HTMLButtonElement | null>(null);
 
-  // Keyboard navigation must not walk the caret off-screen. `nearest` keeps
-  // the rail still until the active row actually reaches an edge.
+  // `nearest` keeps the rail still until the active row reaches an edge.
   useEffect(() => {
     activeRow.current?.scrollIntoView({ block: 'nearest' });
   }, [index]);

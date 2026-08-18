@@ -1,13 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-/**
- * Copy-to-clipboard button that flashes "Copied!" for two seconds.
- *
- * `label` is optional and defaults to the original text, so every existing
- * call site is unchanged. /done needs "Copy again" (MUS-41) — the affordance
- * there is re-copying something already approved, and a bare "Copy" reads as
- * if the row had not been actioned yet.
- */
+/** Copy-to-clipboard button that flashes "Copied!" for two seconds. */
 export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);

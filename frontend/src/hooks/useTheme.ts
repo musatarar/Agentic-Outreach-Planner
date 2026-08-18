@@ -29,11 +29,9 @@ function systemTheme(): Theme {
 }
 
 /**
- * Resolve the theme the same way the boot script did, in the same precedence
- * order: explicit localStorage > prefers-color-scheme > light.
- *
- * The attribute is read first so React starts from whatever is already painted
- * — that is what keeps the first render flash-free.
+ * Same precedence as the boot script: localStorage > prefers-color-scheme >
+ * light. The attribute is read first so React starts from what is already
+ * painted, keeping the first render flash-free.
  */
 function initialTheme(): Theme {
   const attr = document.documentElement.getAttribute('data-theme');
@@ -42,9 +40,9 @@ function initialTheme(): Theme {
 }
 
 /**
- * Dark/light theming. Writes `data-theme` on <html> and persists the choice.
- * Never removes the attribute — the stylesheet's OS-preference block is a
- * no-JS fallback and must not be reachable once React has mounted.
+ * Dark/light theming. Writes `data-theme` on <html> and persists the choice;
+ * never removes the attribute, since the stylesheet's OS-preference block is a
+ * no-JS fallback that must not be reachable once React has mounted.
  */
 export function useTheme() {
   const [theme, setThemeState] = useState<Theme>(initialTheme);

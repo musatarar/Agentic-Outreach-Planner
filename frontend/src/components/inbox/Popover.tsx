@@ -8,12 +8,9 @@ export interface PopoverProps {
 }
 
 /**
- * A small anchored panel: snooze, dismiss.
- *
- * Focus moves in on open and returns to whatever had it on close, so a
- * keyboard user is never dumped at the top of the document after picking an
- * option. Esc closes, and so does a click outside — both are handled here so
- * neither popover has to remember.
+ * A small anchored panel: snooze, dismiss. Focus moves in on open and is
+ * restored on close; Esc and outside-click both close, handled here so no
+ * caller has to.
  */
 export function Popover({ label, onClose, children }: PopoverProps) {
   const panel = useRef<HTMLDivElement | null>(null);
@@ -30,8 +27,7 @@ export function Popover({ label, onClose, children }: PopoverProps) {
     function onPointerDown(event: MouseEvent) {
       if (!panel.current?.contains(event.target as Node)) onClose();
     }
-    // Bound on the next tick so the click that opened the popover does not
-    // immediately close it again.
+    // Bound next tick so the opening click does not immediately close it.
     const timer = window.setTimeout(
       () => document.addEventListener('mousedown', onPointerDown),
       0,
@@ -77,10 +73,8 @@ export interface MenuListProps<T extends string> {
 }
 
 /**
- * A vertical list of choices with roving arrow-key focus.
- *
- * Real `<button>`s rather than a custom widget, so Enter and Space activate
- * natively and every assistive technology already knows what they are.
+ * A vertical list of choices with roving arrow-key focus. Real `<button>`s
+ * rather than a custom widget, so activation and AT semantics come for free.
  */
 export function MenuList<T extends string>({ options, onSelect }: MenuListProps<T>) {
   const list = useRef<HTMLDivElement | null>(null);
@@ -92,8 +86,7 @@ export function MenuList<T extends string>({ options, onSelect }: MenuListProps<
     if (at === -1) return;
     event.preventDefault();
     const step = event.key === 'ArrowDown' ? 1 : -1;
-    // Wraps, because a five-item menu is short enough that wrapping is faster
-    // than noticing you hit the end.
+    // Wraps at both ends.
     buttons[(at + step + buttons.length) % buttons.length]?.focus();
   }
 

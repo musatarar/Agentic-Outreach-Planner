@@ -5,9 +5,7 @@ import { formatCountdown } from './format';
 
 /**
  * Milliseconds left on the server's undo window, re-read once a second.
- *
- * This is the only clock this page reads, and it reads it to *display* an
- * absolute server timestamp — never to decide whether a request is allowed.
+ * Display only — never used to decide whether a request is allowed.
  */
 function useUndoCountdown(expiresAt: string | null): number | null {
   const target = useMemo(
@@ -41,33 +39,22 @@ export interface UndoControlProps {
 }
 
 /**
- * Undo — and for a snoozed row, un-snooze, which is the same transition and the
- * same endpoint. Both return the item to `pending`, which puts it back at its
- * position in `/inbox`, not here.
- *
- * The control disappears when the window closes rather than failing on click.
- * Clock skew is bounded on both sides by design:
- *   - browser ahead of the server: the control vanishes a few seconds early,
- *     and the user loses a little of a five-minute window;
- *   - browser behind: the control lingers, the click is sent anyway, and the
- *     409 is handled by the caller.
- * What never happens is a preflight check that suppresses a request the server
- * would have honoured.
+ * Undo (or un-snooze — same endpoint) returns the item to `pending`. The
+ * control disappears when the window closes rather than failing on click; if
+ * a skewed clock lets it linger, the click is sent and the caller handles the
+ * 409 — never a preflight that suppresses a request the server would honour.
  */
 export function UndoControl({ item, onUndo, sending, expired }: UndoControlProps) {
   const remaining = useUndoCountdown(item.undo.expires_at);
   const lapsed = remaining !== null && remaining <= 0;
-  // Keyed off status, never off `snooze.until` being non-null: approve and
-  // dismiss leave the snooze fields in place (the server clears them for
-  // undo only), so a formerly-snoozed approved row still carries them.
+  // Keyed off status, not `snooze.until`: approve/dismiss leave the snooze
+  // fields in place, so a formerly-snoozed approved row still carries them.
   const label = item.status === 'snoozed' ? 'Un-snooze' : 'Undo';
 
   if (expired || (item.undo.available && lapsed)) {
     return <span className="done-undo__closed">undo window closed</span>;
   }
 
-  // No window left to render: either the server never offered one, or it has
-  // already lapsed on a row that was loaded after the fact.
   if (!item.undo.available) return null;
 
   const urgent = remaining !== null && remaining <= 60_000;
@@ -80,8 +67,7 @@ export function UndoControl({ item, onUndo, sending, expired }: UndoControlProps
       {remaining !== null && (
         <span
           className={`done-undo__countdown${urgent ? ' done-undo__countdown--urgent' : ''}`}
-          // Urgency is weight, not colour: red and amber belong to the
-          // priority ramp and nothing else may borrow them.
+          // Urgency is weight, not colour: red/amber belong to the priority ramp.
           title={`Undo closes at ${item.undo.expires_at}`}
         >
           {formatCountdown(remaining)}
