@@ -3,7 +3,7 @@
 from .agent import AEAvailabilitySlot, AgentLeadRun, AgentStep
 from .auth import LoginToken
 from .lead import Event, Lead
-from .llm import LLMConfiguration, LLMModel, LLMProvider
+from .llm import LLMConfiguration, LLMModel, LLMProvider, ProviderTrace
 from .outreach import (
     DismissedOutreachKey,
     OutboundSend,
@@ -26,5 +26,6 @@ __all__ = [
     "OutboundSend",
     "OutreachAction",
     "OutreachEdit",
+    "ProviderTrace",
     "ReviewDecision",
 ]
