@@ -74,7 +74,7 @@
       "Bash(DATABASE_URL=\"sqlite:////tmp/clean_migrate.sqlite3\" GROQ_API_KEY= ANTHROPIC_API_KEY= .venv/bin/python manage.py migrate)",
       "Bash(DATABASE_URL=\"sqlite:////tmp/clean_migrate.sqlite3\" GROQ_API_KEY= ANTHROPIC_API_KEY= .venv/bin/python manage.py showmigrations app)",
       "Bash(GROQ_API_KEY='' ANTHROPIC_API_KEY='' .venv/bin/python -c ' *)",
-      "Bash(grep -vE \"^  ok|^>|^$|^ +\\\\.\\\\./|^⚡\")",
+      "Bash(grep -vE \"^  ok|^>|^$|^ +\\\\.\\\\./|^\u26a1\")",
       "Bash(mv db.sqlite3 /tmp/db.sqlite3.stale)",
       "Bash(GROQ_API_KEY= ANTHROPIC_API_KEY= .venv/bin/python manage.py showmigrations app)",
       "Bash(GROQ_API_KEY= ANTHROPIC_API_KEY= .venv/bin/python scripts/populate_demo_data.py)",
@@ -280,6 +280,18 @@
     ],
     "additionalDirectories": [
       "/Users/musatarar/Documents/Work/Project Practice/Eventual Technical Challenge/.venv/lib/python*/site-packages/rest_framework"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
     ]
   }
 }
