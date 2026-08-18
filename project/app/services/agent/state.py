@@ -46,6 +46,12 @@ STATUS_EXHAUSTED = "exhausted"
 PAYLOAD_REQUEST_SHA256 = "request_sha256"
 PAYLOAD_RESULT_SHA256 = "result_sha256"
 
+#: Same mechanism, for the ``ProviderTrace`` audit row an ``llm_call`` step mints
+#: (MUS-72). Distinct from the payload's own ``provider``/``model`` keys, which
+#: stay: ``views/trace.py`` serves payloads to the reports page.
+PAYLOAD_PROVIDER = "trace_provider"
+PAYLOAD_MODEL = "trace_model"
+
 # Appended once, in the first user message: extends the copy prompt's
 # spotlighting rule to tool results. The delimiters are described here, never
 # emitted — a literal fence in the instruction region would stop meaning
@@ -190,7 +196,10 @@ class Checkpoint:
     ``AgentLeadRun.claimed_by`` and every ``append`` re-checks.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, trace_run_id: str = "") -> None:
+        # Run-level, so it arrives here rather than through the per-lead
+        # AgentLeadPlan: one Checkpoint is already one run.
+        self._trace_run_id = trace_run_id
         self._token = uuid.uuid4().hex
         self._lock = asyncio.Lock()
         # Captured on the constructing (sync) thread — see the module
@@ -271,7 +280,7 @@ class Checkpoint:
         steps_used: int,
         tool_calls_used: int,
     ) -> None:
-        from project.app.models import AgentLeadRun, AgentStep
+        from project.app.models import AgentLeadRun, AgentStep, ProviderTrace
 
         with transaction.atomic():
             rows = []
@@ -279,6 +288,19 @@ class Checkpoint:
                 payload = dict(record.payload)
                 request_sha256 = str(payload.pop(PAYLOAD_REQUEST_SHA256, "") or "")
                 result_sha256 = str(payload.pop(PAYLOAD_RESULT_SHA256, "") or "")
+                # Minted in the step's own transaction, so a lost claim rolls the
+                # audit row back with the step that made the call (MUS-72).
+                provider = str(payload.pop(PAYLOAD_PROVIDER, "") or "")
+                model_id = str(payload.pop(PAYLOAD_MODEL, "") or "")
+                trace = (
+                    ProviderTrace.objects.create(
+                        provider=provider,
+                        model_id=model_id,
+                        trace_run_id=self._trace_run_id,
+                    )
+                    if provider or model_id
+                    else None
+                )
                 rows.append(
                     AgentStep(
                         lead_run_id=lead_run_pk,
@@ -287,6 +309,7 @@ class Checkpoint:
                         payload=payload,
                         request_sha256=request_sha256,
                         result_sha256=result_sha256,
+                        provider_trace=trace,
                     )
                 )
             if rows:

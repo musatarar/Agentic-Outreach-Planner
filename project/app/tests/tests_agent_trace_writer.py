@@ -78,19 +78,30 @@ def _seed_configuration():
 class _FakeChatClient(LLMClient):
     provider_name = "fake"
 
-    def __init__(self, script, before_call=None):
+    def __init__(self, script):
         super().__init__(model="fake-model", default_max_tokens=1)
         self.script, self.chat_calls = list(script), []
-        self._before_call = before_call
 
     def generate(self, prompt, max_tokens=None, timeout=None):
         raise AssertionError("agent loop must not take the blocking path")
 
     async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
-        if self._before_call is not None:
-            self._before_call()
         self.chat_calls.append({"messages": list(messages), "tools": tuple(tools)})
         return self.script.pop(0)
+
+
+class _LosingCheckpoint(state.Checkpoint):
+    """Wins the claim, then hands it to a rival before its first append.
+
+    The theft rides the checkpoint's own borrowed connection, so it is visible
+    to the append's claim re-check (and to the test's fixture transaction).
+    """
+
+    def _claim_sync(self, lead_run_pk):
+        claimed = super()._claim_sync(lead_run_pk)
+        if claimed:
+            AgentLeadRun.objects.filter(pk=lead_run_pk).update(claimed_by="rival")
+        return claimed
 
 
 class _TraceWriterCase(TestCase):
@@ -111,10 +122,10 @@ class _TraceWriterCase(TestCase):
             stage="active_trial",
         )
 
-    def _run(self, script, *, before_call=None):
+    def _run(self, script, *, checkpoint_class=state.Checkpoint):
         pks = state.create_lead_runs(TRACE_RUN_ID, [self.lead.id])
         pk = pks[self.lead.id]
-        client = _FakeChatClient(script, before_call=before_call)
+        client = _FakeChatClient(script)
         outcome = asyncio.run(
             agent_loop.run_agent_lead(
                 prompt="PROMPT",
@@ -123,7 +134,7 @@ class _TraceWriterCase(TestCase):
                 context=tools.build_tool_context(self.lead, (), (), (), None),
                 client=client,
                 runtime=get_planner_runtime(),
-                checkpoint=state.Checkpoint(trace_run_id=TRACE_RUN_ID),
+                checkpoint=checkpoint_class(trace_run_id=TRACE_RUN_ID),
             )
         )
         return outcome, client, pk
@@ -190,14 +201,7 @@ class TraceMintTests(_TraceWriterCase):
 
     def test_a_lost_claim_leaves_no_trace_row(self):
         """The mint shares the step's transaction, so a rolled-back append writes no audit row."""
-        stolen = {"done": False}
-
-        def steal_the_claim():
-            if not stolen["done"]:
-                stolen["done"] = True
-                AgentLeadRun.objects.filter(trace_run_id=TRACE_RUN_ID).update(claimed_by="rival")
-
-        outcome, client, pk = self._run([_final()], before_call=steal_the_claim)
+        outcome, client, pk = self._run([_final()], checkpoint_class=_LosingCheckpoint)
 
         self.assertIsInstance(outcome.error, state.AgentClaimLost)
         self.assertEqual(len(client.chat_calls), 1)  # the call happened; the write did not

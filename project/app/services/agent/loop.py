@@ -19,6 +19,8 @@ from project.app.services.agent.state import (
     KIND_FINAL,
     KIND_LLM_CALL,
     KIND_TOOL_RESULT,
+    PAYLOAD_MODEL,
+    PAYLOAD_PROVIDER,
     PAYLOAD_REQUEST_SHA256,
     PAYLOAD_RESULT_SHA256,
     STATUS_DONE,
@@ -95,6 +97,10 @@ def _llm_call_payload(result: LLMResult, request_sha256: str | None) -> dict[str
         "raw_finish_reason": result.raw_finish_reason,
         "latency_s": result.latency_s,
         PAYLOAD_REQUEST_SHA256: request_sha256,
+        # Popped by the checkpoint into a ProviderTrace row (MUS-72); the
+        # payload's own "provider"/"model" above stay, for the reports page.
+        PAYLOAD_PROVIDER: result.provider,
+        PAYLOAD_MODEL: result.model,
     }
 
 
