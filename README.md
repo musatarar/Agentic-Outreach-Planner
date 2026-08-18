@@ -108,10 +108,10 @@ is `console` **and** the address is allowlisted.
 
 | Layer | Where | What |
 |---|---|---|
-| Models | `project/app/models.py` | `Lead`, `Event`, `OutreachAction` (decision audit log), `ReviewDecision` |
+| Models | `project/app/models/` | `Lead`, `Event`, `OutreachAction` (decision audit log), `ReviewDecision` |
 | Logic | `project/app/services/outreach.py` | Priority scoring + action classification — pure Python, no LLM |
 | LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via the DB-backed `LLMConfiguration` (see `/api/llm/config/`) |
-| API | `project/app/views.py`, `urls.py` | DRF APIViews at `/api/*` |
+| API | `project/app/views/`, `urls.py` | DRF APIViews at `/api/*` |
 | Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: planner board, reports, BD dashboard — consumes the `/api/*` endpoints |
 
 ### Triage queue
@@ -194,7 +194,7 @@ turn. Measured by reverting the prefetch and re-running the assertion:
 
 At the 200-lead benchmark size that is roughly 2,200 queries before, 14 after.
 
-`project/app/tests_planner_perf.py` is the regression lock, and it is three assertions rather
+`project/app/tests/tests_planner_perf.py` is the regression lock, and it is three assertions rather
 than one: a fixed count at 12 leads, the *same* read cost at 3 leads and at 60 (a constant on
 its own could be updated past a reintroduced N+1; two equal counts at different sizes could
 not), and the INSERT count computed from `connection.ops.bulk_batch_size` so it is right on
@@ -235,7 +235,7 @@ The stub cannot be reached from the app: `seed_llm_catalog` creates no `LLMProvi
 it (and the Settings UI lists providers from that table), its constructor refuses to build
 unless `OUTREACH_ALLOW_STUB_LLM=1` (set only by the benchmark), and the only thing that asks
 for it by name is `build_client("stub")` inside the benchmark itself. All three barriers are
-pinned by `project/app/tests_stub_provider.py`.
+pinned by `project/app/tests/tests_stub_provider.py`.
 
 Reproduce with `python evals/bench_planner.py --leads 200 --concurrency 8`, and
 `--concurrency 1` for the before; `--update-readme` rewrites the table above from the

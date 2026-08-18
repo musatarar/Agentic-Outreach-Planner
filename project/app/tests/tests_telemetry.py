@@ -125,7 +125,7 @@ class PristineProcessTests(SimpleTestCase):
 
         result = subprocess.run(
             [sys.executable, "-c", script],
-            cwd=Path(__file__).resolve().parents[2],
+            cwd=Path(__file__).resolve().parents[3],
             env=env,
             capture_output=True,
             text=True,

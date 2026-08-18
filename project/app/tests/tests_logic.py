@@ -2,7 +2,7 @@
 leads are SimpleNamespace stubs mirroring `raw_data/`, the LLM client mocked.
 
 Run standalone:
-    ./venv/bin/python -m unittest project.app.tests_logic
+    ./venv/bin/python -m unittest project.app.tests.tests_logic
 """
 
 import datetime

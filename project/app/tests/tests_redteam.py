@@ -17,7 +17,7 @@ from project.app.services.sanitize import (
     UNTRUSTED_OPEN,
     sanitize_untrusted,
 )
-from project.app.tests_logic import TODAY, _event, _EventSet, _lead
+from project.app.tests.tests_logic import TODAY, _event, _EventSet, _lead
 
 # Fixed so prompt comparisons isolate the note as the only variable.
 _FIXED_ACTION = actions.NUDGE_USAGE

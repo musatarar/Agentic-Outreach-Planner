@@ -6,7 +6,7 @@ every consumer in the same PR — which the file map below is designed to preven
 The former repo-wide contract mandate is retired; this feature keeps one anyway as
 its coordination artifact.
 
-Test artifacts: `project/app/tests_agent_loop_<component>.py`, one per component,
+Test artifacts: `project/app/tests/tests_agent_loop_<component>.py`, one per component,
 planted red (`@unittest.expectedFailure`) by the skeleton PR. A component PR takes
 its own module to zero markers and leaves every sibling module's marker count
 untouched.
@@ -51,7 +51,7 @@ class LLMClient:
 `agenerate_chat` is **async-only** by design: the sync Claude client keeps 2
 SDK-internal retries and would double-retry under the loop's own retry policy.
 
-### agent_models — `models.py`, migration `0007_agent_loop`
+### agent_models — `models/agent.py`, migration `0007_agent_loop`
 
 Everything named in the plan's "Data model & migrations" section, exactly:
 `AgentLeadRun` (with `STATUS_*` constants, `NON_TERMINAL_STATUSES`, `claim_epoch`
@@ -149,7 +149,7 @@ field — the rules engine keeps sole authority over classification, and
 Steps persist the *sanitized, unwrapped* tool result; `wrap_untrusted()` delimiters
 are applied exactly once, at fold time.
 
-### approval_gate — `services/dispatch.py`, `views_queue.py`, `serializers.py`
+### approval_gate — `services/dispatch.py`, `views/queue.py`, `serializers/outreach.py`
 
 ```python
 class DispatchBlocked(RuntimeError): ...
@@ -165,7 +165,7 @@ approve decision atomically with the status flip; `QueueDismissView` records a
 approved→pending and dismissed→pending. `ReviewDecisionSerializer` rejects both
 send kinds (they are recorded only via the queue endpoints).
 
-### reports_trace — `views_trace.py`, frontend
+### reports_trace — `views/trace.py`, frontend
 
 `GET /api/outreach/<int:pk>/trace/` → 200
 
@@ -237,11 +237,11 @@ hashes the spans carry, so span and step cross-reference without leaking content
 | --- | --- |
 | skeleton (shared) | `project/app/urls.py`, `project/settings.py`, `frontend/src/api/types.ts`, `project/app/services/agent/__init__.py`, `docs/contracts/agent-loop.md`, `docs/adr/agent-loop-state.md`, all seven `tests_agent_loop_*.py` artifacts, `frontend/tests/agent_loop_reports_trace.test.ts`, stub bodies of every module below |
 | llm_tools | `services/llm/chat_types.py`, `services/llm/base.py`, `services/llm/claude.py`, `services/llm/openai_compatible.py`, `services/llm/stub.py` |
-| agent_models | `project/app/models.py`, `project/app/migrations/0007_agent_loop.py` |
+| agent_models | `project/app/models/agent.py`, `project/app/migrations/0007_agent_loop.py` |
 | agent_tools | `services/agent/tools.py`, `services/agent/product_catalog.py`, `project/app/management/commands/ingest_data.py` |
 | loop | `services/agent/state.py`, `services/agent/loop.py`, `services/llm/runtime.py`, `services/telemetry/semconv.py`, `services/telemetry/genai.py`, `project/settings.py` (wiring only) |
-| approval_gate | `services/dispatch.py`, `project/app/views_queue.py`, `project/app/serializers.py` |
-| reports_trace | `project/app/views_trace.py`, `frontend/src/api/endpoints.ts`, `frontend/src/pages/ReportsPage.tsx`, `project/app/static/frontend/**` (rebuilt bundle) |
+| approval_gate | `services/dispatch.py`, `project/app/views/queue.py`, `project/app/serializers/outreach.py` |
+| reports_trace | `project/app/views/trace.py`, `frontend/src/api/endpoints.ts`, `frontend/src/pages/ReportsPage.tsx`, `project/app/static/frontend/**` (rebuilt bundle) |
 | assembly | `project/app/services/outreach.py`, `project/app/views.py` |
 
 A component PR's diff stays inside its row (plus stripping the markers in its own

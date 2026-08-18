@@ -1,24 +1,21 @@
 from django.urls import path
 
-from project.app.views import (
-    LeadComposeView,
-    LeadListView,
-    LLMCatalogView,
-    LLMConfigTestView,
-    LLMConfigView,
+from project.app.views.auth import (
+    AuthConsumeView,
+    AuthLogoutView,
+    AuthMeView,
+    AuthRequestLinkView,
+)
+from project.app.views.leads import LeadComposeView, LeadListView
+from project.app.views.llm import LLMCatalogView, LLMConfigTestView, LLMConfigView
+from project.app.views.outreach import (
     OutreachListView,
     OutreachReportView,
     OutreachRunView,
     ReviewDecisionListCreateView,
     ReviewQueueView,
 )
-from project.app.views_auth import (
-    AuthConsumeView,
-    AuthLogoutView,
-    AuthMeView,
-    AuthRequestLinkView,
-)
-from project.app.views_queue import (
+from project.app.views.queue import (
     QueueApproveView,
     QueueDetailView,
     QueueDismissView,
@@ -29,7 +26,7 @@ from project.app.views_queue import (
     QueueUndoView,
     QueueVerifyView,
 )
-from project.app.views_trace import OutreachTraceView
+from project.app.views.trace import OutreachTraceView
 
 # Included at the `api/` prefix by project/urls.py.
 urlpatterns = [

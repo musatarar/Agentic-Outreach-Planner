@@ -27,8 +27,8 @@ from project.app.models import (
 )
 from project.app.services import dedupe, queue_copy
 from project.app.services.outreach import plan_outreach
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
-from project.app.views_queue import QueueVerifyView
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.views.queue import QueueVerifyView
 
 # A well-shaped, grounded draft: passes both the shape gate (MUS-23) and the
 # grounding gate (MUS-22) so plan_outreach() leaves needs_human False.
@@ -953,7 +953,7 @@ class QueueSnoozeViewTests(AuthenticatedAPITestCase):
     def test_re_snoozing_refreshes_both_stamps(self):
         # Pinned to a Wednesday: on a Sunday "next_week" and "tomorrow" resolve
         # to the same instant and the premise that they disagree is false.
-        with patch("project.app.views_queue.timezone.now", return_value=WEDNESDAY):
+        with patch("project.app.views.queue.timezone.now", return_value=WEDNESDAY):
             self._snooze({"trigger": "tomorrow"})
             self.action.refresh_from_db()
             first = self.action.snooze_until

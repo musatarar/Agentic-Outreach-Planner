@@ -2,7 +2,7 @@
 
 Every payload is attacker-controlled CRM free-text (OWASP LLM01) that the MUS-23
 hardening (see ``SECURITY.md``) must keep out of classification and generated
-copy. Pure stdlib, so it imports anywhere; consumed by ``project/app/tests_redteam.py``
+copy. Pure stdlib, so it imports anywhere; consumed by ``project/app/tests/tests_redteam.py``
 (stub, CI) and ``evals/run_redteam_eval.py`` (real provider, gated).
 """
 

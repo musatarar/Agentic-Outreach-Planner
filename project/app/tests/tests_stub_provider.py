@@ -73,7 +73,7 @@ class StubIsUnreachableFromTheAppTests(TestCase):
                 "README.md",
                 "evals/bench_planner.py",
                 "project/app/services/llm/stub.py",
-                "project/app/tests_stub_provider.py",
+                "project/app/tests/tests_stub_provider.py",
             ],
             "something new references the stub opt-in; check it is not the app",
         )

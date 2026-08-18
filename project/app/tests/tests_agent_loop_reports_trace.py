@@ -6,7 +6,7 @@ Pins the per-action trace endpoint: run status, budgets, ordered steps, and a cl
 
 from project.app import models as app_models  # AgentLeadRun/AgentStep: lazy until Task 3 lands
 from project.app.models import Lead, OutreachAction
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
 class TraceEndpointTests(AuthenticatedAPITestCase):

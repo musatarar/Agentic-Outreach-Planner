@@ -106,7 +106,7 @@ Fail-closed into the same human-review path.
 Status is established by the red-team suite (MUS-24), which stacks on this branch:
 the payload catalog is [`evals/redteam_payloads.py`](evals/redteam_payloads.py)
 (~15 payloads across the seven classes below), the deterministic CI suite is
-[`project/app/tests_redteam.py`](project/app/tests_redteam.py) (runs stubbed in
+[`project/app/tests/tests_redteam.py`](project/app/tests/tests_redteam.py) (runs stubbed in
 normal CI, no API key), and the gated real-provider probe is
 [`evals/run_redteam_eval.py`](evals/run_redteam_eval.py) (nightly / manual only —
 see `.github/workflows/redteam-eval.yml`).

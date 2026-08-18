@@ -54,5 +54,5 @@ checkpoint are the same artifact, so they cannot drift.
 - The documented two-overlapping-runs race (`outreach.py:2172-2180`, different
   `trace_run_id`s) is **narrowed, not closed**: idempotent finalization guards one
   run's resume via the existing `oa_one_row_per_lead_per_run` partial unique
-  constraint (`models.py:193-197`), but two runs with different run ids can still
+  constraint (`models/outreach.py`), but two runs with different run ids can still
   both plan a lead. Out of scope here, as it was for MUS-26.

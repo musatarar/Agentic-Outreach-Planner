@@ -50,7 +50,7 @@ ACTION_CODE = {
     actions.UNKNOWN: "UNK",
 }
 
-# Mirrors project/app/tests_logic.py::_lead so a golden record only needs to
+# Mirrors project/app/tests/tests_logic.py::_lead so a golden record only needs to
 # specify the fields that matter for its case.
 LEAD_DEFAULTS = dict(
     id="gold_x",
@@ -76,7 +76,7 @@ ALLOWED_LEAD_KEYS = set(LEAD_DEFAULTS) | {"events"}
 
 
 # ---------------------------------------------------------------------------
-# lead construction (duck-typed, mirrors project/app/tests_logic.py)
+# lead construction (duck-typed, mirrors project/app/tests/tests_logic.py)
 # ---------------------------------------------------------------------------
 
 

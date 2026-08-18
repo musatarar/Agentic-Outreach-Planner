@@ -29,7 +29,7 @@ python manage.py runserver            # dev server (http://127.0.0.1:8000)
 python manage.py migrate
 python scripts/populate_demo_data.py  # single source of demo state
 python manage.py test project.app     # full backend suite
-python manage.py test project.app.tests_logic.SomeCase.test_name  # single test
+python manage.py test project.app.tests.tests_logic.SomeCase.test_name  # single test
 ruff check . && ruff format --check .
 mypy project/app/services/            # CI runs exactly this target
 python evals/run_rules_eval.py        # rules regression vs committed baseline

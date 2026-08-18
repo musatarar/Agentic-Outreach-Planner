@@ -17,7 +17,7 @@ from project.app.models import (
     OutreachAction,
     ReviewDecision,
 )
-from project.app.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
 def make_lead(lead_id, **overrides):

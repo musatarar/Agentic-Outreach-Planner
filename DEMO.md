@@ -84,7 +84,7 @@ python manage.py test project.app   # 27 tests: models/ingestion, API, logic (mo
 
 ## Architecture (60-second version)
 
-- **Models** (`project/app/models.py`): `Lead`, `Event`, `OutreachAction` (audit log of
+- **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction` (audit log of
   what the planner decided — priority, action, reason, copy, needs_human).
 - **Logic** (`project/app/services/outreach.py`): rule-based priority scoring (book size,
   stage, gone-quiet detection, recency) and ordered action classification — deterministic

@@ -21,7 +21,7 @@ from project.app.models import (
     OutreachEdit,
     ReviewDecision,
 )
-from project.app.serializers_queue import QueueItemSerializer, iso
+from project.app.serializers.queue import QueueItemSerializer, iso
 from project.app.services import dedupe, queue_copy
 
 DONE_STATUSES = (

@@ -22,7 +22,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from project.app.exceptions import ContractError
-from project.app.serializers_auth import ConsumeTokenSerializer, RequestLinkSerializer
+from project.app.serializers.auth import ConsumeTokenSerializer, RequestLinkSerializer
 from project.app.services import login_links
 from project.app.services.login_links import ConsumeOutcome
 from project.app.throttling import LoginEmailRateThrottle
