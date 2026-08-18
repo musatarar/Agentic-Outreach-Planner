@@ -6,4 +6,7 @@ set -e
 python manage.py migrate --noinput
 python scripts/populate_demo_data.py
 
-exec python manage.py runserver 0.0.0.0:8000
+# --insecure: the image runs with DEBUG off, and `runserver` then serves no
+# static files -- so the committed React bundle 404s and every page renders
+# blank. There is no static file server in front of it to take the job over.
+exec python manage.py runserver 0.0.0.0:8000 --insecure
