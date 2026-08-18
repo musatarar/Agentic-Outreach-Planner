@@ -60,6 +60,11 @@ def _env_float(name, default):
     return _env_number(name, default, float, "a number")
 
 
+def _env_list(name):
+    """Comma-separated env var -> list of stripped, non-empty entries."""
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
 OUTREACH_MAX_IN_FLIGHT = _env_int("OUTREACH_MAX_IN_FLIGHT", 8)
 OUTREACH_MAX_ATTEMPTS = _env_int("OUTREACH_MAX_ATTEMPTS", 4)
 OUTREACH_INITIAL_BACKOFF_S = _env_float("OUTREACH_INITIAL_BACKOFF_S", 0.5)
@@ -96,9 +101,13 @@ if not SECRET_KEY:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = [
-    host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
-]
+ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS")
+
+# Origins (scheme included, e.g. https://demo.example.com) whose POSTs the CSRF
+# check trusts. Required whenever TLS terminates in front of the app -- a proxy
+# or tunnel -- or the browser's https Origin never matches the http request the
+# app sees and every authenticated POST is a 403.
+CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 
 # Application definition
