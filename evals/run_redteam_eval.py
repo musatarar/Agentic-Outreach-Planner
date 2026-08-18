@@ -4,7 +4,7 @@
 Plants each ``evals/redteam_payloads.py`` payload in a lead, runs the real
 copy-generation path, and fails closed (non-zero exit) on any breach (see
 ``SECURITY.md``). Real-provider counterpart to the stubbed CI suite in
-``project/app/tests_redteam.py``; it makes paid API calls, so it runs only in
+``project/app/tests/tests_redteam.py``; it makes paid API calls, so it runs only in
 the gated ``redteam-eval.yml`` workflow (nightly + manual), never on push/PR.
 Requires the provider's API key in the environment.
 

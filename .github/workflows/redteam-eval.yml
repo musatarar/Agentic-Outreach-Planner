@@ -3,7 +3,7 @@ name: Red-team eval (prompt injection)
 # Separate from CI on purpose: this makes REAL, paid LLM calls to probe the
 # copy pipeline with adversarial CRM notes, so it never runs on push/PR. It runs
 # on a nightly schedule and can be triggered by hand. The unit-test red-team
-# suite (project/app/tests_redteam.py) runs stubbed in CI; this is the only place
+# suite (project/app/tests/tests_redteam.py) runs stubbed in CI; this is the only place
 # real keys are used against the injection payloads.
 on:
   workflow_dispatch:

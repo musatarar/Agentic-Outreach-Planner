@@ -22,7 +22,7 @@ python evals/run_rules_eval.py --golden PATH      # score a different golden fil
 Pure Python — **no Django, no database, no network.** The classifier duck-types
 on lead-like objects, so the harness feeds it `SimpleNamespace` stubs built from
 `golden/leads.jsonl` (the same pattern as
-[`project/app/tests_logic.py`](../project/app/tests_logic.py)) and the whole run
+[`project/app/tests/tests_logic.py`](../project/app/tests/tests_logic.py)) and the whole run
 finishes in milliseconds. It only needs `anthropic` + `httpx` importable because
 `outreach` imports the provider adapters at module load; nothing calls them.
 
@@ -110,7 +110,7 @@ The provider's API key must be in the environment (e.g. `GROQ_API_KEY`).
 |------|------------|
 | `run_copy_eval.py` | CLI runner: runs the Inspect task for one provider, aggregates, gates, renders the table. |
 | `copy_eval.py` | The Inspect task — dataset, generation solver, deterministic + judge scorers. |
-| `copy_checks.py` | Pure-Python deterministic checks (no LLM, no deps; unit-tested in `project/app/tests_copy_scorers.py`). |
+| `copy_checks.py` | Pure-Python deterministic checks (no LLM, no deps; unit-tested in `project/app/tests/tests_copy_scorers.py`). |
 | `rubrics/copy.md` | The LLM-judge rubric — committed as a file, not buried in a prompt string. |
 | `pricing.toml` | Per-model reference rates for the est. cost column (runs no AI). |
 | `baselines/copy.json` | Per-provider quality baseline the gate protects. |
