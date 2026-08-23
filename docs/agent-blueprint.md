@@ -1,6 +1,6 @@
 # Adopting Claude Code on the Outreach Planner: An Engineering Blueprint
 
-> **Evidence basis.** This document was written from (1) a code-only survey of the repository — source files, migrations, tests, workflows, and build configuration read directly; the repository's own documentation was deliberately left unread — and (2) the team's active planning threads (audit spine, cost tracking and model routing, run orchestration), as of August 2026. Claude Code mechanics are cited against the official documentation current at Claude Code 2.1.x. Where this document asserts something about the codebase, it cites a file path from the survey; where it asserts something about tooling, it cites a URL.
+> **Evidence basis.** This document was written from (1) a code-only survey of the repository — source files, migrations, tests, workflows, and build configuration read directly; the repository's own documentation was deliberately left unread — (2) the team's active planning threads (audit spine, cost tracking and model routing, run orchestration), and (3) the next planned epic, async LLM request handling, scoped against the code in §0.1 — as of August 2026. Claude Code mechanics are cited against the official documentation current at Claude Code 2.1.x. Where this document asserts something about the codebase, it cites a file path from the survey; where it asserts something about tooling, it cites a URL.
 
 ---
 
@@ -13,6 +13,23 @@ Three programs are in flight, and every practice below is chosen to serve them:
 - **PRODUCTIONIZING** — the runtime is still demo-shaped: `runserver --insecure` in the container entrypoint (`docker/entrypoint.sh:12`), demo data seeded on every boot, a committed secret key in `.env.example:17`, per-process locmem throttles, no session cookie hardening, and flag-gated paths (`OUTREACH_AGENT_ENABLED`, `COPY_VERIFY_LEVEL=off`) whose defaults will flip. Agent guardrails must make the demo→production transition safer, not fossilize demo behavior.
 
 The single most important background fact, established repeatedly by research and Anthropic's own guidance: **an agent's output quality is bounded by the speed and determinism of its feedback loop** ([Claude Code best practices](https://www.anthropic.com/engineering/claude-code-best-practices); [Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)). This codebase is unusually well positioned — ~956 backend tests with every provider call mocked, a computed query-budget test (`tests_planner_perf.py:27-58`), boot-time system checks, and a CI that already gates `makemigrations --check` (`.github/workflows/ci.yml:112`). The blueprint's job is to wire that existing rigor into the agent's inner loop, and to close the places where the loop lies (an `@unittest.expectedFailure` on a known injection gap, `tests_redteam.py:193`; mypy scoped to one subtree, `ci.yml:45`).
+
+### 0.1 Scope check: the next epic through this blueprint
+
+The next planned epic is **async LLM request handling** — and it is a useful stress test of everything below, so it is scoped here as the blueprint's first worked example. The code-verified starting point: `POST /api/outreach/run/` executes the *entire* planner synchronously inside the HTTP request and returns only when every provider call has finished (`views/outreach.py:22-38`); `POST /api/leads/<id>/compose/` is the same shape. And there is **no worker or queue infrastructure anywhere** — no Celery/RQ/Redis/channels in either requirements file, and `docker-compose.yml` defines only `db` and `web`. The concurrency *inside* a run already landed (async adapters, the bounded pool, retry/timeout/backoff, the phase split — all shipped per the tracker); what does not exist is any way to *start* a run without holding an HTTP connection open for its full duration. That is the epic.
+
+The scope map — each row names the area it lands in (§4.5), what changes, and which practices in this document bind:
+
+| Area touched | What the epic does there | What binds |
+|---|---|---|
+| `run-lifecycle` (new) | A durable run model with explicit states (queued → running → done/failed/cancelled), created by the endpoint, executed elsewhere. This is also where the single-active/dedupe constraint finally lands — the partial unique index that lifts §5.3's serialize-the-planner cap. | `safe-migration` skill; `migration-auditor`; the §5.5 migration gate. New state machine ⇒ plan mode mandatory (§5.1). |
+| Execution vehicle | The epic's one real architectural decision: how work runs off-request with zero existing worker infra. The code's own patterns argue for a DB-backed worker (a management command claiming runs) before any new queue dependency: every primitive already exists in-repo — the single-winner epoch-CAS claim (`agent/state.py`), append-only checkpoint steps, resume-by-run-id (`views/outreach.py:36`), and the idempotent cron-command precedent (`management/commands/unsnooze_due.py`). New queue infrastructure is a dependency-posture and deployment change, not just a library import — that alternative needs its own explicit decision. | Plan-then-execute at full depth (§5.1); the decision is cheap to review as a plan and expensive as a diff. |
+| `llm-seam` / `async-phase` | Timeouts decouple from the HTTP request: the per-lead deadline and retry policy (`llm/runtime.py`) become the *only* time bounds once no request is waiting. Unattended retries are unattended spend. | `cost-check` skill; the §5.5 spend gate; the async-seam rules in the drafted CLAUDE.md apply verbatim. |
+| Status surface | New status/result endpoints plus frontend polling (the existing `GET /api/outreach/<pk>/trace/` is the in-repo precedent for read-your-progress). Polling endpoints are the textbook case for the throttle-scope and pagination rules — a 2-second poll loop against an unthrottled, unpaginated endpoint is self-inflicted load. | `drf-endpoint` skill; `frontend/CLAUDE.md` (the polling contract lands in `endpoints.ts`/`types.ts` in the same PR). |
+| `audit-spine` | A background run has no request/response log to lean on — the trace gap on the default path (`ProviderTrace` written only by the agent loop, `agent/state.py:307`) turns from "planned" into a **prerequisite**: an async run that fails halfway is reconstructable only from durable rows. Run identity minted by the run model also resolves the telemetry-minted `run_id` inversion. | `audit-spine` skill; the retention gate (§5.5) before volume grows. |
+| Tests | The loop stays deterministic only if the worker is drivable synchronously in tests (call the claim-and-execute function directly; no sleeps, no real clock) — the same discipline the existing suites already model with frozen dates and mocked providers. | §3.2; the `test-author` agent writes the lifecycle tests from the state machine, not from the implementation. |
+
+Read the table's rightmost column top to bottom and it is the implementation order in miniature: skills and gates (items 3–7 of §6) must exist *before* this epic starts, because every row consumes them. That is what "highest leverage first" means concretely — and it is why the epic should be scoped by **area, not by ticket**: the six rows above reference six stable places in the code and zero tracker lookups.
 
 ---
 
@@ -275,6 +292,39 @@ Observability (the OTel backend receiving the GenAI spans) is worth a server *wh
 
 **Failure mode prevented.** Context rot in its most mechanical form: an agent that has paged 240KB of minified JS has evicted the invariants it needed.
 
+### 4.5 Referencing code: area codes beside ticket numbers
+
+**Practice.** Yes — add a third reference system. The codebase already runs two: ticket IDs in comments (history pointers — *why did this change*) and constraint/index slugs (`oa_one_row_per_lead_per_run` — DB-level invariants, greppable end to end). What's missing is the layer between them: stable names for the **governed seams** of the codebase — *where am I, and what contract applies here*. Introduce **area codes**: a checked-in registry, `docs/areas.toml`, of roughly a dozen entries —
+
+```toml
+[async-phase]
+paths    = ["project/app/services/outreach.py", "project/app/services/llm/runtime.py"]
+contract = "No ORM inside the async provider-call phase; checkpoint writes are the sole exception."
+gate     = "plan-mode"
+
+[dispatch-gate]
+paths    = ["project/app/services/dispatch.py"]
+contract = "Send = re-read by sha256 under select_for_update in the consuming transaction. Never simplified."
+gate     = "human-review"
+
+[run-lifecycle]        # lands with the async-request-handling epic
+paths    = ["project/app/models/run.py", "project/app/services/run_worker.py"]
+contract = "Single active run via partial unique index; workers claim via conditional UPDATE."
+gate     = "human-review"
+```
+
+— plus a one-line `# area: async-phase` comment at each site where the contract binds (sparse: the seam definition, not every function). Seed the registry from the seams this document already had to name in prose: `llm-seam`, `async-phase`, `dispatch-gate`, `verify-gate`, `auth-links`, `audit-spine`, `rules-engine`, `triage-queue`, `frontend-bundle`, `eval-baselines`, and (with the epic) `run-lifecycle`.
+
+The payoff is that the registry is **machine-consumable**, which ticket numbers never were. One file drives five mechanisms: (1) path-scoped rule files — `.claude/rules/<area>.md` scoped to the area's globs, so the full contract loads exactly when an agent touches the area ([memory docs](https://code.claude.com/docs/en/memory.md)); (2) the guard hooks — `guard_paths.sh` reads the globs of `gate = "human-review"` areas instead of hardcoding paths (§3.1); (3) skill triggers — "Use when touching area `audit-spine`" is a precise, stable trigger description (§2.2); (4) the human-gate table (§5.5), keyed by area instead of prose; (5) PR provenance — the §5.4 audit fields gain a structured `areas-touched:` line, so "every agent PR that touched `dispatch-gate` this quarter" is one query. §0.1's scope map is the demonstration: six areas, zero tracker lookups.
+
+**Division of labor between the three systems.** Ticket IDs stay: they are immutable pointers into history and cost nothing. Constraint slugs stay: they are the DB-level version of the same idea and already exemplary. Area codes carry what neither can: a *living* contract with paths, maintained in one reviewable file, resolvable offline by grep — where a ticket number requires tracker access and archaeology, and a `file:line` citation rots with every commit (the line numbers in this very document will drift; its area names won't).
+
+**The keep-small rule.** An area earns a registry entry only when a real contract *and* a gate, rule file, or skill binds to it — otherwise it is just a directory and the filesystem already names it. A registry that tries to taxonomize the whole tree becomes the stale map §1.2 warns about; a dozen governed seams, each load-bearing, stays true.
+
+**Source.** The registry-plus-path-scoping mechanics are standard Claude Code memory/permissions machinery ([memory](https://code.claude.com/docs/en/memory.md), [hooks](https://code.claude.com/docs/en/hooks.md)); the pattern itself is the per-directory ownership/metadata model long used in large codebases (CODEOWNERS-style path mapping), and — in miniature — this codebase's own constraint-slug naming, generalized from tables to seams.
+
+**Failure mode prevented.** Reference rot and tracker lock-in. Prose references ("the planner's async part") are unresolvable by grep; line numbers decay; ticket numbers answer only with archaeology and only while the tracker is reachable. A hallucination-resistant reference is one the agent can *verify cheaply* — an area code greps to its marker and resolves to its contract in one file read, which is exactly the retrieval-over-recall property §4.4 demands.
+
 ---
 
 ## 5. Agentic workflows
@@ -307,7 +357,7 @@ The calibration rule: **plan depth proportional to the cost of being wrong, not 
 
 **Failure mode prevented.** Parallel agents clobbering a shared checkout and a shared dev database — the second being unrewindable (§3.1).
 
-**A codebase-specific cap on parallelism.** The planner's dedupe rule is a self-documented unlocked read-then-write — the comment at `outreach.py:1928-1930` labels it a known gap: two overlapping runs can both plan the same lead, duplicating recommendations *and LLM spend*. Until the run composer's DB-level fix lands (a partial unique index enforcing a single active run — the view-level existence check was rightly rejected as racy, and the codebase's own auth path demonstrates the correct pattern: single-winner conditional UPDATE, proven by an 8-thread test at `tests_auth.py:214-245`), **serialize any agent work that executes the planner**. Parallelize freely on everything else. This is the scaling theme in miniature: agent concurrency is bounded by the *system's* concurrency safety, and the fix is a schema change, not a habit agents are asked to keep.
+**A codebase-specific cap on parallelism.** The planner's dedupe rule is a self-documented unlocked read-then-write — the comment at `outreach.py:1928-1930` labels it a known gap: two overlapping runs can both plan the same lead, duplicating recommendations *and LLM spend*. Until the single-active-run DB constraint lands — a partial unique index, now scoped into the async-request-handling epic's `run-lifecycle` area (§0.1); the view-level existence check was rightly rejected as racy, and the codebase's own auth path demonstrates the correct pattern, single-winner conditional UPDATE, proven by an 8-thread test at `tests_auth.py:214-245` — **serialize any agent work that executes the planner**. Parallelize freely on everything else. This is the scaling theme in miniature: agent concurrency is bounded by the *system's* concurrency safety, and the fix is a schema change, not a habit agents are asked to keep.
 
 **Outdated advice to discard.** Manual multi-terminal, multi-clone choreography — native worktrees, background sessions, and cross-session messaging replaced it ([changelog](https://code.claude.com/docs/en/changelog.md)).
 
@@ -355,7 +405,7 @@ Highest leverage first. Each row lists the theme it primarily serves and its pre
 
 | # | Action | Theme | Why this order |
 |---|---|---|---|
-| 1 | **Commit the CLAUDE.md draft** (Appendix A) + `frontend/CLAUDE.md` + `.claude/rules/migrations.md` | all | Everything else assumes the agent knows the commands, the seams, and the negative rules. One day of work, immediate effect on every session. |
+| 1 | **Commit the CLAUDE.md draft** (Appendix A) + `frontend/CLAUDE.md` + `.claude/rules/migrations.md` + `docs/areas.toml` (the area registry, §4.5) | all | Everything else assumes the agent knows the commands, the seams, and the negative rules — and the registry gives rules, hooks, skills, and gates one path-source to bind to. One day of work, immediate effect on every session. |
 | 2 | **`.claude/settings.json` permissions**: deny `.env`/`db.sqlite3`/bundle reads and writes; Bash allowlist for the test/lint loop; sandbox verified via `/sandbox` | PRODUCTIONIZING | Safety floor before any autonomy. The committed-secret-in-`.env.example` situation makes the read-denial urgent (and fixing `.env.example` itself is a 10-minute PR to do the same week). |
 | 3 | **Hooks**: post-edit ruff, applied-migration write-block, models-edit → `makemigrations --check`, dangerous-Bash guard | PRODUCTIONIZING | Converts the existing CI gates into millisecond agent feedback; blocks the two unrewindable failure classes. |
 | 4 | **django-migration-linter in CI + in the post-edit hook** | PRODUCTIONIZING | The single biggest gap between "CI is green" and "the deploy is safe" is migration lock behavior; closes it at both agent-time and merge-time. |
@@ -366,7 +416,7 @@ Highest leverage first. Each row lists the theme it primarily serves and its pre
 | 9 | **Headless PR-review workflow** (`claude-code-action@v1`) armed with the skills from #5 as its checklists | SCALING | Multiplies review capacity exactly where the human gates (§5.5) need humans to have attention left. |
 | 10 | **MCP**: Postgres read-only introspection; GitHub; issue tracker | SCALING | Grounded schema answers and retrievable ticket context; deferred until the safety floor exists because each server is new surface. |
 | 11 | **`mypy` widening + model-layer annotations; begin the `outreach.py` split** | SCALING | Deepens the deterministic feedback the loop runs on; the split is the largest single legibility investment and can proceed incrementally behind the now-solid test net. |
-| 12 | **Issue-to-PR pipeline** for mechanical tickets; **parallel worktree workflows** — gated on the run-composer's single-active-run DB constraint for any planner-executing work | SCALING | Full autonomy last, once verification (3-7), review capacity (9), and the system's own concurrency safety (the partial unique index) exist. |
+| 12 | **Issue-to-PR pipeline** for mechanical tickets; **parallel worktree workflows** — gated on the single-active-run DB constraint for any planner-executing work (the `run-lifecycle` area of the async-request-handling epic, §0.1, is where that constraint lands) | SCALING | Full autonomy last, once verification (3-7), review capacity (9), and the system's own concurrency safety (the partial unique index) exist. |
 
 The through-line: **verification before autonomy, isolation before permission, provenance throughout.** Items 1–4 are a week. Items 5–7 are the second week. Everything after compounds.
 
@@ -433,8 +483,11 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   frontend/src/api/endpoints.ts (every frontend API call, one line each).
 - Constraint/index names (oa_queue_order, rd_one_live_send_per_action, ...) appear
   verbatim in model and migration — grep the name to get the whole story.
-- Ticket IDs (MUS-nn) in comments are a cross-file index (e.g. settings.py:29) — grep
-  one to find a feature.
+- Area codes name the governed seams: docs/areas.toml maps each slug (llm-seam,
+  async-phase, dispatch-gate, ...) to its paths, contract, and gate; `# area:` comments
+  mark the binding sites. Reference areas — not line numbers, not tickets — in plans,
+  PRs, and reviews. Ticket IDs (MUS-nn) in comments remain as history pointers — grep
+  one to find a feature's past.
 
 ## Database & migrations — hard rules
 
