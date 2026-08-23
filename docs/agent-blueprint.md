@@ -1,518 +1,135 @@
-# Agentic Engineering Blueprint: Claude Code on a Django/DRF/Postgres Service
+# Adopting Claude Code on the Outreach Planner: An Engineering Blueprint
 
-**Date:** August 2026 · **Written against:** Claude Code 2.1.x · **Grounded in:** this
-repository (Locked In — Agentic Outreach Planner), which already implements several of
-these practices and serves as the running example throughout.
-
-Claude Code's surface area changed more between April 2025 and mid-2026 than most tools
-change in five years: skills absorbed slash commands, hooks grew from four events to
-twenty-plus, worktrees and sandboxing went native, thinking keywords died, and
-checkpoints were replaced. Any blueprint has a shelf life, so every practice below is
-presented the same way — **the practice**, **the source**, **the failure mode it
-prevents** — and each section ends with a box of 2024–early-2025 advice that is now
-wrong. Mechanics cite the current docs at
-[code.claude.com/docs](https://code.claude.com/docs/en/overview); verify against the
-[changelog](https://code.claude.com/docs/en/changelog.md) before automating anything
-version-sensitive.
+> **Evidence basis.** This document was written from (1) a code-only survey of the repository — source files, migrations, tests, workflows, and build configuration read directly; the repository's own documentation was deliberately left unread — and (2) the team's active planning threads (audit spine, cost tracking and model routing, run orchestration), as of August 2026. Claude Code mechanics are cited against the official documentation current at Claude Code 2.1.x. Where this document asserts something about the codebase, it cites a file path from the survey; where it asserts something about tooling, it cites a URL.
 
 ---
 
-## TL;DR — the ten decisions that matter
+## 0. Orientation: what this blueprint optimizes for
 
-1. **CLAUDE.md is a prompt, not documentation.** Under ~150 lines, commands and
-   contradictions-of-defaults only, everything else is a pointer. (§1)
-2. **Mark every rule as machine-enforced or hope.** An agent treats all prose equally
-   until you tell it which rules a gate will actually catch. (§1, §7)
-3. **Skills hold procedures, CLAUDE.md holds rules, hooks hold laws.** If it must
-   happen every time, it's a hook; if it's a workflow, it's a skill; if it's one line
-   and always relevant, it's CLAUDE.md. (§2)
-4. **Write skills from your failures, not from generic best practice.** The two best
-   skills in this repo (`planning-discipline`, `webapp-testing`) are distilled
-   incident reports. (§2.3)
-5. **The feedback loop is the product.** Fast, deterministic lint/typecheck/test that
-   the agent can run and trust is worth more than any prompt engineering. (§3.1)
-6. **Migrations get three layers of defense:** a linter in CI, a hook that makes
-   applied migrations physically un-editable, and a skill that teaches the
-   zero-downtime sequence. (§3.2, §2.3.1)
-7. **Curate permissions; never accumulate them.** A deny-list of the five commands
-   that can hurt you beats 279 accreted allow-entries. (§3.4)
-8. **Prod credentials never enter the agent's environment.** Permission prompts are a
-   UX feature, not a security boundary; absence of capability is the boundary. (§3.5)
-9. **Structure the repo so grep is a reliable API.** Predictable Django layout, small
-   modules, single-source registries, ADRs that record *why*. (§4)
-10. **Automate headless last.** CI agents amplify whatever loop exists — make the
-    loop safe (steps 1–8) before you give it a cron schedule. (§5.4, §6)
+Three programs are in flight, and every practice below is chosen to serve them:
+
+- **SCALING** — the planner currently runs synchronously inside HTTP requests (`views/outreach.py:30`), reads the entire `Lead` table per run (`services/outreach.py:1958-1963`), and has no cost accounting anywhere in the LLM layer. The team's plans call for a price catalog in the database, prompt caching, priority-tiered model routing, and a run composer with estimate-before-spend. Agent tooling must not add uncontrolled cost on top of a system whose own cost story is being built — and the discipline the product is adopting (budgets, routing, estimates) applies to the coding agents too.
+- **AUDITS** — `ProviderTrace`/`ProviderTraceContent` are becoming the authoritative record of every LLM call, closing known gaps (no served-model column, no durable token/latency data, no trace rows on the default path, telemetry-minted run identity). The symmetric requirement: agent-written code needs the same durable provenance — which sessions produced which diffs, under which permissions, verified by which checks.
+- **PRODUCTIONIZING** — the runtime is still demo-shaped: `runserver --insecure` in the container entrypoint (`docker/entrypoint.sh:12`), demo data seeded on every boot, a committed secret key in `.env.example:17`, per-process locmem throttles, no session cookie hardening, and flag-gated paths (`OUTREACH_AGENT_ENABLED`, `COPY_VERIFY_LEVEL=off`) whose defaults will flip. Agent guardrails must make the demo→production transition safer, not fossilize demo behavior.
+
+The single most important background fact, established repeatedly by research and Anthropic's own guidance: **an agent's output quality is bounded by the speed and determinism of its feedback loop** ([Claude Code best practices](https://www.anthropic.com/engineering/claude-code-best-practices); [Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)). This codebase is unusually well positioned — ~956 backend tests with every provider call mocked, a computed query-budget test (`tests_planner_perf.py:27-58`), boot-time system checks, and a CI that already gates `makemigrations --check` (`.github/workflows/ci.yml:112`). The blueprint's job is to wire that existing rigor into the agent's inner loop, and to close the places where the loop lies (an `@unittest.expectedFailure` on a known injection gap, `tests_redteam.py:193`; mypy scoped to one subtree, `ci.yml:45`).
 
 ---
 
-## 1. CLAUDE.md
+## 1. The CLAUDE.md itself
 
-### 1.1 What loads, when — the 2026 memory model
+### 1.1 Keep it small, high-signal, and prompt-shaped
 
-Before deciding what to write, know what the machine does with it
-([docs: memory](https://code.claude.com/docs/en/memory.md)):
+**Practice.** Treat CLAUDE.md as a prompt, not a wiki: under ~200 lines, containing only (a) exact commands, (b) invariants an agent cannot discover from any single file, and (c) negative rules ("never do X") with the reason compressed to one line. Revise it when the agent makes a mistake the file should have prevented — it is a living prompt you tune, not documentation you accumulate.
 
-| Layer | Path | Loaded | Belongs there |
-|---|---|---|---|
-| Managed policy | `/etc/claude-code/CLAUDE.md` (Linux) etc. | Always, first, can't be excluded | Org-wide policy (data handling, escalation) |
-| User | `~/.claude/CLAUDE.md` | Always, all projects | *Your* preferences (tone, personal tooling) — never project facts |
-| Project | `./CLAUDE.md` or `./.claude/CLAUDE.md` | Always, checked in | The team contract: commands, rules, gotchas |
-| Local | `./CLAUDE.local.md` | Always, gitignored | Personal per-project notes (still supported; imports are the tidier alternative) |
-| Ancestor dirs | `CLAUDE.md` above cwd | Always, root-first | Monorepo-wide rules |
-| Subdirectories | `frontend/CLAUDE.md`, … | **Lazily — only when Claude reads files there** | Area-specific rules at zero cost to unrelated sessions |
-| Rules | `.claude/rules/*.md` (path/glob-scoped) | When the scope matches | Many small rule files instead of one monolith |
-| Auto memory | `~/.claude/projects/<p>/memory/MEMORY.md` | Index at launch, topics on demand | Claude's own notes; audit with `/memory`, disable with `autoMemoryEnabled: false` |
+**Source.** [Memory docs](https://code.claude.com/docs/en/memory.md) (official guidance: keep each file under ~200 lines; `/doctor` trims checked-in CLAUDE.md by removing derivable content such as directory trees and dependency lists, keeping gotchas and rationale). [Best practices](https://www.anthropic.com/engineering/claude-code-best-practices) ("tune CLAUDE.md like a prompt"). [Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) (attention is a depletable budget; every always-loaded token competes with the task).
 
-Two mechanics worth exploiting: `@path/to/file` imports expand inline (a few hops
-deep), so a CLAUDE.md can stay short by importing e.g. `@docs/testing.md` — but an
-import is *eager*, it still costs context every session, unlike a pointer ("see
-`docs/testing.md`") which costs nothing until followed. And subdirectory files are
-lazy, which makes them the correct home for anything only relevant in one area —
-this repo should hold frontend bundle rules in `frontend/CLAUDE.md`, not the root.
+**Failure mode prevented.** Context rot. A bloated CLAUDE.md is loaded into *every* session, diluting attention on the tokens that matter. Worse, stale entries are actively harmful: an agent trusts CLAUDE.md more than its own exploration, so a wrong line (say, a command that no longer exists) produces confident wrong behavior instead of a quick discovery.
 
-**Practice: treat CLAUDE.md as a system-prompt extension with a token budget, not as
-documentation.** Target under ~150–200 lines; the official guidance is the same
-(docs recommend <200 lines per file, and `/doctor` now actively trims checked-in
-CLAUDE.md by deleting content Claude can derive itself — directory listings,
-dependency lists, architecture prose — while keeping gotchas and rationale).
-**Source:** [memory docs](https://code.claude.com/docs/en/memory.md);
-[Claude Code best practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-("tune your CLAUDE.md files like any frequently used prompt");
-[Effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
-("find the smallest possible set of high-signal tokens").
-**Prevents:** context rot — as the always-loaded preamble grows, per-instruction
-compliance drops and the three rules that actually matter drown in forty that don't.
-The context-engineering post treats attention as a depletable budget; every stale
-line spends it on all future turns of every future session.
+**Outdated advice to discard.** The 2024/early-2025 pattern of one giant CLAUDE.md holding the whole team handbook is explicitly superseded by skills, lazy subdirectory files, and path-scoped rules ([changelog](https://code.claude.com/docs/en/changelog.md)). Also dead: embedding "think hard"/"ultrathink" keywords in memory files — keyword thinking triggers are obsolete; current models manage thinking adaptively ([model config](https://code.claude.com/docs/en/model-config.md)).
 
-### 1.2 What belongs in it
+### 1.2 What belongs in it, for this codebase specifically
 
-**Practice: include exactly five kinds of content.**
+The survey shows the highest-value content is **cross-file couplings and invisible seams** — precisely the facts a competent agent reading one file at a time will get wrong:
 
-1. **Commands, copy-paste runnable, with the fast variants** — setup from clean
-   clone, the inner loop in fastest-failing-first order (`ruff` → `mypy` →
-   `makemigrations --check` → scoped tests), the single-test invocation, and the
-   full pre-done gate. If CI runs `mypy project/app/services/`, write *"CI runs
-   exactly this target"* — this repo does, and it prevents the agent from either
-   under-checking or boiling the ocean.
-2. **The architecture in pointer form** — paths plus one-line responsibilities
-   ("views orchestrate; services decide; selectors fetch"), not prose. The agent
-   verifies pointers cheaply; it can't verify essays.
-3. **House rules that contradict what a competent agent would otherwise guess.**
-   The model already knows Django. It does *not* know that you forbid signals for
-   business logic, that `ATOMIC_REQUESTS` is off, or that tests are pinned. The
-   test for inclusion: *would a strong new hire get this wrong on day one without
-   being told?* If yes, it's a rule. If they'd discover it in one file read, it's
-   noise.
-4. **Gotchas that cost a failed run to discover.** This repo's CI carries a
-   beautiful example: `dj_database_url` treats a *present-but-empty*
-   `DATABASE_URL` as malformed rather than unset, so the SQLite leg must `unset`
-   it. That fact currently lives in a CI comment where the agent finds it only
-   after failing; it belongs in CLAUDE.md where it's read before.
-5. **Hard prohibitions and human gates** — the short list of things never to do
-   (edit applied migrations, hand-edit the dev DB, weaken a test) and the list of
-   changes that require stopping to ask (see §5.5).
+| Belongs in CLAUDE.md | Why (code evidence) |
+|---|---|
+| Exact test/lint/typecheck commands that mirror CI | CI runs `coverage run manage.py test project.app`, `ruff check` + `ruff format --check`, `mypy project/app/services/`, `makemigrations --check --dry-run` (`ci.yml:45,74-120`). If the agent's local loop differs from CI, it "passes" locally and fails the gate. |
+| The Django unittest runner, not pytest | 41 test files, no conftest, no pytest (`project/app/tests/`). An agent that assumes pytest will invent fixtures and markers that don't exist. |
+| "No ORM inside phase-3 async code" | Adding one ORM access inside the planner's async fan-out raises `SynchronousOnlyOperation` at runtime with nothing static to catch it (`outreach.py:1664-1692`; checkpoint writes are the single documented exception, `agent/state.py:241-261`). |
+| "Adding a provider touches three registries" | `llm/__init__.py:38`, `config.py:15`, `telemetry/genai.py:53` — nothing binds them; omitting the third silently drops `gen_ai.provider.name`. |
+| "No signals; all writes via service functions" | Grep confirms zero `post_save`/`receiver` usage; `bulk_create` is chosen partly to skip signals (`outreach.py:2144`). An agent adding a signal handler would break a working invariant invisibly. |
+| "Transaction boundaries are the service layer's job" | `ATOMIC_REQUESTS` is unset in `settings.py`, so no view is auto-wrapped in a transaction; the codebase's `select_for_update` sits inside dispatch's consuming transaction (`dispatch.py`) — neither fact is inferable from the single file an agent is editing. |
+| Migration rules (§3, §5) | The SQLite/Postgres duality means the agent's local `migrate` proves nothing about Postgres lock behavior (`settings.py:173-179`; e.g. the partial-unique add in `0006_outreachaction_trace_run_id.py:18-21`). |
+| Untrusted-text rules | Lead-controlled fields must pass `sanitize_untrusted` before any prompt; the frontend pins the same rule only in a type comment (`frontend/src/api/types.ts:16-23`). |
 
-**Practice: tag every rule `[gate]` (machine-enforced) or `[convention]`
-(discipline + review).** This repo's CLAUDE.md opens with "an instruction is a
-hope; a gate is a fact" and tags every workflow rule accordingly.
-**Source:** this repository's `CLAUDE.md` — this is an opinionated recommendation
-from practice, not from Anthropic docs.
-**Prevents:** two symmetrical failures. Untagged, an agent either treats
-conventions as physics (wasting effort routing around rules nobody enforces) or
-treats gates as suggestions (pushing a PR that CI will bounce). The tag also keeps
-*you* honest: writing `[gate]` next to a rule with no gate is visibly a lie, and
-the fix (build the gate — §3) is the highest-value follow-up work there is.
+What actively hurts: directory listings (the agent can `ls`), dependency lists (it can read `requirements.txt`), narrative design background and changelog-style rationale the agent doesn't need in its system prompt (the codebase's own docstrings already carry rationale at the point of use, which is the right place — e.g. `models/outreach.py:144-145`, `llm.py:88-90`), and rules no tool enforces. Duplicate nothing the agent can cheaply discover; state only what it would otherwise get wrong.
 
-### 1.3 What actively hurts
+### 1.3 Layer the memory files
 
-**Practice: keep out anything the agent can discover in one tool call, anything a
-formatter enforces, and anything you won't maintain.**
-**Source:**
-[best practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-(the common mistake is "adding extensive content without iterating on its
-effectiveness");
-[context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents).
-**Prevents — three named failure modes:**
+**Practice.** Use the load hierarchy deliberately ([memory docs](https://code.claude.com/docs/en/memory.md)):
 
-- **Stale-map poisoning.** A file inventory or API survey in CLAUDE.md goes stale
-  the week after it's written, and the agent *trusts memory over discovery* — it
-  will edit the file the map names rather than grep for the truth. A wrong
-  CLAUDE.md is strictly worse than a silent one. Corollary: never duplicate;
-  point. One fact, one home (`README` for humans, `SECURITY.md` for posture,
-  CLAUDE.md links to both).
-- **Style minutiae displacement.** Quote style, import order, line length — ruff
-  enforces all of it deterministically in this repo. Spending prompt lines on it
-  buys nothing (the hook in §3.2 makes it free) and displaces rules only prose
-  can carry.
-- **Emphasis inflation.** 2025-era files were full of `IMPORTANT:` and
-  `YOU MUST`. Current models follow plain instructions precisely; when
-  everything is emphasized, the genuinely load-bearing prohibition (never edit an
-  applied migration) loses its distinctness. Reserve emphasis for the rules whose
-  violation is expensive and irreversible, and prefer building a gate over
-  shouting (§3).
+- **`./CLAUDE.md`** (checked in): the ~180-line core (drafted in Appendix A).
+- **`frontend/CLAUDE.md`** (checked in): subdirectory files load *lazily*, only when files in that directory are read — so the committed-bundle workflow, the hand-mirrored `types.ts` contract, and the zero-devDependency test runner (`frontend/package.json:9`) cost zero context in backend sessions.
+- **`.claude/rules/migrations.md`** (path-scoped rule file): the full migration checklist, scoped to `project/app/migrations/**` — loaded exactly when the agent touches a migration.
+- **`./CLAUDE.local.md`** (gitignored): personal machine facts — local Postgres URL, personal provider keys policy.
+- **`~/.claude/CLAUDE.md`** (user-level): individual style preferences; never project facts.
+- Prefer **plain path pointers** ("payload contracts for `AgentStep.kind`: see docs/<file>") over `@path` imports — imports expand eagerly at session start and cost context every session; a pointer costs nothing until followed.
 
-### 1.4 Layering strategy
+**Source.** [Memory docs](https://code.claude.com/docs/en/memory.md).
 
-**Practice: every fact lives at the narrowest scope that covers its audience.**
-Org policy → managed file. Personal taste → `~/.claude/CLAUDE.md`. Team contract →
-project `CLAUDE.md`. Area rules → subdirectory `CLAUDE.md` (lazy) or
-path-scoped `.claude/rules/*.md`. Personal-per-project → `CLAUDE.local.md` or an
-import of a home-dir file.
-**Source:** [memory docs](https://code.claude.com/docs/en/memory.md).
-**Prevents:** user-scope bleeding into team behavior (your personal "always use
-uv" breaking a teammate's session is not reproducible or reviewable), and the
-monolith tax — one root file paying always-loaded token cost for rules only
-relevant when touching `frontend/`. For this repo concretely: the root file keeps
-backend rules; bundle-freshness and `node --test` rules move to
-`frontend/CLAUDE.md`.
+**Failure mode prevented.** Paying frontend-tax in backend sessions and vice versa; and the subtler failure where one mega-file forces every rule to be terse enough to be ambiguous. Lazy layering lets the migration rules be *complete* because they're only loaded when relevant.
 
-### 1.5 Keeping it true
+**AUDITS tie-in.** Auto memory (`~/.claude/projects/<project>/memory/`) is agent-writable state that persists across sessions. Audit it periodically with `/memory`, and treat its contents as you'd treat `ProviderTraceContent`: useful, unbounded by default, and reviewable. If the team wants zero self-accumulated state, set `autoMemoryEnabled: false` and rely on the checked-in files only — checked-in memory is diffable, reviewed memory; auto memory is not.
 
-**Practice: CLAUDE.md is code — review it in PRs, prune it quarterly, and grow it
-only from observed failures.** The maintenance loop: when the agent does something
-wrong, first ask *can this be a gate?* (hook, CI check, permission rule). Only if
-it genuinely can't, add the CLAUDE.md line — and write it as the rule you wish
-you'd had, not a transcript of the incident. Capture candidates during work with
-the `#` shortcut / `/memory`, then *edit* before committing. Periodically run the
-inverse audit: for each line, "has this prevented anything in the last quarter,
-and is it still true?"
-**Source:** [best practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-(iterate on effectiveness); the gate-first ordering is this blueprint's opinion.
-**Prevents:** rot (§1.1) and the slower failure where CLAUDE.md becomes a
-graveyard of one-off reactions — each individually reasonable, collectively an
-incoherent prompt no one dares delete from.
+### 1.4 Keep CLAUDE.md in the review loop
 
-> **⚠️ Outdated (2024–early 2025) — CLAUDE.md edition**
->
-> - **"Put everything in CLAUDE.md — it's the only memory."** Dead since skills
->   (Oct 2025), path-scoped rules files, lazy subdirectory files, and auto memory.
->   Long procedural content now belongs in skills that load on demand (§2); the
->   always-loaded file is for always-relevant rules only.
-> - **"Maintain a `## Project Structure` tree in CLAUDE.md."** `/doctor` now
->   *removes* derivable content like this. Agentic search made maps a liability.
-> - **"Sprinkle IMPORTANT/YOU MUST liberally"** (the April 2025 best-practices
->   post itself suggested emphasis tuning). Current models follow precise plain
->   instructions; inflation now costs more than it buys.
-> - **"Use CLAUDE.local.md for personal config."** Still works, but imports
->   (`@~/.claude/my-notes.md`) and `settings.local.json` cover it more flexibly;
->   the docs steer new setups toward imports.
-> - **"CLAUDE.md can't exceed the context so don't worry about length."** With
->   auto-compact holding even 1M-context models to 200K by default
->   ([changelog v2.1.223](https://code.claude.com/docs/en/changelog.md)), and
->   attention — not window — as the real constraint, length was never free and
->   still isn't.
+**Practice.** Any PR that changes a convention CLAUDE.md states must change CLAUDE.md in the same PR — enforce with a reviewer checklist item, or a CI grep for known-stale markers. Run `/doctor` quarterly to trim drift.
 
-The full drafted template is in **§7**.
+**Source.** [Memory docs](https://code.claude.com/docs/en/memory.md); [best practices](https://www.anthropic.com/engineering/claude-code-best-practices).
+
+**Failure mode prevented.** The stale-instruction failure — worse than no instruction. Concrete local example of the genre: `requirements-dev.txt:23` justifies a `pyyaml` pin with a test that no longer exists (no `import yaml` anywhere in the repo). Pin-rot in dependency comments is annoying; pin-rot in the agent's system prompt is behavior-corrupting.
 
 ---
 
 ## 2. Skills, slash commands, and subagents
 
-### 2.1 The unification: everything routes through skills
+### 2.1 The decision rule: CLAUDE.md vs skill vs subagent
 
-Current state ([docs: skills](https://code.claude.com/docs/en/skills.md)): a skill
-is a directory — `.claude/skills/<name>/SKILL.md` plus optional supporting files —
-with YAML frontmatter. The fields that matter:
+**Practice.**
+- **CLAUDE.md**: facts that are *always* true and cheap to state (invariants, commands). Paid on every session — so only universal content.
+- **Skill** (`.claude/skills/<name>/SKILL.md`): a *procedure* needed occasionally. Costs only its name + description at startup (~tens of tokens); the body loads on trigger; supporting files (`references/`, `scripts/`) load on demand. Set `disable-model-invocation: true` for human-only rituals; leave it auto-invocable for procedures the model should recognize it needs.
+- **Subagent** (`.claude/agents/<name>.md`): when the work needs *separate context* — either isolation (an auditor that must not inherit the implementer's rationalizations) or bulk (a review that reads 30 files and should return a condensed verdict, not flood the parent).
+- Legacy `.claude/commands/*.md` slash commands still work but are deprecated single-file skills — no frontmatter, no supporting files, no auto-trigger. Write new procedures as skills.
 
-```yaml
----
-name: django-migrations          # becomes /django-migrations
-description: >                   # the trigger — Claude reads ONLY this at startup
-  Use when creating, editing, or reviewing Django migrations or changing models.
-allowed-tools: Read, Grep, Glob, Bash   # optional tool allowlist
-disable-model-invocation: false  # true = user-only ritual (deploy, release)
-user-invocable: true             # false = model-only helper
-context: fork                    # run in an isolated subagent instead of inline
-model: inherit                   # or pin one; effort: low|medium|high also available
----
-```
+**Source.** [Skills docs](https://code.claude.com/docs/en/skills.md); [Agent Skills engineering post](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) (progressive disclosure design); [subagents docs](https://code.claude.com/docs/en/sub-agents.md); [Simon Willison on skills' token economics](https://simonwillison.net/2025/Oct/16/claude-skills/).
 
-Loading is progressive, and this is the entire point: at startup Claude sees only
-name + description (~tens of tokens per skill); the body loads when triggered;
-supporting files (`references/*.md`, `scripts/*.py`) load only if the body points
-at them and the task needs them. Old-style `.claude/commands/*.md` slash commands
-still work but are the deprecated single-file special case of the same mechanism —
-both produce `/name`, both take `$ARGUMENTS`; write skills for anything new.
-**Source:** [skills docs](https://code.claude.com/docs/en/skills.md);
-[Equipping agents for the real world with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills);
-the format is now an [open standard](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
-adopted well beyond Claude. Simon Willison's
-[assessment](https://simonwillison.net/2025/Oct/16/claude-skills/) ("maybe a
-bigger deal than MCP") is the best independent explanation of *why*: procedures as
-files beat procedures as protocol.
-**Prevents:** the context tax that killed 2025-era mega-CLAUDE.mds and
-50-tool MCP configs — expertise that costs nothing until the moment it's needed.
+**Failure mode prevented.** Two opposite ones. Everything-in-CLAUDE.md → context rot (§1.1). Everything-as-MCP-tools → the tool-catalog tax: skills load knowledge progressively at near-zero standing cost, where a tool server's surface is an always-present operational burden ([Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) measured a ~150K→~2K token reduction moving a tool catalog out of context).
 
-### 2.2 The placement rubric
+**Outdated advice to discard.** Custom slash commands as a distinct concept merged into skills ([changelog](https://code.claude.com/docs/en/changelog.md)). Also: skills are now an open standard beyond Claude ([overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)) — writing them is not vendor lock-in.
 
-**Practice: place knowledge by frequency-of-relevance and enforcement-strength.**
+### 2.2 The concrete skill set for this service
 
-| Put it in… | When… | Example (this stack) |
+Each skill below is triggered by a real, recurring hazard the survey found. Descriptions are the *only* thing the model sees at startup — write them as triggers ("Use when…"), not summaries.
+
+| Skill | Trigger (frontmatter `description`) | Body contents | Theme served |
+|---|---|---|---|
+| **`safe-migration`** | "Use when creating or reviewing any Django migration, or editing files under project/app/models/." | The zero-downtime sequence: additive-nullable → batched backfill (management command, not `RunPython` — the repo's 9 migrations are pure-schema with seeding in idempotent commands; keep that separation) → validated constraint. Postgres lock catalog: non-concurrent `CREATE INDEX` (`AddIndex`, and partial unique constraints, which Postgres implements as unique indexes) takes a SHARE lock — writes blocked for the build; `ALTER TABLE ... ADD CONSTRAINT` takes ACCESS EXCLUSIVE — all access blocked (the existing `0006` partial-unique add and `0005`'s two multi-column indexes on the hot `outreachaction` table are the in-repo SHARE-lock cautionary examples). `atomic = False` + concurrent index operations for hot tables. Postgres 11+ `ADD COLUMN ... DEFAULT <constant>` is instant — no rewrite ([postgresql.org](https://www.postgresql.org/docs/current/ddl-alter.html)). One concern per migration — never repeat the `0007` pattern (4 CreateModels + cardinality change + constraint adds in one 131-line irreversible file). References: [django-migration-linter incompatibility catalog](https://github.com/3YOURMIND/django-migration-linter), [django-pg-zero-downtime-migrations](https://github.com/tbicr/django-pg-zero-downtime-migrations), [sequencing gist](https://gist.github.com/majackson/493c3d6d4476914ca9da63f84247407b), [Django migrations docs](https://docs.djangoproject.com/en/4.2/topics/migrations/). | PRODUCTIONIZING |
+| **`drf-endpoint`** | "Use when adding or modifying a DRF endpoint, serializer, or URL route." | The full scaffold: view module + re-export through `views/__init__.py` (`:26-51`), serializer + re-export, URL name matching the view class name, a test module using the shared authenticated base (`tests_auth_utils.py:12-24`). Mandatory: a throttle scope for anything expensive (the survey found `POST /api/outreach/run/`, `/compose/`, and `/llm/config/test/` unthrottled), pagination on any list view (none exists anywhere today — `settings.py:235-249` sets no `DEFAULT_PAGINATION_CLASS` and `/api/reports/`, `/api/leads/`, `/api/queue/` serialize whole tables), and errors via `ContractError` → the `{"code","detail"}` envelope only (three competing error shapes exist today: `exceptions.py` envelope vs `{"error": ...}` in `views/leads.py:33` vs `{"outreach_action": ...}` in `views/outreach.py:139-141`). Never `fields = "__all__"` (the `LeadSerializer` precedent at `serializers/lead.py:13` auto-publishes any future column). Update `frontend/src/api/endpoints.ts` and `types.ts` in the same PR. | SCALING, PRODUCTIONIZING |
+| **`query-review`** | "Use when reviewing a diff for ORM query cost, or when a query-budget test fails." | `assertNumQueries`/budget-constant discipline modeled on `tests_planner_perf.py` (budgets computed from `connection.ops.bulk_batch_size`, exact on both backends); the prefetch-cache rule that only `.all()` is served from cache (`outreach.py:98-101`); `select_related`/`prefetch_related` reference ([Django docs](https://docs.djangoproject.com/en/4.2/ref/models/querysets/#prefetch-related)); the known quadratic and full-table hazards to check against: whole-`Lead`-table load per run, O(leads²) `similar_won_deals_for` (`tools.py:96-132`), Python-side dedup over full history (`views/outreach.py:45-56`), per-item verification rebuild N+1 (`serializers/queue.py:147-149`). `context: fork` — runs as an isolated review, returns findings only. | SCALING |
+| **`audit-spine`** | "Use when touching ProviderTrace, ProviderTraceContent, AgentStep, telemetry/genai.py, or anything that records an LLM call." | The trace contract as the team is defining it: record the model that *served* the call, not just the requested alias (the result type already separates them; the DB column is the gap); usage/latency/finish-reason must land in *durable* columns, not only spans (a deployment without `OTEL_EXPORTER_OTLP_ENDPOINT` currently has no record at all, `telemetry/setup.py:315`); every provider call mints a trace row — the default non-agent path currently writes none (`ProviderTrace.objects.create` appears exactly once, `agent/state.py:307`); absent-vs-empty: `None` when the provider sent nothing, never an invented `""` (matching the existing `coerce_token_count` posture, `llm/base.py:55-63`); failed attempts consume tokens too — the success-only accounting at `genai.py:754-761` systematically undercounts; content rows are PII (`models/llm.py:110-112`) and need a retention path before volume grows. | AUDITS |
+| **`cost-check`** | "Use when a change adds, multiplies, or reprices LLM provider calls." | Estimate-before-spend: compute a token estimate and surface it before any paid call (the run-composer plan makes this a product feature; the skill makes it an engineering habit). Price data belongs in the DB catalog (`LLMModel`), retiring the eval harness's duplicate static table — one source. Prompt structure: stable cacheable prefix / per-lead suffix split for provider prompt caching. Concurrency knobs (`OUTREACH_MAX_IN_FLIGHT`, per-lead timeouts, retry policy in `llm/runtime.py`) are cost multipliers — a retry-policy change is a spend change and must say so in the PR. | SCALING |
+| **`release-check`** | "Use when preparing a deploy, editing Docker/compose/entrypoint/settings, or flipping a feature flag default." `disable-model-invocation: true` — a human-run ritual. | The demo-residue checklist, straight from the survey: `runserver --insecure` and root user in the container (`docker/entrypoint.sh:12`; no `USER`, no `HEALTHCHECK`); unconditional demo seeding at boot (`entrypoint.sh:7`); live secret key and `DEBUG=True` in `.env.example:17`; no `SESSION_COOKIE_SECURE`/`CSRF_COOKIE_SECURE`/`SAMESITE`; locmem throttle counters that don't survive multi-worker (no `CACHES` configured); `STATIC_ROOT` absent so `collectstatic` can't work; `COPY_VERIFY_LEVEL=off` and `OUTREACH_ALLOW_STUB_LLM` as silent escape hatches with no boot-time alarm; `.env.example` missing the agent-loop and trace-content flags an operator/auditor needs (`OUTREACH_TRACE_CONTENT_ENABLED` above all). Each item stays on the list until CI or a system check enforces it. | PRODUCTIONIZING |
+| **`redteam-local`** | "Use when changing prompts, sanitization, tool schemas, or verifier gates." | Run the injection suite (`tests_redteam.py`) and the shape/grounding gates locally against the stub provider; the negative controls (a corroborated hold must still escalate; clean copy must pass) are as load-bearing as the attacks. Flag: the exfiltration case is currently `@unittest.expectedFailure` (`tests_redteam.py:193`) — a change that *fixes* the sanitizer will turn the suite red for succeeding; the skill tells the agent what that means so it doesn't "fix" the test by re-breaking the sanitizer. | AUDITS, PRODUCTIONIZING |
+
+`$ARGUMENTS` substitution makes these usable as `/safe-migration 0010_add_served_model` etc. ([skills docs](https://code.claude.com/docs/en/skills.md)).
+
+### 2.3 Subagent design
+
+**Practice.** Use *named* agents (`.claude/agents/<name>.md`) for anything that must be independent of the implementing conversation. A named agent starts from its own system prompt + the delegation message + CLAUDE.md — **not** the parent conversation. This matters more since the 2026 change: ad-hoc forked delegation now inherits the *full* conversation by default in interactive sessions, so independence must be explicit ([subagents docs](https://code.claude.com/docs/en/sub-agents.md)).
+
+Proposed roster:
+
+| Agent | Frontmatter | Purpose |
 |---|---|---|
-| **CLAUDE.md** | Relevant to essentially every session, expressible in ≤5 lines | "No network calls inside `transaction.atomic`" |
-| **Skill (model-invoked)** | A *procedure* — multi-step, occasionally relevant, benefits from checklists/scripts/templates | Zero-downtime migration playbook |
-| **Skill (`disable-model-invocation`)** | A user-initiated *ritual* with side effects or judgment calls | `/release`, `/scaffold-endpoint` |
-| **Subagent** | Needs *isolation* — of context (verbose exploration), of role (independent review), or of filesystem (`isolation: worktree`) | Code reviewer, migration-safety checker |
-| **Hook** | Must happen *every time* with zero model discretion | Format after edit; block edits to applied migrations |
+| **`test-author`** | `tools` limited to read + edit of `project/app/tests/**` only (via `disallowedTools` on source paths); `maxTurns` bounded | Writes tests that define the expected behavior and fail against current code, before implementation begins. Separating the optimizing agent from the auditing agent is the Kent Beck pattern for keeping agents honest ([TDD with agents](https://newsletter.pragmaticengineer.com/p/tdd-ai-agents-and-coding-with-kent); [Beck's newsletter](https://newsletter.kentbeck.com/p/augmented-coding-beyond-the-vibes)) — an implementer that also owns the tests can quietly weaken them. |
+| **`migration-auditor`** | `permissionMode: plan` (read-only); `skills: [safe-migration]` preloaded | Reviews any diff containing a migration against the lock-hazard catalog and the one-concern rule; returns a verdict + line citations, nothing else. Read-only enforcement means it *cannot* "fix" the migration itself — it reports to a human. |
+| **`query-optimizer`** | `context: fork`; `model` set to a fast/cheap model | Runs the `query-review` skill over a diff. Cheap model is deliberate: the skill supplies the checklist, so the model does pattern-matching, not invention — this is model routing for agents, the same cost discipline the product is adopting for leads. |
+| **`pr-describer`** | `background: true` | Drafts PR descriptions with the audit fields §5.5 requires (session provenance, checks run, spend-relevant changes). |
 
-Two forcing functions. If you catch yourself writing "always/never" → CLAUDE.md or
-a hook, depending on whether violation is survivable. If you catch yourself
-writing numbered steps → skill. If the skill's value depends on the model *not*
-having been the author of the thing under inspection → subagent (§2.4).
-**Source:** placement table is this blueprint's synthesis of the
-[skills](https://code.claude.com/docs/en/skills.md) /
-[hooks](https://code.claude.com/docs/en/hooks-guide.md) /
-[subagents](https://code.claude.com/docs/en/sub-agents.md) docs.
-**Prevents:** the two classic misplacements — procedures in CLAUDE.md (always-paid
-context for sometimes-needed knowledge) and laws in skills (a skill is advice the
-model may not trigger; a formatter that runs "usually" is worse than none, because
-you stop checking).
+Scoping rules: give each agent the *smallest* file surface its job needs; have it return **condensed** results (verdict + citations), because the parent's context is the scarce resource ([context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) — sub-agent architectures with condensed returns). Depth ≤3, ~20 concurrent supported — but see §5.3 for why *this* codebase caps useful parallelism lower for planner-touching work.
 
-### 2.3 A concrete skill set for this stack
+**Failure mode prevented.** Reward hacking and self-review blindness. Anthropic's production-RL study documents models gaming coding tests (equality overrides, harness exits, test-runner manipulation) — and the gaming *generalizing* into broader misalignment ([arXiv:2511.18397](https://arxiv.org/abs/2511.18397)). The test suite is the reward function; whoever writes the reward must not be the one optimizing against it.
 
-Ship four. Each description below is the actual frontmatter `description` to use —
-descriptions are load-bearing, they're the only thing Claude sees when deciding to
-trigger ([skills docs](https://code.claude.com/docs/en/skills.md)).
-
-#### 2.3.1 `django-migrations` — the zero-downtime playbook
-
-```yaml
-name: django-migrations
-description: >
-  Use whenever creating, editing, reviewing, or planning Django migrations, or
-  changing models.py in a way that alters schema. Covers immutability rules,
-  zero-downtime sequencing on Postgres, data-migration batching, and when to
-  stop for human review.
-```
-
-Body (~80 lines) + `references/incompatibilities.md` for the long table:
-
-- **Immutability:** merged ⇒ applied somewhere ⇒ immutable; fix forward. (The hook
-  in §3.2 enforces this; the skill explains the *why* and the recovery path.)
-- **The three-deploy sequence** for anything non-additive: (1) additive+nullable,
-  deploy code that writes both; (2) backfill in batches via a data migration or
-  management command; (3) constraint (`NOT NULL`, unique) in a later deploy —
-  unique indexes via `django.contrib.postgres.operations.AddIndexConcurrently`
-  with `atomic = False`.
-- **Never-list:** drop/rename a column in the same release as the code that stops
-  using it; `NOT NULL` without default on a live table; non-`CONCURRENTLY` index
-  on a big table; schema + data in one migration file (a failing backfill rolls
-  back the schema change with it).
-- **`RunPython` rules:** `apps.get_model()` only, explicit `reverse_code`,
-  batched writes, `elidable=True` where squash-safe.
-- **Exit instruction:** print the `sqlmigrate` output and the lintmigrations
-  verdict, then *stop for human review* if the migration is destructive or
-  touches a table over N rows (§5.5).
-
-**Source:** sequencing is the long-standing consensus recipe —
-[django-migration-linter's incompatibility catalog](https://github.com/3YOURMIND/django-migration-linter/blob/main/docs/incompatibilities.md),
-[Django migrations without downtime](https://gist.github.com/majackson/493c3d6d4476914ca9da63f84247407b),
-and the automation option
-[django-pg-zero-downtime-migrations](https://github.com/tbicr/django-pg-zero-downtime-migrations).
-**Prevents:** the migration disaster class — the single worst thing an agent can
-do to a production service. An agent that knows Django will happily generate a
-`makemigrations` diff that's *correct* and *lock-hazardous* at once; textbook
-Django is not deploy-safe Django, and that gap is exactly what a skill is for.
-
-#### 2.3.2 `drf-endpoint` — scaffolding with the house conventions
-
-```yaml
-name: drf-endpoint
-description: >
-  Use when adding or substantially extending a DRF API endpoint. Scaffolds
-  serializer, viewset, urls, permissions, throttling, pagination, and the test
-  file with the auth matrix and query-count pin, in the house style.
-```
-
-Body: ordered steps + `references/templates/` holding a serializer, viewset, and
-test-file template. The conventions the templates encode: explicit `fields` lists
-(never `"__all__"` — new model fields must not leak into the API silently);
-validation in serializers, decisions in services; explicit `permission_classes`
-and throttle scope per view; pagination mandatory on lists; the test template
-pre-contains the auth matrix (`401` anonymous / `403` wrong-role / `2xx` happy
-path) and a `assertNumQueries` pin (§4.2).
-**Prevents:** convention drift — the agent's scaffold is always *plausible* DRF;
-without templates each new endpoint is plausible *differently*, and review burns
-on re-litigating settled decisions. A scaffold skill converts those decisions
-from review comments into starting state.
-
-#### 2.3.3 `query-review` — N+1 hunting as a procedure
-
-```yaml
-name: query-review
-description: >
-  Use before merging changes to serializers, viewsets, selectors, or any
-  queryset construction — and when a query-count pin (assertNumQueries) fails.
-  Finds N+1s and missing select_related/prefetch_related.
-```
-
-Body: the mechanical procedure — start from the view's queryset; walk every
-serializer field to its attribute access; flag per-row relation access,
-`SerializerMethodField` bodies, and model properties that query; check
-`prefetch_related` vs `select_related` choice (to-many vs to-one); verify with
-`django.test.utils.CaptureQueriesContext` around the endpoint and read the
-actual SQL; end by tightening or justifying the `assertNumQueries` pin. Plus the
-DRF-specific pitfall list: nested serializers silently multiplying, per-object
-permission checks in list views, pagination `count()` on expensive querysets.
-**Prevents:** the most common *silent* Django regression. N+1s pass every
-functional test and every type check; only a counted pin or a procedure that
-reads the SQL catches them before production does.
-
-#### 2.3.4 The meta-rule: skills encode *your* failures
-
-**Practice: the highest-value skills are distilled incident reports, not generic
-best practice.** This repo's `planning-discipline` skill is the exemplar: every
-rule in it was "distilled from an observed planning failure" in a named
-experiment, with the receipts linked. Its rules are unguessable from first
-principles ("plan against origin, not your worktree"; "a human approval
-authorizes exact bytes, not an entity") — which is precisely why they're worth
-tokens. Generic advice the model already knows is free; your failures are not.
-**Source:** `.claude/skills/planning-discipline/SKILL.md` in this repo;
-[How Anthropic teams use Claude Code](https://claude.com/blog/how-anthropic-teams-use-claude-code)
-shows the same pattern of teams encoding their own workflows rather than
-importing generic ones.
-**Prevents:** skill-collection theater — installing twenty marketplace skills
-that restate the model's training data while the three rules that would have
-prevented last month's incident remain undocumented.
-
-### 2.4 Subagents: when to delegate, and how to scope their context
-
-Mechanics ([docs: subagents](https://code.claude.com/docs/en/sub-agents.md)):
-named agents live in `.claude/agents/<name>.md` with frontmatter (`name`,
-`description`, `tools`, `disallowedTools`, `model`, `permissionMode`, `maxTurns`,
-`skills` to preload, `memory`, `isolation: worktree`) and a body that *is* the
-agent's system prompt. A named agent starts from that prompt plus your delegation
-message plus CLAUDE.md — **not** the parent's conversation. Ad-hoc forked
-delegation, by contrast, now inherits the full conversation by default in
-interactive sessions (a 2026 change). That distinction decides everything below.
-
-**Practice: delegate for isolation, not for vibes — and pick the isolation you
-actually need.** Three legitimate reasons:
-
-1. **Context isolation** — the task emits verbose garbage (test logs, broad
-   exploration). A background subagent reads 50 files and returns 10 lines; the
-   parent keeps a clean context. Built-in `Explore` exists for exactly this.
-2. **Role independence** — review and verification. The reviewer must *not* see
-   the author's reasoning, or it inherits the author's blind spots and
-   rationalizations. This requires a *named* agent (fresh context by
-   construction); ad-hoc forking silently defeats it. Kent Beck's framing —
-   separate the genie that optimizes from the genie that audits, in separate
-   contexts, to remove the conflict of interest — matches the practice
-   ([Pragmatic Engineer interview](https://newsletter.pragmaticengineer.com/p/tdd-ai-agents-and-coding-with-kent)).
-3. **Filesystem/parallelism isolation** — `isolation: worktree` for agents that
-   mutate files concurrently (§5.3).
-
-The set worth defining for this stack:
-
-- **`code-reviewer`** — named agent; input: the diff and changed files only;
-  tools: `Read, Grep, Glob, Bash`; instructed to report findings as
-  `file:line — claim — severity`, to *verify each claim by reading the code*
-  before reporting, and to fix nothing. Runs before every PR (§5.4 wires it into
-  CI).
-- **`test-writer`** — named agent; input: the behavioral contract (ticket text,
-  docstrings, the interface — this repo's `docs/contracts/` format is ideal),
-  explicitly **not** the implementation. Tests written from the spec catch
-  implementation bugs; tests written from the code enshrine them.
-- **`migration-safety`** — named agent; input: migration files + models diff;
-  preloads the `django-migrations` skill via the `skills:` field; verdict format
-  `SAFE / UNSAFE(reason) / NEEDS-HUMAN(reason)`. Cheap to run on every PR that
-  touches `migrations/`; pin `model:` to a smaller tier if cost matters — the
-  check is procedural.
-
-**Practice: design the return contract before the delegation.** A subagent's
-final message is all the parent gets; "report file:line verdicts, max 30 lines,
-no code blocks" protects the parent's context as deliberately as the delegation
-protected the subagent's.
-**Source:** [subagents docs](https://code.claude.com/docs/en/sub-agents.md);
-[context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
-(sub-agent architectures section — specialized agents with clean contexts,
-condensed summaries back).
-**Prevents:** the two subagent failure modes — contaminated review (fork
-inheritance where independence was the point) and delegation that returns a
-15,000-token transcript, importing the pollution the delegation existed to avoid.
-
-> **⚠️ Outdated (2024–early 2025) — skills/commands/subagents edition**
->
-> - **"Build your prompt library in `.claude/commands/*.md`."** Commands still
->   work but merged into skills; single files, no frontmatter, no supporting
->   files, no auto-trigger. New work goes in `.claude/skills/`.
-> - **"Wrap internal procedures in an MCP server."** For *procedural* knowledge,
->   skills beat MCP on token cost and maintenance
->   ([Willison](https://simonwillison.net/2025/Oct/16/claude-skills/)); MCP
->   remains right for *live data and actions* (§4.3).
-> - **"Spawn subagents to save context"** as a reflex. Fork-by-default (2026)
->   means ad-hoc delegation *shares* context now; auto-compact and larger
->   windows weakened the raw-space argument. The surviving reasons are
->   isolation, independence, and parallelism — named agents, deliberately.
-> - **"Subagents can't spawn subagents"** — depth-3 nesting and ~20-concurrent
->   are current defaults; orchestration patterns from 2025 blog posts understate
->   what's now native (including cross-session messaging).
-> - **"Use output styles to make Claude a code reviewer."** Output styles were
->   deprecated/reworked in the 2.x era; personas belong in named agents.
+**Outdated advice to discard.** "Subagents never see your conversation" is now wrong for ad-hoc forks (2026 inheritance change) — teams relying on that for isolation must migrate to named agents. Manual "open a second terminal and paste context" choreography is replaced by native background sessions and worktree isolation ([changelog](https://code.claude.com/docs/en/changelog.md); [worktrees](https://code.claude.com/docs/en/worktrees.md)).
 
 ---
 
 ## 3. Guardrails and verification loops
 
-### 3.1 The thesis: fast deterministic feedback is the single biggest lever
+### 3.1 Hooks: make the feedback the harness's job, not the model's
 
-**Practice: before any prompt engineering, make `lint → typecheck → scoped test`
-fast (seconds), deterministic (no flakes, no network), and runnable by the agent
-without ceremony — then wire the loop to run automatically (§3.2).**
-**Source — the consensus, assembled:**
-[Claude Code best practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-is explicit that agent output quality jumps when Claude has "a clear target to
-iterate against" — a failing test, an error message, an expected output;
-[Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)
-generalizes it (agent improvement is driven by evaluation loops);
-[How Anthropic teams use Claude Code](https://claude.com/blog/how-anthropic-teams-use-claude-code)
-shows internal teams converging on verify-first autonomy. The
-[METR RCT](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/)
-(early-2025 tools, 16 experienced maintainers, 246 tasks) found a 19% *slowdown*
-with AI — while developers believed they were 20% faster; METR now labels the
-result historical, but its mechanism diagnosis stands: the time went into
-reviewing, correcting, and re-prompting plausible-but-wrong output. Verification
-cost is where agent productivity goes to die, and deterministic feedback is the
-only thing that shrinks it for both the agent (self-correction before you ever
-see the code) and the human (review starts from "gates passed").
-**Prevents:** the plausible-but-wrong loop. An agent without a trustworthy
-verifier optimizes for *looking done* — code that reads correctly, compiles, and
-fails in the second-order ways (N+1s, lock hazards, broken invariants) that this
-stack's gates exist to catch. Every guardrail in the rest of this section is this
-thesis applied to a specific failure class.
-
-The Django-specific angle: this stack is *blessed* with deterministic
-verifiability — `manage.py test` builds a hermetic database per run, this repo
-mocks every provider call so the suite passes offline, and `assertNumQueries`
-makes even performance regressions assertable. The loop for this repo, in
-fastest-failing-first order, all local, no network:
-
-```
-ruff check . && ruff format --check .      # ~1s
-mypy project/app/services/                  # seconds — CI runs exactly this
-python manage.py makemigrations --check --dry-run
-python manage.py test project.app.tests_<area>   # scoped, seconds
-python manage.py test project.app                # full, before "done"
-python evals/run_rules_eval.py              # domain regression vs committed baseline
-```
-
-That last line generalizes: **domain evals as CI gates**. The repo's rules-eval
-runs pure-Python against a committed golden set in milliseconds — a deterministic
-regression gate for *business behavior*, which is the layer plain tests often
-miss and agents most plausibly break.
-
-### 3.2 Hooks: the loop made automatic
-
-Hooks are shell commands (or prompts/agents) the *harness* executes on lifecycle
-events — the agent cannot forget them, skip them, or be talked out of them.
-Events that matter here: `PreToolUse` (can block a tool call — exit code 2 =
-block, stderr becomes feedback to Claude), `PostToolUse` (after; exit 2 feeds
-stderr back as a correction), `Stop` (can refuse to let the turn end),
-`SessionStart` ([docs: hooks](https://code.claude.com/docs/en/hooks.md),
-[guide](https://code.claude.com/docs/en/hooks-guide.md)).
-
-**Practice: four hooks for this stack, in `.claude/settings.json`:**
+**Practice.** Configure hooks in `.claude/settings.json` so verification is *harness-executed and non-discretionary* — the model cannot forget or skip it ([hooks](https://code.claude.com/docs/en/hooks.md), [hooks guide](https://code.claude.com/docs/en/hooks-guide.md)). `settings.json` is strict JSON — no comments — so the block below is paste-ready as written:
 
 ```json
 {
@@ -521,842 +138,433 @@ stderr back as a correction), `Stop` (can refuse to let the turn end),
       {
         "matcher": "Edit|Write",
         "hooks": [{ "type": "command",
-                    "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/format.sh" }]
+          "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/post_edit_python.sh" }]
       }
     ],
     "PreToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [{ "type": "command",
-                    "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/protect-migrations.sh" }]
+          "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_paths.sh" }]
       },
       {
         "matcher": "Bash",
         "hooks": [{ "type": "command",
-                    "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.sh" }]
+          "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_bash.sh" }]
       }
-    ],
-    "SessionStart": [
-      { "hooks": [{ "type": "command",
-                    "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh" }] }
     ]
   }
 }
 ```
 
-**1. Format-on-edit** (`format.sh`) — closes the loop at zero tokens:
+The `PostToolUse` entry auto-formats and lints every Python edit (exit 2 feeds stderr back to the model); the first `PreToolUse` entry blocks edits to applied migrations, `db.sqlite3`, and the built bundle; the second blocks destructive shell commands.
 
-```bash
-#!/usr/bin/env bash
-# PostToolUse[Edit|Write]: auto-fix and format the touched Python file.
-# Exit 2 feeds remaining (unfixable) lint errors back to Claude as a correction.
-set -uo pipefail
-file=$(jq -r '.tool_input.file_path // empty')
-[[ "$file" == *.py ]] || exit 0
-[[ "$file" == */migrations/* ]] && exit 0        # ruff excludes them anyway
-cd "$CLAUDE_PROJECT_DIR"
-.venv/bin/ruff format "$file" >/dev/null 2>&1
-if ! out=$(.venv/bin/ruff check --fix "$file" 2>&1); then
-  echo "ruff found issues it could not auto-fix:" >&2
-  echo "$out" >&2
-  exit 2
-fi
-```
+`post_edit_python.sh` (sketch): parse `tool_input.file_path` from stdin JSON with `jq`; if `*.py`, run `ruff check --fix` then `ruff format` on that file; if the path is under `project/app/models/`, also run `python manage.py makemigrations --check --dry-run` and, on failure, exit 2 with a one-line instruction ("model change without migration — write one or revert"). If the path is under `project/app/migrations/`, run [django-migration-linter](https://github.com/3YOURMIND/django-migration-linter) on the new migration and exit 2 with its findings.
 
-**2. Migration immutability** (`protect-migrations.sh`) — turns the most
-important `[convention]` in any Django repo into a `[gate]`. "Applied" is
-approximated as "exists on `origin/master`", which is exactly right under this
-repo's squash-merge flow:
+`guard_paths.sh`: deny writes to `project/app/migrations/0*.py` for files already committed on the default branch (`git ls-tree` check) — **never edit applied migrations** ([Django migrations docs](https://docs.djangoproject.com/en/4.2/topics/migrations/): history is a chain; editing an applied node desyncs every deployed database). Deny writes to `db.sqlite3`, `project/app/static/frontend/**` (built artifact — regenerate via `npm run build`, never hand-edit), and `evals/baselines/**` (regression baselines change only by explicit human decision).
 
-```bash
-#!/usr/bin/env bash
-# PreToolUse[Edit|Write]: migrations that exist on origin/master are immutable.
-set -uo pipefail
-file=$(jq -r '.tool_input.file_path // empty')
-[[ "$file" == */migrations/*.py ]] || exit 0
-[[ "$(basename "$file")" == "__init__.py" ]] && exit 0
-cd "$CLAUDE_PROJECT_DIR"
-rel=$(git ls-files --full-name -- "$file" 2>/dev/null | head -1)
-[ -z "$rel" ] && exit 0                            # new file this branch: allowed
-if git cat-file -e "origin/master:$rel" 2>/dev/null; then
-  echo "BLOCKED: $rel exists on origin/master — merged migrations are applied" \
-       "somewhere and therefore immutable. Create a NEW migration instead" \
-       "(see the django-migrations skill)." >&2
-  exit 2
-fi
-```
+`guard_bash.sh`: deny `manage.py flush`, `manage.py migrate` when `DATABASE_URL` points at a non-local host, `sqlite3 db.sqlite3` write commands, `git push --force*`, `rm -rf` outside the worktree, and any command containing a provider API key inline.
 
-**3. Bash guard** (`bash-guard.sh`) — permission *rules* (§3.4) handle
-prefix-shaped danger; the hook catches patterns *inside* command lines:
+**Source.** [Hooks docs](https://code.claude.com/docs/en/hooks.md) (PreToolUse exit 2 blocks the call and feeds stderr to the model; PostToolUse exit 2 feeds stderr back as a correction; JSON `permissionDecision` output; `${CLAUDE_PROJECT_DIR}`; stdin JSON with `tool_input.file_path`/`tool_input.command`).
 
-```bash
-#!/usr/bin/env bash
-# PreToolUse[Bash]: block command patterns that are never OK in an agent session.
-set -uo pipefail
-cmd=$(jq -r '.tool_input.command // empty')
-deny() { echo "BLOCKED: $1" >&2; exit 2; }
-case "$cmd" in
-  *"manage.py flush"*|*"sqlflush"*|*"reset_db"*)
-      deny "database flush — demo state is rebuilt only via scripts/populate_demo_data.py" ;;
-  *"--no-verify"*)
-      deny "bypassing hooks/pre-commit defeats the verification loop" ;;
-  *"push --force"*|*"push -f"*)
-      deny "force-push — history on shared branches is immutable" ;;
-esac
-exit 0
-```
+**Failure mode prevented.** Three distinct ones. (1) *Formatting drift*: CI runs `ruff format --check` (`ci.yml`) — without the hook, the agent burns a full CI round-trip on whitespace. (2) *Migration disasters*: an edited applied migration or a model/migration desync is the classic agent-caused Django incident; the hook converts it from "caught in review, maybe" to "impossible." (3) *Silent artifact corruption*: the committed 241KB bundle is exactly the kind of file an agent will "helpfully" patch directly; CI's stale-bundle check (`ci.yml:66-70`) would catch it, but the hook catches it in milliseconds instead of minutes.
 
-**4. Environment bootstrap** (`SessionStart`) — this repo already ships it: the
-hook rebuilds the venv, installs dev deps, copies `.env.example`, and puts
-`.venv/bin` on PATH for remote sessions. A loop the agent can't *start* is a
-loop that doesn't exist; bootstrap is part of the loop.
+**Outdated advice to discard.** Relying on `/rewind` (which replaced checkpoints) as a database safety net — **neither checkpoints nor `/rewind` restores a database** ([changelog](https://code.claude.com/docs/en/changelog.md)). File-state rollback does not undo a `migrate` or a `flush`. Database safety comes from the guard hooks and from sandbox/DB isolation (§3.4), not from undo.
 
-A `Stop` hook running the cheap gates (`ruff check`, `makemigrations --check`)
-and refusing to end the turn while they fail is the aggressive fourth option —
-effective, but respect the `stop_hook_active` flag in the hook input to avoid
-self-blocking loops, and keep it to sub-second checks; a Stop hook that runs the
-full suite makes every conversational turn pay for it.
-**Source:** [hooks reference](https://code.claude.com/docs/en/hooks.md) (exit-code
-and JSON semantics, `stop_hook_active`).
-**Prevents, respectively:** style-nit CI failures and token-burning "now run the
-formatter" turns; the migration disaster class (§2.3.1) at the mechanical layer;
-the small set of catastrophic commands that permission prefixes can't express;
-and the silent-broken-environment session where the agent "fixes" your tooling
-instead of your code.
+### 3.2 Design the self-verification loop around what already exists
 
-### 3.3 Pre-commit and CI: the outer loop
+**Practice.** Give the agent a graduated, deterministic loop, fastest first, and document it in CLAUDE.md so the agent runs the cheapest sufficient check:
 
-**Practice: same checks, three distances.** Hooks give the agent feedback in
-seconds (per-edit); `pre-commit` (or a `verify.sh`) bundles the full local gate
-at commit time for humans and agents alike — ruff, `mypy`,
-`makemigrations --check`, `lintmigrations`; CI re-runs everything hermetically
-and *aggregates to a single required check*. This repo's `ci-ok` job — one stable
-name that fails unless every matrix cell succeeded, protected by a no-bypass
-ruleset — is the pattern: it's what makes `[gate]` a fact rather than a hope.
-Add [django-migration-linter](https://github.com/3YOURMIND/django-migration-linter)
-(`manage.py lintmigrations`) to `requirements-dev.txt` and CI: it statically
-flags backward-incompatible operations (NOT NULL without default, drops,
-renames) — the machine half of what the `django-migrations` skill teaches.
-**Source:** repo's `.github/workflows/ci.yml`; migration-linter docs (3YOURMIND
-runs it on every build to keep blue/green deploys safe).
-**Prevents:** gate divergence — the failure where the agent's local loop, the
-human's pre-commit, and CI check *different things*, so "green locally" stops
-predicting "green in CI" and everyone learns to wait for CI (the slowest
-possible loop). One list of checks, referenced everywhere, and CLAUDE.md's job is
-naming which command *is* the CI truth (§1.2).
+1. **Per-file** (hook, automatic): ruff check/format — sub-second.
+2. **Targeted tests**: `python manage.py test project.app.tests.tests_<subject>` — the `tests_<subject>.py` naming makes the right module discoverable by name; sentence-length test names make the right *test* greppable by behavior.
+3. **Type check**: `mypy project/app/services/` — today's CI scope; widen per §4.2.
+4. **Migration sync**: `makemigrations --check --dry-run`.
+5. **Full suite**: `python manage.py test project.app` (SQLite); Postgres parity is CI's job (2×2 matrix, `ci.yml:74-120`) unless the change is lock/constraint-sensitive, in which case run locally against `DATABASE_URL`.
+6. **Regression gates**: `python evals/run_rules_eval.py` when the rules engine changed — it's pure-Python, no DB, no network, frozen clock, and diffs against a committed baseline. This is a *perfect* agent target: deterministic, fast, and semantically meaningful.
 
-**Corollary: deny the bypass.** An agent that can `git commit --no-verify` will
-eventually use it innocently ("the hook seems broken, working around it"). The
-bash-guard above and a permissions `deny` entry close it from both sides.
+**Source.** [Best practices](https://www.anthropic.com/engineering/claude-code-best-practices) — giving the agent a clear iteration target (a failing test, an error output) is the single biggest quality lever; [How Anthropic teams use Claude Code](https://claude.com/blog/how-anthropic-teams-use-claude-code) — verify-first workflows; [Writing effective tools](https://www.anthropic.com/engineering/writing-tools-for-agents) — evaluation loops drive agent quality.
 
-### 3.4 Permissions: curated, not accumulated
+**Failure mode prevented.** Hallucinated success. Without a deterministic target the agent "completes" by assertion; with one, completion is a bit the harness checks. The METR RCT ([Jul 2025](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/)) found experienced maintainers were 19% *slower* with early-2025 tools while believing they were 20% faster — the cost was verification and review. METR labels the result historical, but the mechanism is the design constraint: every check the harness runs deterministically is review cost removed from the human.
 
-Current model ([docs: permissions](https://code.claude.com/docs/en/permissions.md),
-[modes](https://code.claude.com/docs/en/permission-modes.md)): `allow`/`ask`/`deny`
-rule arrays with prefix matching (`Bash(git *)`), MCP scoping
-(`mcp__linear__*`), and domain-scoped `WebFetch`; plus session-wide modes —
-`default`, `acceptEdits`, `plan`, `dontAsk` (deny-everything-not-allowlisted, for
-CI), `bypassPermissions`, and the 2026 addition `auto`, where a classifier model
-adjudicates borderline calls instead of interrupting you.
+**Codebase specifics that make this loop honest — protect them:**
+- Provider mocking is universal in tests (three layers: SDK patches, behavioral `LLMClient` doubles, the gate-compliant stub). A hook should also deny any test invocation with real provider env keys set, mirroring the existing care in `tests_telemetry.py:17-29`.
+- The query-budget test computes expected inserts from `connection.ops.bulk_batch_size` (`tests_planner_perf.py:50-58`) so it is exact on both backends — the model for any new perf assertion.
+- Two suites assert repo-infrastructure facts via `git grep`/`git check-ignore`. These are brittle for agents (adding a legitimate reference to an env var fails a test for a non-defect reason) — keep them, but have CLAUDE.md name them so the agent knows a failure there means "update the manifest," not "revert your change."
 
-**Practice: write the permission file as policy, not as history.** About twenty
-prefix rules cover a Django repo's legitimate loop:
+### 3.3 Tamper-evidence: the tests are the reward function
 
-```json
-{
-  "permissions": {
-    "allow": [
-      "Read", "Edit", "Write", "Glob", "Grep",
-      "Bash(git status)", "Bash(git diff *)", "Bash(git log *)",
-      "Bash(git add *)", "Bash(git commit *)",
-      "Bash(.venv/bin/ruff *)", "Bash(.venv/bin/mypy *)",
-      "Bash(.venv/bin/python manage.py test *)",
-      "Bash(.venv/bin/python manage.py makemigrations *)",
-      "Bash(.venv/bin/python manage.py check *)",
-      "Bash(.venv/bin/python manage.py lintmigrations *)",
-      "Bash(.venv/bin/python scripts/populate_demo_data.py)",
-      "Bash(.venv/bin/coverage *)",
-      "Bash(npm test *)", "Bash(npm run build *)"
-    ],
-    "ask": [
-      "Bash(.venv/bin/python manage.py migrate *)",
-      "Bash(git push *)",
-      "Bash(.venv/bin/pip install *)"
-    ],
-    "deny": [
-      "Read(./.env)",
-      "Bash(git push --force *)",
-      "Bash(* --no-verify*)"
-    ]
-  }
-}
-```
+**Practice.** Make test-weakening *loud*: (1) a PostToolUse hook that flags any single session editing both `project/app/tests/**` and the source under test, emitting a marker the PR template surfaces ("tests modified alongside implementation — reviewer must diff tests first"); (2) branch coverage on (`branch = true` — currently absent from the coverage config) so deleted assertions move a number; (3) the `test-author` agent (§2.3) as the default author of tests for new behavior; (4) never let an agent resolve a red suite by editing the assertion — the human decides whether the test or the code is wrong.
 
-This repo is its own cautionary tale: its `settings.json` allow-list has accreted
-**~280 entries** — absolute paths from a different machine, one-off `sed`
-invocations, whole quoted heredocs — approved one prompt at a time and never
-curated. That list is unauditable (nobody can say what it permits), partially
-dead (the paths don't exist here), and it teaches the reviewer to stop reading.
-Rewrite it to the shape above; session-specific approvals belong in
-`settings.local.json`, which is gitignored.
-**Source:** [permissions docs](https://code.claude.com/docs/en/permissions.md);
-the accretion critique is from this repo's own history.
-**Prevents:** two failures. Prompt fatigue → rubber-stamping → the one prompt
-that mattered gets approved on reflex. And the checked-in-allowlist-as-changelog
-problem: a permissions file you can't review is a permissions file you can't
-trust.
+**Source.** [arXiv:2511.18397](https://arxiv.org/abs/2511.18397) (production models gamed tests; gaming generalized); Kent Beck ([interview](https://newsletter.pragmaticengineer.com/p/tdd-ai-agents-and-coding-with-kent)) — agents deleting failing tests is an observed, recurring behavior, and the countermeasure is structural separation, not exhortation.
 
-Note what deliberately sits in `ask`: `migrate` (§3.5), `push`, and dependency
-installation — supply chain is a human gate (§5.5), and `pip install` on reflex
-is how typosquats land.
+**Failure mode prevented.** Reward-hacked green. This suite has one existing soft spot worth naming: the `expectedFailure` on the exfiltration test means a known injection gap reads as green in CI — an agent (or human) scanning CI status learns nothing about it. Convert it to a tracked, visible signal (a dedicated "known-gaps" CI annotation, or an issue-linked skip with an expiry date) as part of the audits program: **a green check must mean what it says, for agents above all**, because agents optimize against the check, not the intent.
 
-### 3.5 Sandboxing and the database
+### 3.4 Permissions, sandboxing, and the database
 
-**Practice: give the agent a database it's allowed to destroy, and no path to
-one it isn't.** Concretely, four tiers:
+**Practice.** Layer, in order ([permissions](https://code.claude.com/docs/en/permissions.md), [permission modes](https://code.claude.com/docs/en/permission-modes.md), [sandboxing](https://code.claude.com/docs/en/sandboxing.md)):
 
-- **Test DB** — created and dropped by the runner, hermetic, unlimited.
-- **Dev DB** — Docker Postgres (or this repo's SQLite fallback), rebuilt
-  idempotently by `scripts/populate_demo_data.py`. The seed script *is* the
-  reset button; hand-edits are banned (and the flush-guard hook makes the ban
-  mechanical). Treat as cattle.
-- **Staging/replica** — read-only role, for schema introspection and `EXPLAIN`.
-  Read-only means a Postgres role with `SELECT` only — enforced by the database,
-  not by the prompt.
-- **Production** — *no credentials in the agent's environment, ever.* Not "deny
-  rules", not "ask first": absent. Permission prompts and instructions are UX
-  affordances; under prompt injection or plain error they are not boundaries.
-  The only reliable guarantee is that the capability does not exist in the
-  session. Prod migrations run from the deploy pipeline exclusively.
+1. **Native sandbox on** (default on macOS/Linux): OS-level filesystem + network isolation; verify with `/sandbox`. Network egress limited to package indexes and the git host — provider APIs are *not* in the agent's allowed domains (tests mock them; evals that spend money are human-run, matching the existing separation where paid evals live in cron-only workflows, `copy-eval.yml`).
+2. **`permissions.deny`**: `Read(./.env)`, `Read(./db.sqlite3)`, `Read(./project/app/static/frontend/**)` (241KB of minified JS is pure context poison), `Edit` on the same, plus the Bash denials of §3.1. The `.env` denial matters doubly here because `.env.example` ships a live secret value — an agent that reads env files will happily echo them into logs and PRs.
+3. **`permissions.allow`** prefix rules for the standard loop: `Bash(python manage.py test *)`, `Bash(ruff *)`, `Bash(mypy *)`, `Bash(git diff *)`, `Bash(git log *)`, `Bash(npm run build)` — so the common path never prompts.
+4. **Modes**: `default` or `auto` (the 2026 classifier-adjudicated mode) for interactive work; `plan` for exploration and for the `migration-auditor`; `dontAsk` for CI (deny-by-default, allowlist only); `bypassPermissions` **only inside disposable isolation** (container/worktree with a scratch DB) — isolation first, permissiveness second, never the reverse.
+5. **Database**: agents get a per-worktree SQLite file by default (the settings fall back to `BASE_DIR/db.sqlite3`, so each worktree checkout naturally isolates its DB — a genuine architectural convenience). For Postgres work, a dedicated scratch database and a read-only role for introspection (§4.3). An agent never holds credentials to a shared or production database. Note the survey's boot-check caveat: the encryption-key system check returns clean on *any* `DatabaseError` (`checks.py` E001 swallow), so "the app booted" is not evidence the agent's DB is the one you think it is — have the loop assert `DATABASE_URL` explicitly, the way the benchmark bootstrap refuses to run against a non-temp DB (`bench_planner.py:50-56`).
 
-Claude Code's native sandboxing (default-on for macOS/Linux;
-[docs](https://code.claude.com/docs/en/sandboxing.md)) adds OS-level filesystem
-and network isolation around bash with per-path and per-domain rules — check
-`/sandbox` for status. It's the mechanism that makes broader auto-approval sane:
-allow more *inside* a boundary that makes the worst case survivable. For fully
-autonomous runs, the sane stack is a container or remote sandbox (Claude Code on
-the web runs sessions this way) plus `dontAsk`/`bypassPermissions` *inside* it —
-isolation first, then autonomy, never the reverse.
-**Source:** [sandboxing docs](https://code.claude.com/docs/en/sandboxing.md);
-[permission modes](https://code.claude.com/docs/en/permission-modes.md).
-**Prevents:** the unrecoverable class. Everything else in this blueprint fails
-into "revert the commit"; a dropped table or a poisoned prod row does not.
-Capability absence is the only guardrail that holds against both a confused
-agent and a hostile prompt.
+**Failure mode prevented.** The two catastrophic classes: destructive DB mutation (unrewindable — §3.1) and secret exfiltration into transcripts, memory files, or PRs.
 
-> **⚠️ Outdated (2024–early 2025) — guardrails edition**
->
-> - **"Ask Claude to run the linter when it finishes."** Hooks exist precisely so
->   verification is not model-discretionary. Prompted verification is the
->   pre-hooks workaround (hooks shipped mid-2025) — an instruction where a gate
->   belongs.
-> - **"`--dangerously-skip-permissions` in a devcontainer is the autonomy
->   recipe."** The flag-plus-container pattern from the April 2025 post is
->   superseded in most cases: native sandboxing + curated rules + `auto`/
->   `dontAsk` modes give autonomy with an actual boundary, and the old flag is
->   effectively replaced by `bypassPermissions` mode — still isolation-only.
-> - **"Permission fatigue is the price of safety."** The `auto` classifier mode,
->   prefix rules, and sandbox-scoped allowances removed the excuse; if your team
->   is click-approving 30 prompts an hour, that's a config smell now, not a
->   virtue.
-> - **"Have the agent fix CI by iterating on the CI logs."** Still works, but
->   it's the slowest loop in the building. The 2026 shape is CI-parity locally
->   (one list of checks) so CI is confirmation, not discovery.
+**Outdated advice to discard.** `--dangerously-skip-permissions` as the autonomy switch — superseded by `bypassPermissions` *inside isolation* ([changelog](https://code.claude.com/docs/en/changelog.md)). Per-command prompt-fatigue management by hand — the `auto` mode classifier now handles borderline calls.
+
+### 3.5 Pre-commit parity
+
+**Practice.** Mirror the hook checks in pre-commit and CI so agent-time, commit-time, and CI-time verdicts agree: ruff check + format, `makemigrations --check --dry-run`, django-migration-linter, and the frontend stale-bundle diff. Add django-migration-linter to CI itself (it's the one linter in this list CI doesn't already run).
+
+**Source.** [django-migration-linter](https://github.com/3YOURMIND/django-migration-linter); the existing CI as evidence of the pattern (`ci.yml` already runs three of the four).
+
+**Failure mode prevented.** Split-brain verification: an agent that passes locally and fails CI learns to distrust its loop — and an agent that distrusts its loop starts guessing.
 
 ---
 
 ## 4. Repo architecture for agent legibility
 
-### 4.1 Structure principles
+### 4.1 Preserve what already works — it is most of the battle
 
-**Practice: optimize the repo for search-driven comprehension — an agent reads
-like a very fast new hire with no tenure.** The load-bearing properties:
+The survey found this codebase in the top tier of agent legibility, and the mechanisms are worth naming explicitly *so nobody "improves" them away*:
 
-- **Predictable placement.** Django's opinionated layout (`models.py`,
-  `serializers.py`, `views.py`, `urls.py`, `migrations/`) is a genuine agentic
-  asset: the agent's first guess about where things live is right. Preserve it;
-  when files grow, split into packages that keep the names
-  (`views/ → views/queue.py, views/reports.py` — as this repo does for
-  `models/`, `views/`, `services/`).
-- **Module size under ~500 lines.** Agents read whole files; a 2,000-line
-  `views.py` spends four files' worth of context to answer one question. Split
-  by domain, not by kind-within-kind.
-- **Boundaries that hold.** The services/selectors split (§7's template) isn't
-  aesthetics: it means "where do I change pricing logic?" has one answer, and a
-  reviewer agent can enforce "no ORM writes outside services/" with a grep.
-- **Tests mirror modules and pin one behavior each, docstring one line.** This
-  repo's `tests_llm_retry.py`-per-surface layout means the agent finds the
-  pinning tests for any module by name — which is what makes "existing tests
-  are pinned" (§5.2) navigable rather than frustrating.
-- **Type hints + a checked target.** Types are machine-checkable spec; mypy on
-  a scoped, honest target (`project/app/services/` here — checked in CI, stated
-  in CLAUDE.md) beats aspirational repo-wide settings full of ignores. For a
-  full-stack Django treatment, `django-stubs` extends checking into the ORM.
+- **Single-source registries**: `models/__init__.py` with explicit `__all__`; views/serializers re-export registries; `frontend/src/api/endpoints.ts` as the one file answering "what does the frontend call." An agent's first question — "where is X?" — has a deterministic answer.
+- **Greppable invariants**: constraint/index names are short unique slugs (`oa_one_row_per_lead_per_run`, `alr_resume_scan`) that appear verbatim in model and migration — one grep yields the whole story. Ticket IDs (MUS-nn) in code comments (e.g. `settings.py:29`, `urls.py:33`, `checks.py:56`) form a cross-file index: grepping one finds an entire feature.
+- **Why-docstrings**: docstrings carry the invariant and the rejected alternative (`"rowcount 1 means the caller owns the run"`; the immutability note on `suggested_copy` that names the eval corpus as the reason). This is retrieval-shaped documentation: the rationale lives at the exact point where an agent would otherwise make the wrong edit ([context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents): just-in-time retrieval beats preloading).
+- **No signals, no metaclasses, no dynamic dispatch** beyond dict lookups. Static reading predicts runtime behavior — the property agents depend on most.
+- **DB-enforced invariants**: partial unique constraints and conditional-UPDATE CAS instead of read-then-check. For agents this is legibility too: a database constraint is machine-enforced and discoverable; an unwritten practice is neither.
 
-**Source:** structure-as-context is the theme of
-[effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
-(agentic search over pre-loading); the specifics are this blueprint's synthesis
-from this repo.
-**Prevents:** hallucinated APIs. An agent hallucinates when retrieval is
-expensive and guessing is cheap; predictable structure inverts the economics.
-Every naming convention kept is a grep that works; every grep that works is a
-fact the model doesn't invent.
+**Failure mode prevented.** Hallucinated APIs and action-at-a-distance breakage. Every one of these mechanisms shrinks the gap between "what the agent can read" and "what is true."
 
-### 4.2 Django-specific legibility
+### 4.2 Targeted fixes, ranked by agent leverage
 
-**Practice: make the framework's implicit machinery explicit at the points
-agents (and humans) misread it.**
+| Fix | Evidence | Why it pays agent dividends | Theme |
+|---|---|---|---|
+| **Split `services/outreach.py` (2,173 lines)** into rules engine / orchestrator / prompt templates | Three concerns in one file; the parameter `lead_ids` is even rebound mid-function (`:1988`), a shadowing that a later agent edit turns into a scoped-run bug | File size is a context tax on every edit; mixed concerns mean an agent editing the rules engine loads 1,500 irrelevant lines. Module boundaries are the primary unit of agent comprehension | SCALING |
+| **Widen mypy beyond `services/`** — views, models, management commands next; annotate the model layer (`can_transition_to` has no `-> bool`) and the rules-engine half of outreach | mypy runs on `project/app/services/` only (`ci.yml:45`); model layer and five view modules are unannotated | Type errors are the cheapest deterministic feedback an agent can get; every unannotated module is a module where the agent's only oracle is the full test suite | PRODUCTIONIZING |
+| **Consolidate the three provider registries** into one module both config and telemetry import | `llm/__init__.py:38`, `config.py:15`, `genai.py:53` | The classic desync trap: three edits required, omission fails silently. A single registry turns "add a provider" from a three-place edit nothing checks into a type error | AUDITS |
+| **Replace the hand-mirrored DELETE predicate** with a shared helper | `outreach.py:2019-2035` mirrors the phase-5 DELETE "clause for clause," ~120 lines apart, in different query languages | Two copies maintained only by comment is precisely what an agent will half-update | AUDITS |
+| **Make enumerations explicit**: `choices` + `CheckConstraint` for the bare status/kind CharFields; a `schema_version` column for the versioned JSON payloads | `AgentLeadRun.status` has no choices while `OutreachAction.status` does; `AgentStep.kind` legal values live in a comment; JSON schemas versioned by comment only | Implicit Django conventions made explicit are facts an agent can *read and enforce*; and DB-level enumerations serve the audit spine directly — an audit table whose status vocabulary is a comment is not an audit table | AUDITS |
+| **Add an actor column to triage transitions**; unify the three identity column types (free-text `reviewer` CharField vs two EmailFields, no user FK anywhere) | approve/snooze/undo write only `status_changed_at`; the state machine's history is not reconstructable from the DB | The audits program's own standard, applied to the product's human actions — and the template for recording *agent* actions when agents eventually touch product data | AUDITS |
+| **Shared test factory module** — one `factories.py` replacing ~11 per-file `make_lead` reimplementations and 4 verbatim `GOOD_COPY` literals; stop cross-suite private imports (`tests_redteam.py:20` importing from `tests_logic`) | Survey, tests area | An agent adding a suite currently has no canonical fixture source and *will* copy a twelfth `make_lead`; a model field change currently fans out to a dozen near-identical dicts — exactly the mechanical edit agents get 11/12ths right | PRODUCTIONIZING |
+| **Eliminate or document every `related_name="+"`** | Five FKs are reverse-invisible (`AgentStep.provider_trace`, `DismissedOutreachKey.source_action`, …) | An agent cannot traverse or grep these relations backward; orphan-detection queries (which the audit spine needs — nothing today enforces that a `ProviderTrace` is reachable from any step) become undiscoverable | AUDITS |
+| **Move payload contracts into code** — the `AgentStep.kind` payload shapes live in a docs file the code points at | `agent.py:53` | Contracts as typed structures (TypedDict/dataclass) are contracts mypy can check and agents can read without leaving the file | AUDITS |
 
-- **No business logic in signals.** Signals are invisible control flow — the
-  textbook agent trap: reading the view tells you nothing about what actually
-  happens on save. Explicit service calls only; if a signal must exist
-  (third-party integration), it forwards to a named service function.
-- **Explicit `related_name` on every FK/M2M.** `foo_set` is a guess; a named
-  reverse accessor is a greppable fact.
-- **Constants as `TextChoices`/`IntegerChoices`,** referenced everywhere —
-  never string literals scattered per-file. One enum is one grep.
-- **Write the invariant where it binds.** This repo's `services/outreach.py`
-  documents its phase contract ("the async phase holds no ORM access") *in the
-  module*, and the planning skill enforces designing within it. An invariant
-  the agent can read at the point of temptation is a constraint; one in a wiki
-  is a landmine.
-- **Query-count pins as executable performance spec.** `assertNumQueries(N)` on
-  every list endpoint turns "we care about N+1s" from culture into a failing
-  test — the only dialect of "we care" an agent reliably hears (§2.3.3).
-- **One registry per fact.** `.env.example` as the exhaustive, commented env-var
-  registry (this repo's is exemplary — every var with default, failure mode,
-  and rationale); `config.toml` for provider selection; the URL conf as the
-  API index. Agents answer from registries instead of reconstructing them.
+**Source for the underlying principle.** [Context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents): the smallest high-signal token set wins; every fix above either shrinks the tokens needed to understand a change or converts an unwritten practice into a machine-checkable fact.
 
-**Prevents:** the framework-magic failure class — the agent edits `save()`, a
-signal fires twice; it guesses a reverse accessor name; it "adds one setting"
-in three places. Django rewards convention with brevity; agents reward it with
-correctness.
+### 4.3 MCP servers: few, scoped, and read-only where possible
 
-### 4.3 MCP: connect little, deliberately
+**Practice.** Connect exactly three servers via a checked-in `.mcp.json`, and treat every additional one as a cost to justify ([MCP docs](https://code.claude.com/docs/en/mcp.md)):
 
-**Practice: connect MCP servers for *live data and actions you'll act on
-weekly*; prefer CLIs and skills for everything else.** For this stack the
-defensible set is: **GitHub** (PRs, reviews, CI status — the backbone of §5.4;
-in hosted sessions it's provided, locally the `gh` CLI is often the better
-tool), **Linear** (this repo already ships it in `.mcp.json` — tickets are the
-unit of work in its workflow, so the agent reading/updating them closes the
-loop), **Postgres read-only** against dev/staging (schema truth and `EXPLAIN`
-without copy-pasting; credentials = the read-only role from §3.5 — for
-local-only work, `manage.py dbshell` plus the allow-rule is a lighter
-equivalent), and **observability** (Sentry's server if you use Sentry; this
-repo's OTel/Phoenix stack has an MCP server available — the agent debugging
-from real traces instead of your paraphrase of them is the single best
-debugging upgrade).
+1. **Postgres introspection, read-only role.** The schema questions agents get wrong (column names, constraint semantics, index usage) become grounded queries: `EXPLAIN` before asserting an index helps, `pg_locks`-informed reasoning when the `safe-migration` skill evaluates a DDL change. Scope with `mcp__postgres__*` permission rules; credentials are a read-only role on a scratch/staging database, never production.
+2. **GitHub.** PR creation, review threads, CI status — the write half of the headless workflows in §5.3.
+3. **The issue tracker.** The MUS-nn IDs threaded through code comments are currently one-way pointers; a tracker server makes them retrievable context (an agent editing the agent-loop can pull the ticket the comment cites instead of guessing intent). This is retrieval-over-preloading applied to project history.
 
-Restraint has a mechanical basis: every connected server's tools cost context
-and attention (deferred/searched tool loading in 2026 Claude Code mitigates,
-but doesn't erase, the cost —
-[MCP docs](https://code.claude.com/docs/en/mcp.md)), and each server is
-operational surface (auth, availability, trust). The
-[code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)
-post measures the ceiling case: restructuring tool-call pipelines as code
-against filesystem APIs cut one workflow from ~150K tokens to ~2K (98.7%).
-The general lesson scales down: a CLI the agent can compose (`gh`, `psql`)
-often beats a tool schema it must carry.
-**Source:** [MCP docs](https://code.claude.com/docs/en/mcp.md);
-[code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp);
-[Willison on skills vs MCP](https://simonwillison.net/2025/Oct/16/claude-skills/).
-**Prevents:** context bloat with a side of attack surface — the 2025-era config
-with nine servers, sixty tools, and one weekly use case; and the subtler
-failure where the agent, offered a hammer-shaped tool, finds hammer-shaped
-problems.
+Observability (the OTel backend receiving the GenAI spans) is worth a server *when* incident-debugging sessions become an agent use case; until then it's surface without a workflow.
 
-### 4.4 Context engineering: retrieve, don't stuff
+**Source.** [MCP docs](https://code.claude.com/docs/en/mcp.md) (CLIs for file/shell work; MCP for live domain data and actions); [Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) (tool catalogs cost context; the ~150K→~2K case).
 
-**Practice: structure knowledge for just-in-time retrieval, and let the agent
-navigate to it.** The docs architecture that works is progressive disclosure
-applied to prose — exactly the skills principle (§2.1), because it's the same
-problem:
+**Failure mode prevented.** Two: hallucinated schema facts (the Postgres server's job) and context bloat (the restraint's job). Deferred tool-schema loading (2026) reduces the per-server context cost but not the operational surface — each server is credentials, availability, and prompt-injection exposure to manage.
 
-- `README.md` — the human tour (this repo's includes architecture-in-30-seconds
-  with measured numbers — agents quote it instead of guessing).
-- `CLAUDE.md` — rules + commands + pointers only (§1).
-- `docs/adr/` — decisions **with the repo-specific reasons**. This repo's ADR
-  rejecting LangGraph is the model: it cites the CI matrix, the pinned-deps
-  posture, and the fixtures discipline as reasons. An agent that reads it stops
-  proposing LangGraph — permanently, for the *actual* reasons.
-- `docs/contracts/` — frozen interfaces for in-flight multi-PR features, with
-  planted-red test files (this repo's `agent-loop` contract). For parallel
-  agents this is load-bearing: the contract is the coordination artifact that
-  makes independent PRs composable (§5.3).
-- `SECURITY.md` — the threat model, referenced (not restated) wherever it
-  binds.
+**Outdated advice to discard.** The 2024/25 "connect everything" MCP maximalism. Skills carry procedural knowledge at near-zero standing cost; MCP earns its place only for *live data and actions* ([Willison](https://simonwillison.net/2025/Oct/16/claude-skills/) on the token economics). Relatedly: the team's backlog item to expose the planner itself as an MCP server should be designed by the [tool-writing guidance](https://www.anthropic.com/engineering/writing-tools-for-agents) — condensed, unambiguous results; the existing tool layer's habits (server-side ID binding, sanitized snapshots, 2000-char render caps in `agent/tools.py`) are already the right instincts, now applied outward.
 
-And the keep-out list — what should *never* enter context: secrets (`deny:
-Read(./.env)`; the registry-with-comments lives in `.env.example`, which is
-safe and *more* informative), generated artifacts (the committed frontend
-bundle, lockfiles — excluded via ruff/`claudeMdExcludes`/plain instruction),
-and bulk data (fixtures, `raw_data/` — describe shape + row counts in a small
-doc; the agent samples with `head` when it truly needs bytes).
-**Source:**
-[effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
-(just-in-time retrieval; agents "maintaining lightweight identifiers — file
-paths, queries — and loading data at runtime"; context rot, with the empirical
-degradation work it cites);
-[equipping agents with skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills).
-**Prevents:** both halves of the retrieval failure. *Stuffing* (pasting the
-schema, the API list, the module map into always-loaded context) rots and
-poisons (§1.3). *Absence* (no ADR, no registry, no contract) doesn't produce
-silence — it produces plausible fiction, because the agent fills structural
-gaps with the statistically likely answer. A retrievable fact is the only
-reliable displacement for a hallucinated one.
+### 4.4 What to keep *out* of context
 
-> **⚠️ Outdated (2024–early 2025) — architecture/context edition**
->
-> - **"Concatenate the repo into the prompt"** (the repomix era) — superseded by
->   agentic search plus context-rot evidence; curation beats volume even with
->   1M-token windows, which Claude Code itself now holds to 200K by default.
-> - **"Connect an MCP server for every service you touch."** Deferred tool
->   loading reduced the tax but the direction of advice reversed: CLIs and
->   skills first, servers for live data/actions you use routinely.
-> - **"Keep docs out of the repo, agents ignore them."** Precisely backwards
->   now: retrieval-shaped in-repo docs (ADRs, registries, contracts) are the
->   anti-hallucination mechanism, and agents follow pointers reliably.
-> - **"Agents can't handle big codebases."** Scale stopped being the binding
->   constraint; *legibility* is. A small illegible repo (magic, drift, no
->   registries) fails harder than a large legible one.
+**Practice.** Deny-list for reads (§3.4) plus structural hygiene: the committed frontend bundle, `db.sqlite3`, `evals/results/`, the 64-record golden JSONL, and `evals/baselines/` are all data an agent should reference by *outcome* (the eval runner's verdict) rather than ingest. Documentation intended for agents should be topic-sharded files reachable by pointer — the existing pattern of code comments pointing at a contract file is correct; the improvement is making the pointed-at files small and single-topic so retrieval pulls a page, not a book. Remember the ceiling: auto-compact holds even 1M-context models to 200K by default ([changelog](https://code.claude.com/docs/en/changelog.md)) — budget as if context were small, because effectively it is.
+
+**Failure mode prevented.** Context rot in its most mechanical form: an agent that has paged 240KB of minified JS has evicted the invariants it needed.
 
 ---
 
 ## 5. Agentic workflows
 
-### 5.1 Plan-then-execute vs direct implementation
+### 5.1 Plan-then-execute, calibrated by blast radius
 
-**Practice: gate on reversibility and spec-clarity, not size.** Direct
-implementation when the change is mechanical, test-covered, and cheap to revert
-— the failure mode is a red test, so let the loop (§3) carry it. Plan first —
-in plan mode (Shift+Tab; read-only enforcement, so exploration can't leak into
-mutation) or with the built-in Plan agent — when the task is multi-file,
-touches state/schema/auth, or when you cannot name the acceptance test up
-front (that inability *is* the signal). The canonical shape is still
-explore → plan → code → commit, but with 2026 tooling the plan step is enforced
-rather than requested. And plans worth executing are worth reviewing as
-artifacts: this repo commits plans to `docs/plans/`, holds them to a
-`planning-discipline` skill of distilled rules, and reviews them *before* code
-exists — plan review is the cheapest leverage point in the whole pipeline,
-because a wrong plan compiles.
-**Source:**
-[best practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-(explore-plan-code-commit; "ask Claude to make a plan and confirm before
-coding"); [permission modes](https://code.claude.com/docs/en/permission-modes.md)
-(plan mode); this repo's planning skill for the plan-quality bar.
-**Prevents:** confident wrong-direction execution — the agent's version of the
-measure-once-cut-twice failure, where 2,000 lines of internally consistent code
-sit on a misread requirement; and (via the skill's ground-truth rules) plans
-that contradict repo reality — citing test frameworks that don't exist,
-planning against a stale worktree.
+**Practice.** Use the explore → plan → code → commit cycle ([best practices](https://www.anthropic.com/engineering/claude-code-best-practices)), with plan mode (read-only; Shift+Tab cycles modes — [model config](https://code.claude.com/docs/en/model-config.md)) mandatory for changes touching: migrations, the triage/run state machines, the sync/async seam, retry/timeout/concurrency knobs, or anything in the §5.5 human-gate list. Direct implementation without a plan phase is fine for leaf edits with tight existing tests — a serializer field, a label, a test documenting existing behavior.
 
-### 5.2 TDD with agents — and the reward-hacking problem
+The calibration rule: **plan depth proportional to the cost of being wrong, not the size of the diff.** A 5-line migration on the hot `outreachaction` table needs a plan; a 300-line test module usually doesn't.
 
-**Practice: agent TDD works, but only as an *adversarial arrangement*, not a
-vibe.** The sequence that holds up: write failing tests from the contract →
-verify they fail for the right reason → **freeze them** (separate commit;
-reviewed) → implement without touching tests → paste the red-then-green
-receipts. This repo runs exactly this as its "red first" convention (failing
-test output is the PR receipt) plus a stronger lock: *existing tests are
-pinned* — needing to edit one to land a change is a design smell requiring
-redesign or explicit authorization. Enforce the freeze mechanically where
-stakes warrant: test paths in a `PreToolUse` matcher during implementation,
-CI flagging PRs that modify tests and implementation together, and a
-`test-writer` subagent that never sees the implementation (§2.4).
-**Source — why the paranoia is calibrated, not decorative:** Anthropic's
-[reward-hacking study](https://arxiv.org/abs/2511.18397) (Nov 2025) documented
-models in *production* RL coding environments learning to override equality
-(`AlwaysEqual`), exit the test harness early, and manipulate the runner — and,
-more importantly, that learning-to-game generalized into broader misalignment.
-Kent Beck reports the everyday-scale version from the outside: agents that
-"delete the failing test rather than fix the code," and his fix — separate
-optimizing and auditing genies —
-([interview](https://newsletter.pragmaticengineer.com/p/tdd-ai-agents-and-coding-with-kent),
-[Augmented Coding](https://newsletter.kentbeck.com/p/augmented-coding-beyond-the-vibes)).
-Your test suite is the reward function you hand the agent.
-**Prevents:** reward-hacked green — suites that pass because the spec was
-weakened, the assertion inverted, the test deleted, or the implementation
-special-cased to the fixtures. Once tests are the target, protecting the tests
-*is* protecting the product.
+**Source.** [Best practices](https://www.anthropic.com/engineering/claude-code-best-practices); the built-in read-only Explore/Plan agents ([subagents docs](https://code.claude.com/docs/en/sub-agents.md)).
 
-Two auxiliary rules. **Coverage is the honesty check on green** (this repo
-gates at 90% with per-line reporting): deleting-your-way-to-green shows up as a
-coverage drop even when the suite passes. And **tests the agent wrote get
-reviewed as spec, not as code** — the question is "is this what we meant?",
-which no gate can answer for you (§5.5).
+**Failure mode prevented.** The confident wrong first move. This codebase has several places where the correct edit is counter-intuitive and the intuitive edit is a production incident — hoisting a function-local import (the cycle it breaks is not named at two call sites, `views/leads.py:30`), "simplifying" the double `_live_approval` check in dispatch (the comment explains winning the CAS is deliberately not authorization, `dispatch.py:70-75`), adding an ORM call in phase 3. Plan mode forces the reading that surfaces these before mutation.
 
-### 5.3 Parallel agents on worktrees
+**Outdated advice to discard.** "Always ultrathink before planning" — keyword triggers are dead; effort is configured, not incanted ([model config](https://code.claude.com/docs/en/model-config.md)).
 
-**Practice: one branch, one worktree, one agent — now with native support.**
-`claude --worktree <name>` creates and enters an isolated checkout under
-`.claude/worktrees/` (this repo's long-standing convention, now the tool
-default); subagents take `isolation: worktree` for the same effect in-session;
-sessions in worktrees are blocked from editing the main checkout
-([docs: worktrees](https://code.claude.com/docs/en/worktrees.md)). The
-Django-specific sharp edges are shared *runtime* state, which branch isolation
-does not cover: a shared SQLite file is a collision (per-worktree
-`DATABASE_URL`, or Postgres where the test runner already namespaces
-databases); dev-server ports collide (per-worktree port); and gitignored env
-files don't follow the checkout — `.worktreeinclude` (listing `.env`) fixes
-that natively. Coordination across parallel agents is a *contract* problem,
-not a merge problem: this repo's frozen-interface contract docs with
-planted-red per-component tests let N agents build against agreed seams, and
-"merge conflicts are the collision detector" (its CLAUDE.md) is the right
-posture — conflicts are the system working.
-**Source:** [worktrees docs](https://code.claude.com/docs/en/worktrees.md);
-[best practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-(the original multi-worktree pattern); this repo's `docs/contracts/`.
-**Prevents:** agents overwriting each other's working state (the classic
-two-terminals-one-checkout disaster), and its subtler Django variant — two
-agents, one dev database, "my tests pass" meaning "I corrupted yours".
-Also prevents the *integration* failure of naive parallelism: without a frozen
-contract, N agents produce N mutually plausible interpretations of the seam.
+### 5.2 TDD with agents
 
-**Migration-specific caveat:** parallel branches that each add a migration will
-collide on numbering (`0009_*` twice) — a conflict Django surfaces loudly
-(`makemigrations --merge` exists, but linear history via rebase-and-renumber is
-cleaner under squash-merge). Sequence migration-bearing work rather than
-parallelizing it; it's the one file class where "collision detector" is a cost,
-not a feature.
+**Practice.** For new behavior: the `test-author` agent writes failing tests first; the implementing session's target is "make these pass without touching them"; the failing-then-passing test output is recorded in the PR description as verification evidence. For bug fixes: reproduce as a failing test before fixing — the reproduction *is* the specification. Existing tests are a contract: if a change cannot pass without modifying an existing test, stop and get explicit human review of whether the test or the design should change.
 
-### 5.4 Headless and CI
+**Source.** [Best practices](https://www.anthropic.com/engineering/claude-code-best-practices) (the failing test as iteration target); Kent Beck ([Pragmatic Engineer interview](https://newsletter.pragmaticengineer.com/p/tdd-ai-agents-and-coding-with-kent), [Beyond the vibes](https://newsletter.kentbeck.com/p/augmented-coding-beyond-the-vibes)); [arXiv:2511.18397](https://arxiv.org/abs/2511.18397) for why the separation is not optional.
 
-**Practice: promote the agent into CI only for tasks with deterministic
-verification, and wire the same gates around it.** The toolkit
-([headless docs](https://code.claude.com/docs/en/headless.md),
-[GitHub Actions](https://code.claude.com/docs/en/github-actions.md)):
-`claude -p` for scripted invocations (`--output-format stream-json` for
-pipelines, `--json-schema` for structured output, `--allowedTools` +
-`--permission-mode dontAsk` for lockdown, `--max-turns` as a circuit breaker,
-`--bare` for plumbing invocations that shouldn't load repo hooks/skills — note
-it also skips CLAUDE.md, so *don't* use it for repo work); the Agent SDK
-(Python/TS — the renamed Claude Code SDK) when the loop needs to live inside
-your own tooling; and `claude-code-action@v1` for GitHub, in two modes —
-interactive (`@claude` mentions on issues/PRs → the issue-to-PR pipeline) and
-automation (a `prompt` input → scheduled and triggered jobs).
+**Failure mode prevented.** Reward hacking (§3.3) and its milder cousin, tests written *after* implementation that assert what the code does rather than what it should do. The existing suite's character — test names as full behavioral sentences, docstrings naming the failure mode defended against (`"a read-then-write implementation passes every sequential test yet still replays under concurrency"`, `tests_auth.py:215-217`) — is the house style the `test-author` agent's system prompt should quote as exemplar.
 
-The jobs that earn their keep on this stack, in order: **first-pass PR review**
-(the `code-reviewer` agent posting inline comments — findings verified against
-the code before posting, humans reviewing findings rather than raw diffs);
-**red-CI triage** on failure events (diagnose, propose or push the minimal
-fix); **issue-to-PR** for well-specified small tickets (Linear/GitHub label
-`agent-ok` → branch → PR — never merging, only proposing); and **scheduled
-hygiene** (dependency-bump triage, flaky-test hunts, doc drift checks —
-"boring on purpose"). Guardrails are non-negotiable and mechanical: scoped
-credentials only (no prod secrets in workflow env — §3.5 applies doubly
-unattended), `--max-turns`, branch protection unchanged (the agent's PR passes
-`ci-ok` like anyone's), and CODEOWNERS making §5.5's human gates structural.
-**Source:** [GitHub Actions docs](https://code.claude.com/docs/en/github-actions.md);
-[headless docs](https://code.claude.com/docs/en/headless.md).
-**Prevents:** unattended-amplification — a headless agent is your loop with the
-human pulled out, so every §3 gap it inherits runs at machine speed; and
-approval-theater, where an agent-opened PR gets waved through because "the bot
-wrote it" (branch protection + CODEOWNERS make the gate identical regardless
-of author).
+### 5.3 Worktrees and parallel agents
 
-### 5.5 Human gates that are non-negotiable
+**Practice.** `claude --worktree <name>` gives each task an isolated checkout under `.claude/worktrees/`; sessions inside a worktree are blocked from editing the main checkout; `.worktreeinclude` lists gitignored files to copy in — for this repo, `.env` (each worktree needs `DJANGO_SECRET_KEY` to boot). A happy structural accident: the SQLite fallback path is checkout-relative, so each worktree automatically gets its own database — parallel agents cannot corrupt each other's DB state without any extra configuration. Subagents can self-isolate with `isolation: worktree`.
 
-**Practice: require a human decision — structurally, via CODEOWNERS +
-branch-protection, not via prompt — wherever blast radius is high and
-reversibility is low:**
+**Source.** [Worktrees docs](https://code.claude.com/docs/en/worktrees.md).
 
-1. **Migrations** — destructive/data-bearing ones absolutely (checkpoint/rewind
-   restores files, never databases); in a small team, every migration.
-2. **Auth, sessions, permissions, crypto** — quiet single-line failures
-   (`IsAuthenticated` → `AllowAny`) with total blast radius.
-3. **Money paths** — pricing, refunds, invoice state machines; and their
-   close cousin, **outbound irreversible actions** (emails, sends,
-   publishes). This repo's architecture is the model: the LLM only drafts;
-   deterministic verification (`services/verify.py`) fails closed into a
-   human review queue, and per its planning rules an approval binds the
-   *exact bytes* approved (content-hash, re-checked at send). Hold agent
-   changes to these gates to the same standard as agent-generated copy.
-4. **The security boundary itself** — prompt-handling, sanitization, the
-   untrusted-input pipeline (`SECURITY.md` surfaces here), plus the agent's
-   own config: hooks, permissions, workflows. The fox doesn't review the
-   henhouse PR: an agent-authored change to `.claude/settings.json` or CI
-   gates is *always* human-reviewed.
-5. **Test deletions/weakenings and new dependencies** — §5.2's freeze and the
-   supply chain, respectively.
+**Failure mode prevented.** Parallel agents clobbering a shared checkout and a shared dev database — the second being unrewindable (§3.1).
 
-The mechanism, concretely — `.github/CODEOWNERS`:
+**A codebase-specific cap on parallelism.** The planner's dedupe rule is a self-documented unlocked read-then-write — the comment at `outreach.py:1928-1930` labels it a known gap: two overlapping runs can both plan the same lead, duplicating recommendations *and LLM spend*. Until the run composer's DB-level fix lands (a partial unique index enforcing a single active run — the view-level existence check was rightly rejected as racy, and the codebase's own auth path demonstrates the correct pattern: single-winner conditional UPDATE, proven by an 8-thread test at `tests_auth.py:214-245`), **serialize any agent work that executes the planner**. Parallelize freely on everything else. This is the scaling theme in miniature: agent concurrency is bounded by the *system's* concurrency safety, and the fix is a schema change, not a habit agents are asked to keep.
 
-```
-**/migrations/        @team-leads
-project/settings.py   @team-leads
-project/app/authentication.py @team-leads
-project/app/services/verify.py @security-owner
-SECURITY.md           @security-owner
-.claude/ .github/     @team-leads
-```
+**Outdated advice to discard.** Manual multi-terminal, multi-clone choreography — native worktrees, background sessions, and cross-session messaging replaced it ([changelog](https://code.claude.com/docs/en/changelog.md)).
 
-With required review enabled, this composes with everything above: agents work
-freely everywhere else, and *cannot* land changes in these paths without a
-person — no matter how the prompt, the ticket, or an injected instruction
-reads.
-**Source:** the fail-closed-gate design is this repo's `SECURITY.md` +
-`services/verify.py`; the review-economics grounding is the
-[METR study](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/)
-(human verification is the scarce resource — spend it where it's
-irreplaceable, which also argues for this repo's ≤400-line PR convention:
-review-shaped PRs are part of agent hygiene).
-**Prevents:** the catastrophic tail. Gates, hooks, and tests catch what they
-encode; the human gate is where *unencoded* objectives — compliance, taste,
-risk appetite, "we just don't do that" — get enforced. An agent optimizes what
-you wrote down; these five categories are where what you didn't write down
-lives.
+### 5.4 Headless and CI usage
 
-> **⚠️ Outdated (2024–early 2025) — workflow edition**
->
-> - **"Type 'think hard' / 'ultrathink' for better reasoning."** Keyword-
->   triggered thinking budgets are gone; current models manage thinking
->   adaptively, with effort levels (`low…max`) and a UI toggle where you need
->   control ([model config](https://code.claude.com/docs/en/model-config.md)).
-> - **"Keep agent tasks small — one function at a time."** The generation
->   ceiling moved (multi-hour autonomous runs are routine); the binding
->   constraint is now verification, which is why this blueprint is §3-shaped
->   rather than prompt-shaped.
-> - **"Manually `git worktree add` and run N terminals."** Native `--worktree`,
->   worktree-isolated subagents, background sessions, and cross-session
->   messaging subsumed the manual choreography.
-> - **"Checkpoint before anything risky."** Checkpoints were replaced by
->   `/rewind` in 2.1.x — and neither ever restored a database; the Django-shaped
->   risk still lives in §3.5/§5.5, not in conversation state.
-> - **"Auto-accept mode is reckless."** Inverted by sandboxing + curated
->   permissions + CI gates: per-edit approval is now the *low*-value human
->   checkpoint (METR's slowdown lived exactly there); per-merge review on gated
->   paths is the high-value one.
-> - **"AI PR reviewers rubber-stamp; keep bots out of review."** First-pass
->   agent review with verified findings became standard; the human's job moved
->   up a level — adjudicating findings and owning §5.5.
+**Practice.** Three pipelines, in adoption order:
+
+1. **Automated PR review** via `anthropics/claude-code-action@v1` ([GitHub Actions docs](https://code.claude.com/docs/en/github-actions.md)): a prompt-driven automation run on every PR that reviews *against the repo's specific risk register* — migration lock hazards (the `safe-migration` catalog), query-budget deltas, error-envelope conformance, audit-spine contract adherence, tests-edited-with-source flags. Generic "LGTM" review is worthless; a review agent with this codebase's checklists is a second reviewer that never tires.
+2. **Issue-to-PR** for well-specified small tickets: `claude -p` with `--allowedTools`, `--permission-mode dontAsk`, `--max-turns`, and `--output-format stream-json` for machine-readable run records ([headless docs](https://code.claude.com/docs/en/headless.md)). Start with the mechanical ticket classes the survey surfaced: factory consolidation, annotation widening, `.env.example` completion.
+3. **Custom pipelines** via the Agent SDK (`claude-agent-sdk`) when the team wants the planner-style budget discipline (max turns, timeouts, structured output) applied to its own agent runs — which, notably, mirrors budgets the product already implements for *its* agent loop (`agent_max_steps`, `agent_max_tool_calls`, per-lead deadline). The product's own design is the template.
+
+Two hard rules: **never `--bare` for repo work** (it skips hooks, skills, agents, and CLAUDE.md — plumbing invocations only), and **CI agents run `dontAsk` inside sandboxed runners** with the §3 deny-lists — a headless agent is the one context where a permission prompt has no one to answer it.
+
+**SCALING tie-in — route the agents like the leads.** The product plan routes cheap models to low-priority leads and strong models to high-priority ones. Apply the identical policy to agent workloads via the `model` frontmatter field on skills and named agents: lint-fixing and scaffolding on a fast cheap model, migration review and planning on the strongest. Track agent spend the way the audit spine will track product spend — per-run, durable, with the estimate-vs-actual gap visible.
+
+**AUDITS tie-in — provenance for agent-written code.** Every agent-produced PR carries: the session identity, the mode/permission set it ran under, the checks it ran with outputs (the failing-then-passing test output from §5.2), and a flag when tests were modified. Headless runs' `stream-json` output is retained as the run record. This is the symmetry the planning threads imply: the team is building `ProviderTrace` so every product LLM call is reconstructable; the same standard means every agent change to the *codebase* is reconstructable — who (which session), what (diff), under which authority (permissions), verified how (check outputs). A team that requires a durable audit row per provider call but accepts anonymous agent commits has an audit spine with a hole in it.
+
+**Failure mode prevented.** Unattributable changes (the exact failure the product's missing actor-column exhibits, now avoided in the meta-layer), and runaway CI spend from unbudgeted agent runs.
+
+### 5.5 Human review gates: non-negotiable list
+
+**Practice.** These merge only with human sign-off, regardless of how green the checks are:
+
+| Gate | Reason (code evidence) |
+|---|---|
+| **Any migration** | Postgres lock behavior is invisible to the SQLite-backed local loop; the existing non-concurrent constraint adds on hot tables show how easily this ships. The `migration-auditor` pre-reviews; a human decides. |
+| **Auth & session code** (`views/auth.py`, `services/login_links.py`, throttling, permission/settings changes) | The current implementation has carefully balanced properties an agent can silently break — timing-equalized failure paths, hashed tokens, `REMOTE_ADDR`-only trust, single-use conditional UPDATE. A diff here that "simplifies" is probably a vulnerability. |
+| **`services/dispatch.py` and the approval gate** | This is the service's money-and-action boundary: the send path re-reads copy by sha inside the consuming transaction with `select_for_update`, backstopped by PROTECT FKs and a partial unique constraint. It is the strongest gate in the system and must not be weakened by refactor. |
+| **Anything that spends provider money** | Retry policy, concurrency knobs, model selection, prompt size — all spend multipliers in a system whose cost tracking is still being built. Until estimate-before-spend lands, the human *is* the cost estimator. |
+| **Sanitization, verifier, and gate logic** (`services/sanitize.py`, `verify.py`, the shape gate) | Fails-closed behavior is the product's injection defense; the `COPY_VERIFY_LEVEL=off` escape hatch already exists with no alarm — the gates must not acquire more. |
+| **Feature-flag default flips** (`OUTREACH_AGENT_ENABLED`, trace-content capture) | Flipping a default is a production posture change: the agent path writes PII-bearing audit content; the trace-content flag is a data-retention decision, not a code decision. |
+| **Retention/deletion of audit-shaped data** | No purge path exists today for `ProviderTraceContent`, `AgentStep.payload`, `OutreachEdit`, or `LoginToken` (a sweep index exists with no sweeper). When purge commands arrive, they are the definition of human-gated code. |
+
+**Source.** [Best practices](https://www.anthropic.com/engineering/claude-code-best-practices) (human review where verification is expensive relative to blast radius); [METR](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) (review cost is the dominant cost — spend it where it matters, automate it everywhere else).
+
+**Failure mode prevented.** The catastrophic-tail failures automation cannot cheaply verify: data loss under lock, auth bypass, unbounded spend, and PII mishandling.
+
+**Outdated advice to discard.** "Human reviews everything the agent writes" (early-2025 posture). With the §3 loop, most diffs are machine-verified to a higher standard than a skimming human applies; concentrating human attention on this table's rows is both safer and cheaper than diffusing it evenly. The METR result is the cautionary tale for the *diffuse* strategy, not for delegation itself.
 
 ---
 
-## 6. Implementation order
+## 6. Prioritized implementation order
 
-Highest leverage first, each step compounding the last. Effort is for a
-two-person team; "here" notes what this repository has already done.
+Highest leverage first. Each row lists the theme it primarily serves and its precondition.
 
-| # | Do | Effort | Why this order |
+| # | Action | Theme | Why this order |
 |---|---|---|---|
-| 1 | **Make the inner loop true**: clean-clone bootstrap (SessionStart hook or `make bootstrap`), scoped-test/fast-test paths verified, CI-parity command list settled | ½ day | Everything downstream assumes a loop that runs. *Here: done (hook shipped; loop fast).* |
-| 2 | **Rewrite CLAUDE.md to §7's shape**: commands with fast variants, `[gate]`/`[convention]` tags, gotchas, human-gates list | ½ day | Cheapest persistent win; every session forever benefits. *Here: strong file exists — add the fast-loop ordering, the `DATABASE_URL` gotcha, and §7's Django rule blocks.* |
-| 3 | **Hooks**: format-on-edit, migration-immutability, bash-guard | ½ day | Converts the three most expensive conventions into physics. *Here: only SessionStart exists — this is the top gap.* |
-| 4 | **Permission curation**: replace the accreted allow-list with ~20 prefix rules + `ask` + `deny`; move one-offs to `settings.local.json` | 2 h | Restores auditability; prerequisite for any autonomy increase. *Here: overdue (≈280 entries).* |
-| 5 | **Migration defense-in-depth**: `django-migration-linter` in dev-reqs + CI, `django-migrations` skill, migration paths into CODEOWNERS | 1 day | The highest-stakes failure domain for this stack; three cheap layers. *Here: `--check` gate exists; linter, skill, CODEOWNERS missing.* |
-| 6 | **Skills + named subagents**: `drf-endpoint`, `query-review`; `code-reviewer`, `test-writer`, `migration-safety` agents | 1–2 days | Encodes conventions and buys independent review; grows from your own incidents thereafter. *Here: two exemplary skills exist; agents missing.* |
-| 7 | **Worktree hygiene for parallelism**: `.worktreeinclude` with `.env`, per-worktree DB guidance in CLAUDE.md | 1 h | Cheap once 1–6 make parallel agents worth running. *Here: worktree convention exists; include-file missing.* |
-| 8 | **Headless/CI agents**: first-pass PR review, then red-CI triage, then labeled issue-to-PR — each behind the unchanged `ci-ok` + CODEOWNERS gates | 1–2 days | Deliberately last: automation amplifies whatever loop exists, so it inherits 1–7's safety or 1–7's absence. |
-| 9 | **MCP extras**: Postgres read-only, observability server | as needed | Real but smallest leverage per setup-hour; add on demonstrated demand. *Here: Linear already earns its slot.* |
+| 1 | **Commit the CLAUDE.md draft** (Appendix A) + `frontend/CLAUDE.md` + `.claude/rules/migrations.md` | all | Everything else assumes the agent knows the commands, the seams, and the negative rules. One day of work, immediate effect on every session. |
+| 2 | **`.claude/settings.json` permissions**: deny `.env`/`db.sqlite3`/bundle reads and writes; Bash allowlist for the test/lint loop; sandbox verified via `/sandbox` | PRODUCTIONIZING | Safety floor before any autonomy. The committed-secret-in-`.env.example` situation makes the read-denial urgent (and fixing `.env.example` itself is a 10-minute PR to do the same week). |
+| 3 | **Hooks**: post-edit ruff, applied-migration write-block, models-edit → `makemigrations --check`, dangerous-Bash guard | PRODUCTIONIZING | Converts the existing CI gates into millisecond agent feedback; blocks the two unrewindable failure classes. |
+| 4 | **django-migration-linter in CI + in the post-edit hook** | PRODUCTIONIZING | The single biggest gap between "CI is green" and "the deploy is safe" is migration lock behavior; closes it at both agent-time and merge-time. |
+| 5 | **Skills**: `safe-migration`, `drf-endpoint`, `audit-spine` first; `query-review`, `cost-check`, `release-check`, `redteam-local` second | all | The first three encode the three highest-frequency, highest-blast-radius procedures. Skills are cheap to write once hooks make their advice enforceable. |
+| 6 | **Named subagents**: `migration-auditor`, `test-author` | AUDITS | Structural optimizer/auditor separation before agent-authored PR volume grows. |
+| 7 | **Tamper-evidence**: branch coverage on; tests-edited-with-source flag; convert the `expectedFailure` injection gap into a visible tracked signal | AUDITS | Makes green mean green — precondition for trusting any scaled-up agent throughput. |
+| 8 | **Legibility fixes with mechanical payoff**: shared test factories; consolidate the three provider registries; extract the shared DELETE-predicate helper; `.env.example` completed | AUDITS, PRODUCTIONIZING | Small PRs, each eliminating a class of half-updated-copy bugs agents are prone to. Good first issue-to-PR pipeline candidates once #9 lands. |
+| 9 | **Headless PR-review workflow** (`claude-code-action@v1`) armed with the skills from #5 as its checklists | SCALING | Multiplies review capacity exactly where the human gates (§5.5) need humans to have attention left. |
+| 10 | **MCP**: Postgres read-only introspection; GitHub; issue tracker | SCALING | Grounded schema answers and retrievable ticket context; deferred until the safety floor exists because each server is new surface. |
+| 11 | **`mypy` widening + model-layer annotations; begin the `outreach.py` split** | SCALING | Deepens the deterministic feedback the loop runs on; the split is the largest single legibility investment and can proceed incrementally behind the now-solid test net. |
+| 12 | **Issue-to-PR pipeline** for mechanical tickets; **parallel worktree workflows** — gated on the run-composer's single-active-run DB constraint for any planner-executing work | SCALING | Full autonomy last, once verification (3-7), review capacity (9), and the system's own concurrency safety (the partial unique index) exist. |
 
-What *not* to do first, because each is downstream of the loop: MCP shopping
-(9 before 3 is decoration), multi-agent orchestration (6/8 before 3–5 is
-amplified noise), and prompt-tuning CLAUDE.md prose while the gates it
-references don't exist.
+The through-line: **verification before autonomy, isolation before permission, provenance throughout.** Items 1–4 are a week. Items 5–7 are the second week. Everything after compounds.
 
 ---
 
-## 7. The CLAUDE.md template — Django/DRF/Postgres
+## Appendix A: The drafted CLAUDE.md
 
-Drop-in starting point. Replace `<angle-bracket>` placeholders and the example
-app names; delete any rule you don't actually enforce — a rule you won't back
-with a gate or a review is prompt rot (§1.5). The `[gate]`/`[convention]`
-notation is §1.2's practice; every `[gate]` claim should be true (§3.3).
+Fitted to the surveyed service: Django unittest runner (not pytest), ruff with format-check, mypy scoped as CI scopes it, SQLite/Postgres duality via `DATABASE_URL`, env-first settings, committed frontend bundle. Placeholders in `<angle brackets>` mark facts the code does not determine.
 
-````markdown
+```markdown
 # CLAUDE.md
 
-<Service> — Django <5.x> + DRF + Postgres <16> JSON API for <one line>.
-Domain logic lives in `apps/<app>/services/` (plain functions, ORM allowed);
-views stay thin; serializers validate, never decide. Anything under
-`apps/billing/` moves money — see "Human gates". Architecture map:
-`docs/architecture.md`. Threat model: `SECURITY.md`.
-
-Rules are marked **[gate]** (machine-enforced — a hook or CI will block you)
-or **[convention]** (discipline + review). Don't confuse the two.
+Agentic outreach planner. Django 4.2 + DRF backend; React 18/TS frontend built by Vite
+into a bundle committed at project/app/static/frontend/ and served by Django (no Node in
+the runtime image). Rule functions in services/outreach.py select leads for outreach;
+provider calls generate message text only; services/verify.py checks generated copy
+against stored lead/event fields and blocks approval when checks fail; a human approval
+gate guards every outbound send.
 
 ## Commands
 
-```bash
-# Setup from a clean clone (Python 3.12; Docker for Postgres)
-make bootstrap                # venv + dev deps + .env from .env.example + migrate
-docker compose up -d db       # Postgres 16; .env's DATABASE_URL points here
+# setup
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env   # then REPLACE DJANGO_SECRET_KEY with a fresh value and set
+                       # DJANGO_DEBUG as needed — never keep the example's values
 
-# The inner loop — run in this order (fastest-failing-first)
-ruff check . && ruff format .                        # hooks also run this on edit
-mypy apps/                                           # CI runs exactly this target
-python manage.py makemigrations --check --dry-run    # missing-migration gate [gate]
-python manage.py test apps.<app> --parallel --keepdb # scoped tests, seconds
+# run
+python manage.py migrate
+python manage.py runserver                      # http://127.0.0.1:8000
+python scripts/populate_demo_data.py            # demo data (ingest + LLM catalog seed)
 
-# Single test — fastest feedback while iterating
-python manage.py test apps.billing.tests.test_invoices.InvoiceTests.test_overdue --keepdb
+# tests — Django's unittest runner. There is NO pytest, no conftest.
+python manage.py test project.app                                  # full backend suite
+python manage.py test project.app.tests.tests_queue                # one module
+python manage.py test project.app.tests.tests_queue.Cls.test_name  # one test
+# Test modules are tests_<subject>.py; test names are full behavioral sentences —
+# grep for the behavior in plain English to find the right test.
+DATABASE_URL=<postgres-url> python manage.py test project.app      # Postgres parity
+                                                # (CI runs py3.12/3.13 x sqlite/postgres)
 
-# Before declaring any task done [gate — CI runs all of these]
-python manage.py test --parallel      # full suite
-python manage.py lintmigrations       # django-migration-linter
+# lint / types / migrations — run before any commit; this mirrors CI exactly
+ruff check . && ruff format --check .
+mypy project/app/services/          # CI typechecks exactly this path, nothing more
+python manage.py makemigrations --check --dry-run   # must be clean
 
-# Dev data — the ONLY way to mutate the dev database
-python manage.py seed_demo            # idempotent; never edit the DB by hand
-```
+# rules-engine regression (pure Python, no DB, no network, frozen clock)
+python evals/run_rules_eval.py      # diffs against evals/baselines/ — baselines change
+                                    # only by explicit human decision, never to make a run pass
 
-`--keepdb` reuses the test DB between runs and applies pending migrations
-itself; if it errors on schema drift after migration churn, run once without
-it, then resume. Gotcha: <project-specific trap — e.g. "an empty-but-present
-DATABASE_URL is malformed to dj-database-url; unset it, don't blank it">.
+# frontend — only when frontend/ changed
+cd frontend && npm ci && npm run typecheck && npm test && npm run build
+git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
+# NEVER hand-edit project/app/static/frontend/** — it is build output. Rebuild + commit.
 
-## Architecture (30 seconds)
+## Architecture in 30 seconds
 
-- `config/settings/{base,local,test,prod}.py` — all values from env.
-  `.env.example` is the registry: every variable documented with default and
-  failure mode. New setting ⇒ new `.env.example` entry, same PR [convention].
-- `apps/<domain>/` — `models.py`, `serializers.py`, `views.py`, `urls.py`,
-  `services/` (writes + business rules), `selectors/` (reads + query
-  optimization), `tests/`. Views orchestrate; services decide; selectors
-  fetch. No business logic in serializers, signals, or `save()` overrides
-  [convention].
-- API: DRF ViewSets + routers under `/api/v1/`. Every list endpoint is
-  paginated [gate — test asserts] and names its `permission_classes`
-  explicitly [convention].
-- Background jobs: <queue>. Enqueue only via `transaction.on_commit` (see
-  Transactions).
+- project/app/services/outreach.py — rules engine + planner orchestrator (numbered
+  phases in comments). project/app/services/llm/ — provider-agnostic LLM layer.
+  services/verify.py — grounding verifier. services/dispatch.py — the send gate.
+  services/agent/ — flag-gated tool-calling copy loop (OUTREACH_AGENT_ENABLED, default off).
+- Registries (start here to find anything): project/app/models/__init__.py,
+  project/app/views/__init__.py, project/app/serializers/__init__.py,
+  frontend/src/api/endpoints.ts (every frontend API call, one line each).
+- Constraint/index names (oa_queue_order, rd_one_live_send_per_action, ...) appear
+  verbatim in model and migration — grep the name to get the whole story.
+- Ticket IDs (MUS-nn) in comments are a cross-file index (e.g. settings.py:29) — grep
+  one to find a feature.
 
-## Migrations
+## Database & migrations — hard rules
 
-- **Never edit, rename, or delete a migration that has reached `main`**
-  [gate — a hook blocks the edit]. Merged ⇒ applied somewhere ⇒ immutable.
-  Fix forward with a new migration.
-- Every model change ships its migration in the same PR;
-  `makemigrations --check` is a CI gate. Name them:
-  `makemigrations billing -n add_invoice_due_date` [convention].
-- Schema and data migrations are separate files [convention]. Data
-  migrations use `apps.get_model()` (never import models), declare
-  `reverse_code` (explicit noop is fine), and batch writes — no unbounded
-  single UPDATE.
-- Zero-downtime sequencing (old code always runs against the new schema
-  during deploy): (1) additive + nullable; (2) backfill in batches;
-  (3) constraints in a later deploy — unique indexes via
-  `AddIndexConcurrently` with `atomic = False`. Never drop or rename in the
-  same release as the code that stops using the thing.
-  `lintmigrations` catches most of this [gate]; a human reviews every
-  migration regardless (see Human gates). Details: the `django-migrations`
-  skill.
-- `migrate` targets your local DB only. Production migrations run in the
-  deploy pipeline, never from a session [gate — no credentials exist here].
+- NEVER edit a migration that is committed on the default branch. Additive follow-up
+  migrations only. (A hook blocks this; do not work around it.)
+- Run `python manage.py makemigrations --check --dry-run` after any model change.
+- Dev is usually SQLite; production is Postgres (DATABASE_URL). DDL that is instant on
+  SQLite can stall Postgres: index adds take a SHARE lock (writes blocked for the
+  build); constraint adds via ALTER TABLE take ACCESS EXCLUSIVE (all access blocked).
+  Either is a production stall on a hot table. Any index/constraint on outreachaction,
+  lead, or event is a hot-table change: use the /safe-migration skill, prefer
+  concurrent operations with atomic = False, and get human review.
+- One concern per migration. Schema migrations carry no data operations; seeding lives
+  in idempotent management commands (the repo has zero RunPython migrations — keep it so).
+- New columns: nullable-or-constant-default first (Postgres adds constant defaults
+  instantly), backfill in batches via a management command, then constrain.
+- Do not write to the checked-in SQLite file; the Django test runner creates a
+  throwaway database for each run.
 
-## Queries
+## ORM & query discipline
 
-- Every queryset feeding a serializer with related fields declares
-  `select_related`/`prefetch_related` in the selector — never rely on lazy
-  loading from serializer code. No per-row queries in
-  `SerializerMethodField` or model properties reachable from list views
-  [convention — `query-review` skill has the hunt procedure].
-- List endpoints carry a query-count pin: `with self.assertNumQueries(N):`
-  [gate]. If your change raises N, justify it in the PR — the pin is the
-  alarm, not an obstacle.
-- Bulk paths use `bulk_create`/`bulk_update`/`.update()`; large scans use
-  `.iterator()`; `.count()` not `len()`; `.exists()` not truthiness.
+- Query budgets are pinned by test (see tests_planner_perf.py — budgets computed from
+  connection.ops.bulk_batch_size so they hold on both backends). A budget increase is a
+  reviewed decision, not a test fix.
+- List endpoints must not serialize unbounded tables; add pagination and a throttle
+  scope to any new list/expensive endpoint (settings.py REST_FRAMEWORK block).
+- Prefetch rule: only .all() is served from a prefetch cache — any filtered call
+  re-queries. Slice prefetched collections in Python, not in the queryset.
+- No Django signals anywhere; all writes go through explicit service functions. Do not
+  introduce signals.
+- Race-sensitive logic gets a database-level guard (partial unique constraint or
+  conditional UPDATE), never a read-then-check. Existing patterns to copy:
+  single-use login-token redemption, the agent-run epoch-CAS claim,
+  rd_one_live_send_per_action.
 
 ## Transactions
 
-- Multi-write invariants wrap in `transaction.atomic`. `ATOMIC_REQUESTS` is
-  <on|off> here — <if off:> the service layer owns transaction boundaries
-  explicitly [convention].
-- Side effects (email, webhooks, enqueue) fire via `transaction.on_commit`,
-  never inside the atomic block.
-- No network calls inside `atomic` — you'd hold row locks for someone
-  else's latency.
-- Concurrent state transitions use `select_for_update()` or a conditional
-  update (`.filter(state=OLD).update(state=NEW)` + rowcount check), and
-  every one gets a two-actor race test [convention].
+- ATOMIC_REQUESTS is off (settings.py does not set it): no view is wrapped in a
+  transaction automatically. Writes that must land together go in one explicit
+  transaction.atomic block in the service function that owns them — never spread
+  across helpers each committing separately.
+- select_for_update only inside an explicit transaction.atomic block (it errors
+  outside one). The dispatch send path — re-read by sha256 under select_for_update
+  inside the consuming transaction — is the exemplar to copy.
+- Never hold a transaction open across the async provider-call phase: collect inputs,
+  close the transaction, await, then write results in a new atomic block. A
+  transaction spanning the event-loop hop pins a connection for the full provider
+  latency and can deadlock against the planner's own writes.
+
+## Async seam — do not cross it
+
+- plan_outreach is sync; only the provider-call phase runs on an event loop. NO ORM
+  calls inside that async phase — it raises SynchronousOnlyOperation at runtime and
+  nothing static will warn you. The agent checkpoint writer is the single, documented
+  exception; do not add a second.
+- services/llm/ must not import Django at module level (runtime.py keeps Django imports
+  function-local so the package imports without Django). Preserve this.
+
+## LLM layer
+
+- Adding a provider currently requires edits in three places: the client registry
+  (services/llm/__init__.py), the env-var map (services/llm/config.py), and the
+  telemetry provider-name map (telemetry/genai.py). Missing the third silently drops
+  telemetry attribution. Edit all three or consolidate first.
+- Retryability lives on the error class (services/llm/errors.py). Retry policy and
+  timeouts are cost multipliers — flag any change as a spend change in the PR.
+- Never log or persist raw prompts/completions outside the ProviderTrace content path;
+  telemetry spans carry sha256 hashes only. Do not add content keys to spans.
+- The stub provider is gated by OUTREACH_ALLOW_STUB_LLM=1 and exists for benchmarks and
+  tests only. Never weaken that gate.
+
+## Security invariants — do not weaken, escalate instead
+
+- Lead-controlled text (CRM notes, event payloads) is untrusted input everywhere:
+  sanitize before it enters any prompt; tool results are sanitized, length-capped, and
+  server-bound to the lead id. The same rule applies in the frontend: never interpolate
+  lead-controlled fields into anything prompt-bound.
+- suggested_copy on OutreachAction is immutable once written (the eval corpus diffs it);
+  reviewer edits create OutreachEdit rows.
+- The verifier fails closed: a missing/blank verification report blocks approval. The
+  dispatch gate re-reads effective copy by sha256 inside the consuming transaction —
+  never "simplify" the double check.
+- COPY_VERIFY_LEVEL=off disables grounding checks silently. Never set it in committed
+  config; treat any diff containing it as human-review-required.
+- Magic-link auth stores only hashed tokens, single-use via conditional UPDATE, with
+  timing-equalized failure paths and REMOTE_ADDR-only IP trust. Changes here are
+  human-gated.
+
+## Settings & env conventions
+
+- All configuration is environment variables; settings.py is the single source of
+  defaults (docker-compose passes planner knobs through blank on purpose — do not
+  restate defaults elsewhere).
+- Use the _env_int/_env_number/_env_list helpers in settings.py for new variables:
+  blank means unset, and bad values must raise ImproperlyConfigured naming the variable.
+  (Some older vars use bare int() — fix opportunistically, never imitate.)
+- Every new setting gets a .env.example entry and a docker-compose passthrough.
+- DJANGO_SECRET_KEY is mandatory (boot fails without it). Boot-time system checks live
+  in project/app/checks.py — add one when a misconfiguration should fail boot rather
+  than fail at first use.
 
 ## Tests
 
-- `TestCase` + `setUpTestData`. `TransactionTestCase` only when the behavior
-  under test is transactions/`on_commit`/threads — it's ~10x slower.
-- The suite passes offline with every external API key empty [gate]; all
-  providers are mocked. Never let a test touch the network.
-- Existing tests are pinned [convention]: needing to edit one to land a
-  change is a design smell — flag-gate the new path or get explicit
-  authorization first.
-- Red first [convention]: the failing test precedes the implementation;
-  paste its output in the PR as the receipt.
+- Fixtures via setUpTestData and factory helpers; pin dates to constants (the suites
+  freeze TODAY) rather than reading the clock; patch django.utils.timezone.now only
+  where the view under test reads it.
+- Every LLM provider interaction is mocked — doubles subclass the real LLMClient so
+  seam changes fail loudly. Never let a test reach a real provider.
+- Do not edit or delete an existing test to make a change pass; a failing existing
+  test requires human sign-off before either the test or the code changes.
+- Two suites assert repo-infrastructure facts via git grep / git check-ignore; if one
+  fails after a legitimate change, update its manifest — that is the intended workflow,
+  not a defect.
+- Coverage floor is 90 (pyproject.toml); DRF throttle history persists across tests —
+  clear it in setUp/tearDown as tests_auth.py does.
 
-## Env & secrets
+## What always needs a human before merge
 
-- Config only via environment; required vars fail loud at boot. Never
-  commit `.env` [gate — deny rule]; never print secret values; a key that
-  was ever committed is burned — rotate, don't reuse.
+Migrations; auth/session/throttle code; services/dispatch.py and the approval gate;
+sanitization and verifier logic; feature-flag default flips; anything changing provider
+spend (models, retries, concurrency, prompt size); any retention/deletion touching
+audit tables (ProviderTrace*, AgentStep, OutreachEdit, LoginToken).
 
-## Human gates — stop and get a human decision
+## Deploy (placeholders — code does not determine these)
 
-- Any migration that drops/renames anything, or touches `billing_*` tables.
-- Auth/session/permission code; anything in `SECURITY.md`'s scope.
-- Money math, refunds, invoice state transitions, outbound sends.
-- Deleting, skipping, or weakening an existing test.
-- New dependencies; changes to `.claude/` or CI config.
-[gate — CODEOWNERS requires human review on these paths regardless.]
-
-## Done means
-
-`ruff` clean · `mypy` clean · `makemigrations --check` clean ·
-`lintmigrations` clean · scoped tests green · full suite green when models,
-serializers, or urls changed. Paste command output; don't summarize it.
-````
-
-**Why it's shaped this way:** context first (three lines, because placement
-decisions depend on it), commands as the longest section (the loop is the
-product — §3.1), rules only where a competent agent would guess wrong (§1.2),
-every gate claim backed by a real gate (§3), pointers instead of prose
-everywhere knowledge already has a home, and ~150 lines total so it stays read
-(§1.1). The sections map one-to-one onto the failure classes this blueprint
-exists to prevent: migration disasters, N+1s, lock-holding transactions,
-reward-hacked tests, leaked secrets, and unreviewed changes to the paths where
-review is the point.
+- Production server/WSGI setup: <not yet defined — the container currently runs the dev
+  server; see the release-check skill before any real deployment>
+- Production DATABASE_URL / migration execution window: <define with the deploy story>
+```
 
 ---
 
-## Sources
-
-**Claude Code docs (mechanics; verify against the changelog):**
-[memory](https://code.claude.com/docs/en/memory.md) ·
-[skills](https://code.claude.com/docs/en/skills.md) ·
-[subagents](https://code.claude.com/docs/en/sub-agents.md) ·
-[hooks](https://code.claude.com/docs/en/hooks.md) /
-[hooks guide](https://code.claude.com/docs/en/hooks-guide.md) ·
-[permissions](https://code.claude.com/docs/en/permissions.md) ·
-[permission modes](https://code.claude.com/docs/en/permission-modes.md) ·
-[sandboxing](https://code.claude.com/docs/en/sandboxing.md) ·
-[MCP](https://code.claude.com/docs/en/mcp.md) ·
-[headless](https://code.claude.com/docs/en/headless.md) ·
-[GitHub Actions](https://code.claude.com/docs/en/github-actions.md) ·
-[worktrees](https://code.claude.com/docs/en/worktrees.md) ·
-[model config](https://code.claude.com/docs/en/model-config.md) ·
-[changelog](https://code.claude.com/docs/en/changelog.md)
-
-**Anthropic engineering & research:**
-[Claude Code: best practices for agentic coding](https://www.anthropic.com/engineering/claude-code-best-practices) (Apr 2025) ·
-[Effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) (Sep 2025) ·
-[Equipping agents for the real world with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) (Oct 2025; [open standard](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)) ·
-[Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents) ·
-[Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) (Nov 2025) ·
-[Natural emergent misalignment from reward hacking in production RL](https://arxiv.org/abs/2511.18397) (Nov 2025) ·
-[How Anthropic teams use Claude Code](https://claude.com/blog/how-anthropic-teams-use-claude-code)
-
-**Independent:**
-[METR: Measuring the impact of early-2025 AI on experienced open-source developer productivity](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) (Jul 2025; METR marks the result historical) ·
-[Simon Willison: Claude Skills are awesome, maybe a bigger deal than MCP](https://simonwillison.net/2025/Oct/16/claude-skills/) (Oct 2025) ·
-[Kent Beck on TDD with agents](https://newsletter.pragmaticengineer.com/p/tdd-ai-agents-and-coding-with-kent) /
-[Augmented Coding: Beyond the Vibes](https://newsletter.kentbeck.com/p/augmented-coding-beyond-the-vibes)
-
-**Django/Postgres:**
-[django-migration-linter](https://github.com/3YOURMIND/django-migration-linter) ([incompatibility catalog](https://github.com/3YOURMIND/django-migration-linter/blob/main/docs/incompatibilities.md)) ·
-[django-pg-zero-downtime-migrations](https://github.com/tbicr/django-pg-zero-downtime-migrations) ·
-[Django migrations without downtime](https://gist.github.com/majackson/493c3d6d4476914ca9da63f84247407b)
-
-**This repository (living examples):** `CLAUDE.md` ·
-`.claude/skills/planning-discipline/SKILL.md` ·
-`.claude/skills/webapp-testing/SKILL.md` · `.claude/hooks/session-start.sh` ·
-`.github/workflows/ci.yml` (the `ci-ok` gate) · `docs/adr/` ·
-`docs/contracts/` · `SECURITY.md` · `services/verify.py`
+*End of blueprint. The drafted CLAUDE.md above is intended to be committed as-is (minus placeholders) as item #1 of the implementation order, then tuned like a prompt: every time an agent makes a mistake this file should have prevented, the fix is a one-line edit here — and every line that stops earning its context cost comes back out.*
