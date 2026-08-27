@@ -187,6 +187,13 @@ point: with a fixed schedule, N workers that fail at the same moment retry at th
 forever, in lockstep. The same argument applies to a provider-supplied `Retry-After`, which is
 why it wins on magnitude but still gets proportional jitter added on top.
 
+Jitter cannot fix one thing: rate limits are org-level, so while one worker backs off, its
+siblings keep spending their own attempts into the same closed window. Each run therefore
+shares one **cooldown gate** (`services/llm/cooldown.py`): any worker's `Retry-After` holds
+every worker's next attempt until the window reopens, capped by `OUTREACH_MAX_BACKOFF_S` and
+with re-entry staggered by the same proportional jitter. A 429 carrying no guidance moves
+nothing — there is no number to propagate, and per-worker backoff already covers it.
+
 The two timeouts are nested deliberately. The per-lead bound is the one that matters under
 concurrency: a worker is holding 1/N of the run's throughput, so a lead that keeps drawing
 retryable failures has to be given up on rather than waited out.
