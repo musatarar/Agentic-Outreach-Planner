@@ -102,6 +102,50 @@ class SingleCtaTests(unittest.TestCase):
         self.assertGreaterEqual(count, 2)
 
 
+class MarkdownSubjectLineTests(unittest.TestCase):
+    """A markdown-decorated ``Subject:`` label is still a Subject line.
+
+    Providers emit ``**Subject:** ...`` and friends; reporting that as "no
+    subject" is a false positive that sends a well-formed draft to review."""
+
+    def test_bold_label_including_the_colon(self):
+        ok, subject = copy_checks.check_subject_line(
+            "**Subject:** Quick check-in: 5-deal milestone and next steps\n\nBody"
+        )
+        self.assertTrue(ok)
+        self.assertEqual(subject, "Quick check-in: 5-deal milestone and next steps")
+
+    def test_bold_label_excluding_the_colon(self):
+        ok, subject = copy_checks.check_subject_line("**Subject**: Quick check-in\n\nBody")
+        self.assertTrue(ok)
+        self.assertEqual(subject, "Quick check-in")
+
+    def test_heading_marker(self):
+        ok, subject = copy_checks.check_subject_line("### Subject: Quick check-in\n\nBody")
+        self.assertTrue(ok)
+        self.assertEqual(subject, "Quick check-in")
+
+    def test_fully_bolded_line(self):
+        ok, subject = copy_checks.check_subject_line("**Subject: Quick check-in**\n\nBody")
+        self.assertTrue(ok)
+        self.assertEqual(subject, "Quick check-in")
+
+    def test_a_decorated_subject_is_still_excluded_from_the_body_count(self):
+        self.assertEqual(copy_checks.count_body_words("**Subject:** a b c d e\n\none two"), 2)
+
+    def test_the_word_subject_mid_sentence_is_still_not_a_subject_line(self):
+        ok, subject = copy_checks.check_subject_line(
+            "We never discussed the subject: pricing.\n\nBody"
+        )
+        self.assertFalse(ok)
+        self.assertEqual(subject, "")
+
+    def test_run_all_sees_the_decorated_subject(self):
+        email = GOOD_EMAIL.replace("Subject:", "**Subject:**", 1)
+        result = copy_checks.run_all(email)
+        self.assertTrue(result["subject"])
+
+
 class RunAllTests(unittest.TestCase):
     def test_good_email_passes_all(self):
         result = copy_checks.run_all(GOOD_EMAIL)
