@@ -168,32 +168,18 @@ class SingleShotPathGateTests(TestCase):
 class AgentPathGateTests(TestCase):
     """The agent loop's provider retries ride the same gate as the single-shot path."""
 
-    @classmethod
-    def setUpTestData(cls):
-        cls.lead = Lead.objects.create(
-            id="lead_gate",
-            agency_name="A",
-            contact_name="C",
-            contact_email="c@a.test",
-            contact_phone="1",
-            state="TX",
-            num_producers=3,
-            years_in_business=4,
-            estimated_book_size_usd=1,
-            stage="active_trial",
-        )
-
     def test_run_agent_lead_waits_on_and_reports_to_the_gate(self):
-        pks = state.create_lead_runs("run-gate-1", [self.lead.id])
+        lead = _lead("lead_gate", stage="active_trial")
+        pks = state.create_lead_runs("run-gate-1", [lead.id])
         created = []
         gate = _recording_gate_cls(created)(0.0)
 
         outcome = asyncio.run(
             agent_loop.run_agent_lead(
                 prompt="PROMPT",
-                lead_run_pk=pks[self.lead.id],
+                lead_run_pk=pks[lead.id],
                 prior_steps=(),
-                context=tools.build_tool_context(self.lead, (), (), (), None),
+                context=tools.build_tool_context(lead, (), (), (), None),
                 client=_RateLimitedChatClient(),
                 runtime=get_planner_runtime(),
                 checkpoint=state.Checkpoint(),
@@ -208,6 +194,7 @@ class AgentPathGateTests(TestCase):
 
     @override_settings(OUTREACH_AGENT_ENABLED=True)
     def test_an_agent_run_threads_the_planner_gate_through(self):
+        _lead("lead_agent")
         created = []
         client = _RateLimitedChatClient()
 
