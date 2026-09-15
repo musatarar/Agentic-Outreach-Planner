@@ -28,11 +28,11 @@ if _env_file.exists():
 #   deepseek -> DEEPSEEK_API_KEY
 #   groq     -> GROQ_API_KEY
 
-# Grounding verifier strictness for generated outreach copy (MUS-22):
+# Grounding verifier strictness for generated outreach copy:
 #   off | standard (default) | strict. See project/app/services/verify.py.
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 
-# --- Planner concurrency, retries and timeouts (MUS-26) -----------------------
+# --- Planner concurrency, retries and timeouts --------------------------------
 # Read here and handed to services/llm/runtime.py as frozen dataclasses --
 # nothing under services/llm/ reads Django settings, so those modules stay
 # importable without Django configured. The retry defaults are deliberately
@@ -157,7 +157,7 @@ DATABASES = {
 
 
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
+# https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -176,7 +176,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 
 # Internationalization
-# https://docs.djangoproject.com/en/5.2/topics/i18n/
+# https://docs.djangoproject.com/en/4.2/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
 
@@ -188,26 +188,26 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
+# https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = "static/"
 
 # Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+# https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-# --- Magic-link auth (MUS-37) -------------------------------------------------
+# --- Magic-link auth ----------------------------------------------------------
 LOGIN_ALLOWED_EMAILS = {
     e.strip().lower() for e in os.environ.get("LOGIN_ALLOWED_EMAILS", "").split(",") if e.strip()
 }
 LOGIN_LINK_DELIVERY = os.environ.get("LOGIN_LINK_DELIVERY", "console")  # console | email
-LOGIN_TOKEN_TTL_SECONDS = int(os.environ.get("LOGIN_TOKEN_TTL_SECONDS", "900"))
+LOGIN_TOKEN_TTL_SECONDS = _env_int("LOGIN_TOKEN_TTL_SECONDS", 900)
 LOGIN_LINK_BASE_URL = os.environ.get("LOGIN_LINK_BASE_URL", "http://127.0.0.1:8000")
 LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
 LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
-LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
+LOGIN_RESEND_COOLDOWN_SECONDS = _env_int("LOGIN_RESEND_COOLDOWN_SECONDS", 30)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

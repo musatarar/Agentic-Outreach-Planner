@@ -1,4 +1,4 @@
-"""Verification-span tests (MUS-42).
+"""Verification-span tests.
 
 Every emitted span slices back to its own ``text``, and the span report agrees
 with ``verify_copy`` case for case.
@@ -421,7 +421,7 @@ class ReportEnvelopeTests(unittest.TestCase):
                 )
 
     def test_report_round_trips_through_json(self):
-        # MUS-39 persists this to a JSONField.
+        # This is persisted to a JSONField.
         for name, lead, copy, action_type, level in CASES:
             with self.subTest(name):
                 report = self._report(lead, copy, action_type, level)

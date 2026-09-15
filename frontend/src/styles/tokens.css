@@ -1,7 +1,6 @@
-/* Design tokens — MUS-36. The single source of truth for colour, type, space,
-   radius, motion and layout. Every name here is pinned by CONTRACT-MUS-35 §7.1;
-   MUS-38/40/41 consume these names verbatim, so nothing may be renamed, and no
-   name outside §7.1 may be added.
+/* Design tokens. The single source of truth for colour, type, space,
+   radius, motion and layout. Every surface consumes these names verbatim, so
+   nothing may be renamed and nothing outside this file may be added.
 
    No hex literal may appear anywhere in frontend/src outside this file.
 
@@ -61,8 +60,8 @@
      The boldness is the canvas-to-card gap: the canvas is a definite grey,
      the card is paper white. No gradients, no glows.
 
-     MUS-44: the neutral ramp is hue-free warm grey rather than the old
-     blue-grey, so the only hue on a default screen is the brand orange. */
+     The neutral ramp is hue-free warm grey rather than blue-grey, so the
+     only hue on a default screen is the brand orange. */
   --color-bg: #ececea;
   --color-bg-subtle: #e2e2df;
 
@@ -85,7 +84,7 @@
   /* ---- Accent (one, exactly) ------------------------------------------
      The active queue row and the single primary button. Nothing else.
 
-     MUS-44: the Locked In orange. The logo square is #e8452c, but that is
+     The Locked In orange. The logo square is #e8452c, but that is
      only 3.9:1 against white — below AA for the button label it has to
      carry. The accent is one step deeper (4.9:1) and the literal #e8452c is
      reserved for the mark itself, where it sits next to nothing and is
@@ -99,7 +98,7 @@
   --color-focus-ring: #d2381f;
 
   /* ---- Priority ramp (P1 brand / P2 tint / P3 neutral) -----------------
-     MUS-44 folded this into the brand: P1 is the orange at full strength,
+     The ramp is folded into the brand: P1 is the orange at full strength,
      P2 the same hue pulled back to a tan, P3 hueless. Urgency now reads as
      saturation on one hue rather than red-vs-amber. Nothing outside this
      ramp and the accent may be orange.
@@ -123,7 +122,7 @@
      Underlines on claims inside generated copy ONLY. Never a background,
      never a text colour, never on chrome.
 
-     Verified stays green. Unverified moved off red (MUS-44) — the old
+     Verified stays green. Unverified moved off red — the old
      #d92d20 is within a few degrees of the brand orange, so a wavy
      "unverified" underline would have read as decoration. Crimson keeps
      the "this is wrong" reflex while staying clear of the ramp above. */
@@ -358,7 +357,7 @@
 }
 
 /* ======================================================================
-   Reduced motion -- mandatory (CONTRACT §7.2).
+   Reduced motion -- mandatory.
    ====================================================================== */
 
 @media (prefers-reduced-motion: reduce) {

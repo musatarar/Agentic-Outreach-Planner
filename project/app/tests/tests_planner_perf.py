@@ -1,4 +1,4 @@
-"""The planner's database cost, pinned (MUS-26d): the event prefetch, the
+"""The planner's database cost, pinned: the event prefetch, the
 phase-5 ``bulk_create``, and what that write does to primary keys and timestamps."""
 
 import math
@@ -32,7 +32,7 @@ GOOD_COPY = (
 #   3  the leads
 #   4  their events          <- the prefetch; this line used to be 7 x N
 #   5  the transaction open  (SAVEPOINT under TestCase; BEGIN in production)
-#   6  supersede failed rows (MUS-26c)
+#   6  supersede failed rows
 #   7  the transaction close (RELEASE SAVEPOINT / COMMIT)
 #
 # Provider resolution used to cost four more, reading the LLM catalog tables

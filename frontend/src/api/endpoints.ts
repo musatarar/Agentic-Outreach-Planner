@@ -17,13 +17,13 @@ import type {
 
 // ===== leads =======================================================
 
-/** Every lead in the book, full records (MUS-68's `LeadSerializer`). */
+/** Every lead in the book, full records (`LeadSerializer`). */
 export const fetchLeads = () => getJson<LeadRecord[]>('/api/leads/');
 
 /** Plan the whole book. */
 export const runOutreachPlan = () => postJson<OutreachAction[]>('/api/outreach/run/', {});
 
-/** Plan one client (MUS-68). 409 when there is nothing new to recommend. */
+/** Plan one client. 409 when there is nothing new to recommend. */
 export const composeForLead = (leadId: string) =>
   postJson<OutreachAction>(`/api/leads/${leadId}/compose/`, {});
 

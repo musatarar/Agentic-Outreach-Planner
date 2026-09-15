@@ -1,4 +1,4 @@
-"""Request serializers for the magic-link auth endpoints (MUS-37).
+"""Request serializers for the magic-link auth endpoints.
 
 Input only: both auth responses are small fixed dicts built in the view.
 """

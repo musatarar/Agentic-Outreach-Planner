@@ -10,7 +10,7 @@ from django.db import connections
 
 @register()
 def planner_runtime_check(app_configs, **kwargs):
-    """Range-check the MUS-26 planner knobs at boot, not at first run.
+    """Range-check the planner knobs at boot, not at first run.
 
     Calls the same accessor the planner calls, so check and run cannot disagree.
     """

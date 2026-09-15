@@ -1,4 +1,4 @@
-"""Django settings -> the knobs the concurrent planner runs on (MUS-26).
+"""Django settings -> the knobs the concurrent planner runs on.
 
 The only module under ``services/llm/`` that knows Django exists, and even here
 the imports are function-local so importing it stays safe without Django.

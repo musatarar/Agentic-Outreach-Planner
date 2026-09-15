@@ -112,7 +112,7 @@ class OpenAICompatibleClient(LLMClient):
         )
 
     def _chat_request(self, messages, tools, max_tokens):
-        """Chat-shaped counterpart of :meth:`_request` (MUS-29): same endpoint,
+        """Chat-shaped counterpart of :meth:`_request`: same endpoint,
         tools in the ``{"type": "function", "function": {...}}`` envelope."""
         body = {
             "model": self.model,
@@ -158,7 +158,7 @@ class OpenAICompatibleClient(LLMClient):
 
     async def _apost(self, url, kwargs, timeout) -> LLMResult:
         """Send one already-built request on the async client — client, timing,
-        status check and error mapping live here once (MUS-66)."""
+        status check and error mapping live here once."""
         # The default timeout lives on the AsyncClient; only repeated here when
         # this one call overrides it.
         if timeout is not None:
@@ -200,10 +200,10 @@ class OpenAICompatibleClient(LLMClient):
         """Collect ``message.tool_calls`` into :class:`ToolCallRequest`s.
 
         Every entry is either read or raised on — dropping one silently
-        under-executes the model's calls (a bug until MUS-66).
-        ``function.arguments`` arrives as a JSON *string*, and ``"{}"``, ``""``,
-        ``"null"`` and an omitted key all mean "no arguments"; anything else
-        that does not parse to a JSON object raises.
+        under-executes the model's calls. ``function.arguments`` arrives as a
+        JSON *string*, and ``"{}"``, ``""``, ``"null"`` and an omitted key all
+        mean "no arguments"; anything else that does not parse to a JSON object
+        raises.
         """
         calls = []
         for entry in read_sequence(message, "tool_calls"):
@@ -253,8 +253,7 @@ class OpenAICompatibleClient(LLMClient):
         """Turn a chat-completions body into an :class:`LLMResult`.
 
         The message must say *something* — text, tool calls, or both;
-        ``content`` is legitimately ``null`` on a pure tool-call response
-        (MUS-29). ``usage``/``model`` are optional per spec: absence yields
+        ``content`` is legitimately ``null`` on a pure tool-call response. ``usage``/``model`` are optional per spec: absence yields
         ``None``, not an error and not a zero.
         """
         try:

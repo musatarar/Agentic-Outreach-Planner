@@ -17,7 +17,7 @@ are fixed in frontend/vite.config.ts — no manifest lookup needed.
     <title>{% block title %}Outreach Planner{% endblock %} · Locked In</title>
     <link rel="icon" href="{% static 'brand/favicon.svg' %}" type="image/svg+xml">
     {% comment %}
-    No-flash theme boot (MUS-36, CONTRACT §7.3). Blocking and inline, before the
+    No-flash theme boot. Blocking and inline, before the
     stylesheet, so data-theme is on <html> at first paint and a dark-theme reload
     never flashes light. Precedence: explicit localStorage.theme >
     prefers-color-scheme > light. Kept verbatim; frontend/src/hooks/useTheme.ts

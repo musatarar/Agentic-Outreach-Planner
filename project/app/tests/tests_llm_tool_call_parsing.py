@@ -1,4 +1,4 @@
-"""Adapter tool-call parsing: the shapes no existing test constructs (MUS-66) --
+"""Adapter tool-call parsing: the shapes no existing test constructs --
 blank arguments, parallel calls, unreadable entries, and the tool-result fold."""
 
 import asyncio

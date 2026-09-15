@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rules regression eval for the lead classifier (MUS-20).
+"""Rules regression eval for the lead classifier.
 
 Scores ``determine_action`` / ``determine_priority`` against the hand-labeled
 golden dataset, prints per-action scores + confusion matrices, and exits 1 if
@@ -284,7 +284,7 @@ def write_baseline(path, results):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "_comment": (
-            "Baseline for evals/run_rules_eval.py (MUS-20). Ground-truth labels: "
+            "Baseline for evals/run_rules_eval.py. Ground-truth labels: "
             "values may be <1.0 where the rules are imperfect. Regenerate with "
             "`python evals/run_rules_eval.py --update-baseline` after an intended change."
         ),
@@ -310,7 +310,7 @@ def write_baseline(path, results):
 def check_gate(results, baseline):
     """Fail if any action type's precision or recall dropped below baseline.
 
-    Gate scope is action-type only (per MUS-20); priority is report-only.
+    Gate scope is action-type only; priority is report-only.
     """
     failures = []
     base_actions = baseline.get("per_action", {})
@@ -425,7 +425,7 @@ def _print_coverage(records, rows):
         + (", ".join(t.split(":", 1)[1] for t in boundary_tags) or "none")
     )
     if len(records) < 30:
-        print(f"  WARNING: only {len(records)} leads (<30 requested by MUS-20)")
+        print(f"  WARNING: only {len(records)} leads (the golden set should carry 30+)")
 
 
 # ---------------------------------------------------------------------------

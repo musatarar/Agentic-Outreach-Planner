@@ -1,7 +1,7 @@
-/* Review inbox — MUS-40.
+/* Review inbox.
    Imported from InboxPage.tsx; vite folds it into the single assets/index.css.
-   It is a separate file because frontend/src/styles.css is MUS-36's exclusively
-   (CONTRACT §8.1) and the inbox is the only surface that needs these rules.
+   It is a separate file because styles.css is the app-wide shell and the
+   inbox is the only surface that needs these rules.
 
    Tokens only. No hex literal appears below, and none may be added.
 

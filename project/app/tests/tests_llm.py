@@ -233,13 +233,13 @@ class GetLLMClientTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Resolved key + per-call timeout (MUS-32's contract, on the F-b/F-c shape)
+# Resolved key + per-call timeout (on the F-b/F-c shape)
 # ---------------------------------------------------------------------------
 
 
 class ResolvedKeyAndTimeoutTests(unittest.TestCase):
     """Resolved key and per-call timeout survive complete()'s hop through
-    generate() (MUS-32; async half in tests_llm_async.py)."""
+    generate() (async half in tests_llm_async.py)."""
 
     def _ok_post(self):
         response = mock.Mock()
@@ -304,7 +304,7 @@ class ResolvedKeyAndTimeoutTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Error taxonomy (MUS-43) -- pure mapping functions, no network, no mocking
+# Error taxonomy -- pure mapping functions, no network, no mocking
 # ---------------------------------------------------------------------------
 
 
@@ -689,7 +689,7 @@ class AdapterErrorTranslationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# LLMResult (MUS-45): usage, model and finish reason survive the adapter
+# LLMResult: usage, model and finish reason survive the adapter
 # ---------------------------------------------------------------------------
 
 

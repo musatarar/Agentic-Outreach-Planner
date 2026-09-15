@@ -1,11 +1,11 @@
 @import './styles/tokens.css';
 
 /* The app-wide shell: page chrome, shared states and the UI primitives, on the
-   design tokens in styles/tokens.css (MUS-36). No hex literal may appear below
+   design tokens in styles/tokens.css. No hex literal may appear below
    this line — every colour, family, size, radius, shadow and duration comes
    from a token, so every surface themes dark for free.
 
-   Type discipline (CONTRACT §7.1), applied here too:
+   Type discipline, applied here too:
      --font-mono   machine output  -- counts, timestamps, code
      --font-serif  generated prose -- the draft
      --font-sans   everything else
@@ -34,7 +34,7 @@ header {
   box-shadow: var(--shadow-sm);
 }
 
-/* The brand row (MUS-44), above the nav. The mark inherits `color` through
+/* The brand row, above the nav. The mark inherits `color` through
    currentColor, so setting it on the lock-up themes the brackets; the square
    inside the mark holds --color-accent on its own. */
 .brand-bar {
@@ -164,7 +164,7 @@ button.secondary:hover:not(:disabled) { background: var(--color-surface-hover); 
 }
 
 /* ======================================================================
-   UI primitives -- frontend/src/components/ui (CONTRACT §7.4)
+   UI primitives -- frontend/src/components/ui
    Every rule below is class-scoped so it outranks the unscoped `button`,
    `input` and `select` selectors above; the primitives must not fight the
    legacy element rules and single-class specificity is enough to win.
@@ -422,5 +422,5 @@ button.secondary:hover:not(:disabled) { background: var(--color-surface-hover); 
 .ui-theme-toggle:hover { background: var(--color-surface-hover); color: var(--color-text); }
 .ui-theme-toggle__label { text-transform: capitalize; }
 
-/* The theme toggle moved onto the brand row in MUS-44, so the wrapper that
+/* The theme toggle moved onto the brand row, so the wrapper that
    used to pair it with the nav is gone; see .brand-bar above. */

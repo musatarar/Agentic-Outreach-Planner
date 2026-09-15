@@ -1,4 +1,4 @@
-"""Copy normalization and verification snapshots (MUS-39).
+"""Copy normalization and verification snapshots.
 
 Shared between ``plan_outreach()`` and the review views — a service must not
 import from the API layer. Normalization happens *before* storing copy or

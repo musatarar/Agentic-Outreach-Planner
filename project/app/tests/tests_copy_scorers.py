@@ -1,5 +1,5 @@
 """Offline unit tests for the deterministic copy checks in ``evals/copy_checks.py`` —
-the structural checks the copy eval (MUS-21) applies before the LLM judge."""
+the shape gate ``services/outreach.py::validate_copy`` runs on every draft."""
 
 import unittest
 

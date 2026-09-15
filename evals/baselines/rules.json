@@ -1,5 +1,5 @@
 {
-  "_comment": "Baseline for evals/run_rules_eval.py (MUS-20). Ground-truth labels: values may be <1.0 where the rules are imperfect. Regenerate with `python evals/run_rules_eval.py --update-baseline` after an intended change.",
+  "_comment": "Baseline for evals/run_rules_eval.py. Ground-truth labels: values may be <1.0 where the rules are imperfect. Regenerate with `python evals/run_rules_eval.py --update-baseline` after an intended change.",
   "generated_at": "2026-07-25T19:52:20+00:00",
   "today": "2026-06-12",
   "n": 41,

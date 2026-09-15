@@ -1,13 +1,12 @@
-"""A fake provider, for benchmarking the planner without calling anyone (MUS-26e).
+"""A fake provider, for exercising the planner without calling anyone.
 
 Sleeps for a configurable, seeded duration and returns a canned, grounded email
-with plausible token counts, so a benchmark measures the pool rather than a free
-tier's throttle -- and passes the planner's shape and grounding gates instead of
-timing a failure path. It cannot be selected by accident: ``__init__`` raises
-unless ``OUTREACH_ALLOW_STUB_LLM=1`` (only ``evals/bench_planner.py`` sets it,
-and it injects the client directly), so even ``LLM_PROVIDER=stub`` gets a
-refusal rather than a fake provider. It is registered in ``_REGISTRY`` anyway,
-so it cannot drift from the real adapters' interface.
+with plausible token counts, so it passes the planner's shape and grounding
+gates instead of timing a failure path. It cannot be selected by accident:
+``__init__`` raises unless ``OUTREACH_ALLOW_STUB_LLM=1``, which only the test
+suite sets, so even ``LLM_PROVIDER=stub`` gets a refusal rather than a fake
+provider. It is registered in ``_REGISTRY`` anyway, so it cannot drift from the
+real adapters' interface.
 """
 
 from __future__ import annotations

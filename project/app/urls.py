@@ -19,14 +19,14 @@ from project.app.views.review import (
 
 # Included at the `api/` prefix by project/urls.py.
 urlpatterns = [
-    # --- auth (MUS-37) ---
+    # --- auth ---
     path("auth/request-link/", AuthRequestLinkView.as_view(), name="auth-request-link"),
     path("auth/consume/", AuthConsumeView.as_view(), name="auth-consume"),
     path("auth/logout/", AuthLogoutView.as_view(), name="auth-logout"),
     path("auth/me/", AuthMeView.as_view(), name="auth-me"),
     # --- leads ---
     path("leads/", LeadListView.as_view(), name="lead-list"),
-    # --- per-client composition (MUS-68) ---
+    # --- per-client composition ---
     path("leads/<str:lead_id>/compose/", LeadComposeView.as_view(), name="lead-compose"),
     # --- outreach: plan, then review ---
     # `outreach/run/` must precede `outreach/<int:pk>/...`.

@@ -1,4 +1,4 @@
-<!-- The Locked In mark (MUS-44). Geometry mirrors
+<!-- The Locked In mark. Geometry mirrors
      frontend/src/components/BrandMark.tsx; the colours are hardcoded because a
      favicon renders outside the document and cannot read design tokens.
      The brackets flip with the OS theme so the mark stays visible against a

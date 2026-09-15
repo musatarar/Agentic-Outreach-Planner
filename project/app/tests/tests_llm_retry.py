@@ -1,4 +1,4 @@
-"""Tests for the shared retry policy (MUS-46).
+"""Tests for the shared retry policy.
 
 ``sleep`` and ``rand`` are injected, with the rand stubs pinned to the bottom or top of
 each range, so the assertions are about the bounds the policy produces.

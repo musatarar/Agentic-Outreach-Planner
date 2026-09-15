@@ -1,4 +1,4 @@
-"""Typed provider errors for the LLM layer (MUS-43).
+"""Typed provider errors for the LLM layer.
 
 Adapters re-raise their SDK/httpx exceptions as one of the classes below;
 callers branch on :attr:`LLMError.retryable`. The ``RuntimeError`` base is

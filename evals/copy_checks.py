@@ -1,13 +1,14 @@
-"""Deterministic, LLM-free checks on a generated outreach email (MUS-21).
+"""Deterministic, LLM-free checks on a generated outreach email.
 
-Pure Python (only ``re``) so both the Django test suite and the Inspect scorer
-can use them. Intentionally coarse: gross violations only; finer quality
-judgements are the LLM judge's job.
+The planner's shape gate: ``services/outreach.py::validate_copy`` runs these on
+every generated draft, and a failure routes the draft to a human. Pure Python
+(only ``re``), no Django. Intentionally coarse -- it catches gross violations,
+not nuance.
 """
 
 import re
 
-# "about 120 words" -> a wide band on purpose; nitpicking length is the judge's job.
+# "about 120 words" -> a wide band on purpose; a human reviewer judges the rest.
 WORD_MIN = 60
 WORD_MAX = 200
 

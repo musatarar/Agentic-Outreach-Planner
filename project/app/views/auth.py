@@ -1,4 +1,4 @@
-"""Magic-link sign-in endpoints: request-link, consume, logout, me (MUS-37).
+"""Magic-link sign-in endpoints: request-link, consume, logout, me.
 
 Two security invariants: request-link is not an account-enumeration oracle
 (identical response and wall-clock cost either way), and ``dev_link`` is

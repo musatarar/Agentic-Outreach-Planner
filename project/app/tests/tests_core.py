@@ -167,7 +167,7 @@ class PlanOutreachGroundingTests(TestCase):
 
     def test_grounded_copy_passes(self):
         self._make_lead()
-        # Passes both the shape gate (MUS-23) and the grounding gate (MUS-22).
+        # Passes both the shape gate and the grounding gate.
         good_copy = (
             "Subject: Let's finish setting up\n\n"
             "Hi Priya,\n\n"
@@ -274,7 +274,7 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
-        # Wrapped as LLMUnexpectedError (MUS-58): named non-retryable, not an
+        # Wrapped as LLMUnexpectedError: named non-retryable, not an
         # anonymous "failed".
         self.assertIn("Copy generation failed and was not retryable", failed.further_action)
         self.assertIn("provider exploded", failed.further_action)
@@ -311,7 +311,7 @@ class PlanOutreachFailurePathTests(TestCase):
         failed = OutreachAction.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
-        # `_resolve_client` wraps the ValueError (MUS-58) as configuration-shaped.
+        # `_resolve_client` wraps the ValueError as configuration-shaped.
         self.assertIn("Copy generation failed and was not retryable", failed.further_action)
         self.assertIn("Unknown LLM provider 'bogus'.", failed.further_action)
         # The unmatched lead is untouched by a provider problem it never needed.

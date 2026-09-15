@@ -1,4 +1,4 @@
-"""Stable identity for an outreach recommendation (MUS-39).
+"""Stable identity for an outreach recommendation.
 
 Pure: no Django, no database. ``plan_outreach()`` and the triage views both
 key off this, so it lives on its own rather than inside either of them.

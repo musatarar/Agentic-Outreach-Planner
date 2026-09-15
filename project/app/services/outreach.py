@@ -158,7 +158,7 @@ def _had_no_reply_email(lead):
 def _gone_quiet(lead, today):
     """True when we reached out, enough time passed, and the lead went quiet.
 
-    Injection hardening (MUS-23): a stall phrase alone can never escalate — it
+    Injection hardening: a stall phrase alone can never escalate — it
     needs a structured corroborator (a real ``no_reply`` email event, or a
     genuinely stale trusted ``last_contacted_date``); see SECURITY.md.
     """
@@ -576,7 +576,7 @@ def _prompt_for(lead, action_type, reason, prompt):
 
 
 def validate_copy(email):
-    """SHAPE-only validation of generated copy (MUS-23 output validation).
+    """SHAPE-only validation of generated copy.
 
     Returns ``[]`` when well-shaped, else human-readable problems — a structural
     guard against a hijacked, off-task generation (a classic injection symptom).
@@ -654,7 +654,7 @@ class WorkItem:
     ``prompt`` is ``None`` when there is no copy to generate: ``UNKNOWN``
     (straight to a human), or the build failed — ``prompt_error`` says which.
     ``dedupe_key`` is computed with the classification and carried through: the
-    key is the identity of the recommendation (MUS-39).
+    key is the identity of the recommendation.
     """
 
     lead: Any
@@ -687,7 +687,7 @@ class CopyOutcome:
 class ReviewOutcome:
     """The three fields phase 4 decides and phase 5 writes, plus its workings.
 
-    The counts are carried rather than recomputed (MUS-25): a second run of a
+    The counts are carried rather than recomputed: a second run of a
     fail-closed gate is a second chance to disagree with the decision made.
     """
 
@@ -805,7 +805,7 @@ async def _agenerate_for(item, client, runtime, client_error=None):
         # Already classified by the adapter; the class must survive to the span.
         return CopyOutcome(error=exc)
     except Exception as exc:  # don't let one lead's bug sink the run
-        # Wrapped (MUS-58) so the caller has one exception family to reason about.
+        # Wrapped so the caller has one exception family to reason about.
         return CopyOutcome(error=wrap_unexpected(exc))
     return CopyOutcome(text=text)
 
@@ -909,7 +909,7 @@ def _run_coroutine(coro):
 
 
 # --------------------------------------------------------------------------
-# what a reviewer reads when there is no copy (MUS-26c)
+# what a reviewer reads when there is no copy
 # --------------------------------------------------------------------------
 #
 # The review queue's value is that everything in it is work, so the three
@@ -1067,8 +1067,8 @@ def _review(item, outcome, level, today):
             further_action=_describe_failure(item, outcome),
         )
 
-    # Two independent fail-closed output gates: SHAPE (MUS-23, injection steered
-    # it off-task) and GROUNDING (MUS-22, contradicts the record or over-promises).
+    # Two independent fail-closed output gates: SHAPE (injection steered
+    # it off-task) and GROUNDING (contradicts the record or over-promises).
     # A problem from either routes the kept draft to a human.
     shape_problems = validate_copy(outcome.text)
     violations = verify.verify_copy(
@@ -1095,7 +1095,7 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority.
 
-    ``lead_ids`` (MUS-68) narrows the run to the named clients; ``None`` plans
+    ``lead_ids`` narrows the run to the named clients; ``None`` plans
     the whole book. A scoped run still *reads* every lead on purpose: the read is
     cheap and keeps the classification input identical either way.
     """

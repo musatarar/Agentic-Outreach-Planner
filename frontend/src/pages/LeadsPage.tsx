@@ -97,7 +97,7 @@ export function LeadsPage() {
     }
   }
 
-  /** Plan one client (MUS-68); 409 means the planner declined, not a failure. */
+  /** Plan one client; 409 means the planner declined, not a failure. */
   async function handleCompose(leadId: string) {
     setNotice(null);
     setError(null);

@@ -1,4 +1,4 @@
-"""Tests for magic-link authentication (MUS-37): token secrecy, single use,
+"""Tests for magic-link authentication: token secrecy, single use,
 expiry, and the enumeration-proof allowlist."""
 
 from __future__ import annotations

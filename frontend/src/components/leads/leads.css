@@ -1,7 +1,7 @@
 /* Leads table.
    Imported from LeadsPage.tsx; vite folds it into the single assets/index.css.
-   A separate file for the same reason inbox.css is one: frontend/src/styles.css
-   belongs to MUS-36 and this is the only surface that needs these rules.
+   A separate file for the same reason inbox.css is one: styles.css is the
+   app-wide shell and this is the only surface that needs these rules.
 
    Tokens only. No hex literal appears below, and none may be added.
 

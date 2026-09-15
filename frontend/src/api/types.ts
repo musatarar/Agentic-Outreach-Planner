@@ -63,7 +63,7 @@ export interface Paginated<T> {
   results: T[];
 }
 
-// ===== MUS-37: magic-link auth =====================================
+// ===== magic-link auth =============================================
 
 export interface AuthMe {
   authenticated: boolean;
@@ -126,7 +126,7 @@ export type DismissReason =
   | 'other'
   | '';
 
-// ---- verification spans (schema v1, MUS-42) ----
+// ---- verification spans (schema v1) ----
 
 export type ClaimKind =
   | 'amount'
