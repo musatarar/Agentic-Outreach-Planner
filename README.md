@@ -23,6 +23,9 @@ python scripts/populate_demo_data.py
 python manage.py runserver      # http://127.0.0.1:8000
 ```
 
+Updating a checkout from before the migration squash: `rm db.sqlite3`, then re-run
+`migrate` and `populate_demo_data` above. Demo data is regenerated, not migrated.
+
 Put your address in `LOGIN_ALLOWED_EMAILS` in `.env`, open
 **http://127.0.0.1:8000/signin**, enter it, and the sign-in link is printed to the server
 log:
