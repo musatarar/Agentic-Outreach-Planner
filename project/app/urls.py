@@ -1,5 +1,6 @@
 from django.urls import path
 
+from project.app.rules import routes as rules_routes
 from project.app.views.auth import (
     AuthConsumeView,
     AuthLogoutView,
@@ -63,4 +64,6 @@ urlpatterns = [
     path("llm/catalog/", LLMCatalogView.as_view(), name="llm-catalog"),
     path("llm/config/", LLMConfigView.as_view(), name="llm-config"),
     path("llm/config/test/", LLMConfigTestView.as_view(), name="llm-config-test"),
+    # --- user-defined rules catalog ---
+    *rules_routes.urlpatterns,
 ]

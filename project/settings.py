@@ -245,6 +245,7 @@ REST_FRAMEWORK = {
         "auth_request_ip": LOGIN_RATE_LIMIT_IP,
         "auth_consume_ip": "60/hour",
         "queue_verify": "120/min",
+        "rules_catalog": "120/min",
     },
 }
 
