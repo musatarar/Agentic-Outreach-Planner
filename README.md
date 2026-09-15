@@ -41,11 +41,11 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 2. Copy the env file: DJANGO_SECRET_KEY is required (a fresh local/demo key
-#    is already filled in). Also set a provider key (default: groq — free
-#    tier, no credit card at console.groq.com) if you want the LLM copy step;
-#    it's picked up as a fallback until you save one via /api/llm/config/.
-cp .env.example .env               # then edit .env and fill in the LLM key
+# 2. Write .env from .env.example with a freshly generated DJANGO_SECRET_KEY
+#    (required). Also set a provider key (default: groq — free tier, no credit
+#    card at console.groq.com) if you want the LLM copy step; it's picked up as
+#    a fallback until you save one via /api/llm/config/.
+python scripts/setup_env.py        # then edit .env and fill in the LLM key
 
 # 3. Migrate, seed the demo pipeline + LLM catalog, and run
 python manage.py migrate
@@ -68,31 +68,14 @@ with AI-drafted emails render in ~20–30s. Full walkthrough with sample results
 No local Python needed — just Docker:
 
 ```bash
-cp .env.example .env   # required: DJANGO_SECRET_KEY and LOGIN_ALLOWED_EMAILS.
-docker compose up      # optionally set a provider key too
+python scripts/setup_env.py   # writes .env with a fresh DJANGO_SECRET_KEY;
+                              # then set LOGIN_ALLOWED_EMAILS in it.
+docker compose up             # optionally set a provider key too
 ```
 
 This starts Postgres, builds the app image, applies migrations, seeds the demo pipeline, and
 serves the app at **http://127.0.0.1:8000/**. The server starts even without an LLM provider
 key — you just can't run the LLM copy step until one is set.
-
-### Or from GitHub Actions (a shareable live link)
-
-To hand someone a running instance instead of a screenshot, dispatch the
-**Demo tunnel** workflow (`.github/workflows/demo-tunnel.yml`): pick a ref (default
-`master`) and how long to keep it up. The job installs the app on a runner, seeds the demo
-pipeline into a throwaway SQLite database, and publishes it through a
-[Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
-— no Cloudflare account or token needed. The `https://<random>.trycloudflare.com` URL lands in
-the run summary, and the hostname stops resolving the moment the job ends.
-
-Sign-in works the same as locally, with the job log standing in for the server log: request a
-link for the address you passed as the `login_email` input, then read the printed link out of
-the live **Hold the tunnel open** step. Nothing else gets in — the allowlist is the gate, and
-`DJANGO_DEBUG` stays off so the URL never serves a debug page. Set `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `GROQ_API_KEY` or `DEEPSEEK_API_KEY` as repo secrets if you want the LLM copy
-step live in the demo; without one the app still serves the seeded pipeline. Cancel the run to
-take the tunnel down early.
 
 ### Signing in
 

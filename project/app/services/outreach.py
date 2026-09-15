@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from project.app.services import actions, sanitize, verify
-from project.app.services.agent.state import AgentClaimLost, StepRecord
-from project.app.services.agent.tools import ToolContext
 from project.app.services.llm import (
     LLMAuthError,
     LLMBadRequestError,
@@ -1153,24 +1151,6 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     return client.complete(prompt, max_tokens=MAX_COPY_TOKENS)
 
 
-class ResumeRefused(RuntimeError):
-    """A resume was asked for and cannot be honoured; nothing was planned.
-
-    Raised before the run span opens: a refused resume writes no row, opens no
-    span and makes no provider call.
-    """
-
-
-class UnknownRun(ResumeRefused):
-    """No ``AgentLeadRun`` carries this ``trace_run_id``; adopting it would mint
-    fresh rows under it and bill a full run."""
-
-
-class AgentDisabled(ResumeRefused):
-    """``OUTREACH_AGENT_ENABLED`` is off, so there is no resume machinery in
-    this process to resume with."""
-
-
 class CopyGenerationGaveUp(RuntimeError):
     """The provider call failed for good, plus what the attempt cost
     (``attempts``, ``elapsed_s``) — the review-queue message needs both."""
@@ -1416,16 +1396,6 @@ class ReviewOutcome:
     violation_count: int = 0
 
 
-@dataclass(frozen=True, slots=True)
-class AgentLeadPlan:
-    """Phase 2's synchronous prep for one lead's agent loop (MUS-29): everything
-    phase 3 would otherwise need the ORM for, carried across the boundary as data."""
-
-    lead_run_pk: int
-    prior_steps: tuple[StepRecord, ...]
-    context: ToolContext
-
-
 def _build_work_item(lead, suppressed, open_keys, today):
     """Phase 2 for one lead: classify it, apply the skip rules, and build its
     prompt while ORM access is still cheap.
@@ -1498,20 +1468,12 @@ def _outcome_without_calling(item, client_error):
     return None
 
 
-async def _agenerate_for(
-    item, client, runtime, client_error=None, agent_plan=None, checkpoint=None
-):
+async def _agenerate_for(item, client, runtime, client_error=None):
     """Phase 3 for one lead: the provider call, and nothing else.
 
     ``lead`` is deliberately passed as ``None`` and ``client`` passed in: phase 3
     must hold no ORM handle, since a lazy query inside the gather raises Django's
     ``SynchronousOnlyOperation``.
-
-    ``agent_plan``/``checkpoint`` select the agent path (MUS-29): the bounded
-    tool-calling loop instead of the single-shot call, with the same outcome type
-    out. No ``try`` wraps it on purpose — the loop maps every recoverable failure
-    itself, so an escaping exception is a crash the mid-run-kill guarantee needs
-    propagated.
     """
     from project.app.services import queue_copy
 
@@ -1520,29 +1482,6 @@ async def _agenerate_for(
     outcome = _outcome_without_calling(item, client_error)
     if outcome is not None:
         return outcome
-    if agent_plan is not None:
-        from project.app.services.agent.loop import run_agent_lead
-
-        agent_outcome = await run_agent_lead(
-            prompt=item.prompt,
-            lead_run_pk=agent_plan.lead_run_pk,
-            prior_steps=agent_plan.prior_steps,
-            context=agent_plan.context,
-            client=client,
-            runtime=runtime,
-            checkpoint=checkpoint,
-        )
-        if agent_outcome.error is not None:
-            # Carried across, not defaulted: phase 4 renders these into "gave up
-            # after N attempt(s) over Ns".
-            return CopyOutcome(
-                error=agent_outcome.error,
-                attempts=agent_outcome.attempts,
-                elapsed_s=agent_outcome.elapsed_s,
-            )
-        # An exhausted run hands back an empty draft with no error; the empty
-        # string then fails phase 4's shape gate and routes to a human.
-        return CopyOutcome(text=queue_copy.normalize_copy(agent_outcome.draft_text))
     try:
         # Normalized here because `suggested_copy` is immutable after this point
         # and every span offset computed later indexes it.
@@ -1569,15 +1508,9 @@ async def _agenerate_for(
     return CopyOutcome(text=text)
 
 
-async def _agenerate_all(
-    work, lead_spans, client, client_error, runtime, agent_plans=None, checkpoint=None
-):
+async def _agenerate_all(work, lead_spans, client, client_error, runtime):
     """Phase 3 for the whole run: every lead at once, at most
     ``runtime.max_in_flight`` of them actually talking to the provider.
-
-    ``agent_plans`` (lead id → :class:`AgentLeadPlan`, or ``None`` when the agent
-    path is off) and the shared ``checkpoint`` ride through to
-    :func:`_agenerate_for` untouched.
 
     ``lead_spans`` rides along zipped with ``work`` (MUS-25): each provider call
     runs with its own span active, per *task*, so in-flight leads cannot leak
@@ -1599,14 +1532,7 @@ async def _agenerate_all(
             return outcome
         async with semaphore:
             with lead_span.active():
-                return await _agenerate_for(
-                    item,
-                    client,
-                    runtime,
-                    client_error,
-                    agent_plan=None if agent_plans is None else agent_plans.get(item.lead.id),
-                    checkpoint=checkpoint,
-                )
+                return await _agenerate_for(item, client, runtime, client_error)
 
     try:
         results = await asyncio.gather(
@@ -1616,16 +1542,7 @@ async def _agenerate_all(
     finally:
         await _aclose_quietly(client)
 
-    outcomes = []
-    for item, result in zip(work, results, strict=True):
-        if agent_plans is not None and isinstance(result, Exception):
-            # On the agent path the loop maps every recoverable failure to a
-            # CopyOutcome itself, so a raw exception here is a mid-run kill and
-            # must not be written out as one lead's provider trouble. Raised
-            # after the gather completes so siblings' checkpoints survive.
-            raise result
-        outcomes.append(_as_outcome(result))
-    return outcomes
+    return [_as_outcome(result) for result in results]
 
 
 async def _aclose_quietly(client):
@@ -1875,7 +1792,7 @@ def _review(item, outcome, level, today):
     )
 
 
-def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | None = None):
+def plan_outreach(lead_ids: Collection[str] | None = None):
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority.
 
@@ -1883,14 +1800,9 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
     run, one ``plan_lead`` span per lead, one ``chat {model}`` span per HTTP
     attempt. With no OTLP endpoint configured those statements are no-ops.
 
-    ``resume_run_id`` (MUS-29) re-enters an agent run that died mid-flight: the
-    run id is reused, existing rows are found rather than minted, and each lead
-    resumes from its persisted steps. Classification is *re-run*, not resumed —
-    the rules' authority over action/priority is never checkpointed around.
-
     ``lead_ids`` (MUS-68) narrows the run to the named clients; ``None`` plans
     the whole book. A scoped run still *reads* every lead on purpose: the read is
-    cheap, and it is the corpus the agent's ``similar_won_deals`` tool needs.
+    cheap and keeps the classification input identical either way.
     """
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
@@ -1903,21 +1815,6 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
     # Resolved once so a mid-run configuration change cannot make half a run
     # behave differently from the other half.
     runtime = llm_runtime.get_planner_runtime()
-
-    # Validated at the mechanism, not only in the view: `plan_outreach` is
-    # importable and scriptable. Ahead of every read and span, so a refused
-    # resume leaves no trace of a run that never started.
-    if resume_run_id is not None:
-        from project.app.models import AgentLeadRun
-
-        # Unknown before disabled: a typo is the more useful thing to hear first.
-        if not AgentLeadRun.objects.filter(trace_run_id=resume_run_id).exists():
-            raise UnknownRun(f"no agent run carries the id {resume_run_id!r}")
-        if not runtime.agent_enabled:
-            raise AgentDisabled(
-                "OUTREACH_AGENT_ENABLED is off; a resume would re-plan every "
-                "lead single-shot under the resumed run's id"
-            )
 
     # Copy grounding strictness (off | standard | strict); see verify.py.
     level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
@@ -1949,17 +1846,14 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
     # `reason` and a `rule_trace` computed on different days.
     today = datetime.date.today()
 
-    with genai.run_span(
-        verify_level=level, max_in_flight=runtime.max_in_flight, run_id=resume_run_id
-    ) as run:
+    with genai.run_span(verify_level=level, max_in_flight=runtime.max_in_flight) as run:
         # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
         # walked four times in a run (phases 2, 3's prompt, 4 and 5), so this is
         # two queries instead of 1 + 4N.
         leads = list(Lead.objects.prefetch_related("events"))
 
-        # The clients this run plans for. `leads` stays the FULL book because it
-        # is also the agent's similar-won-deals corpus; this is the set that gets
-        # classified, prompted and written. An unknown id matches nothing.
+        # The clients this run plans for: the set that gets classified, prompted
+        # and written. An unknown id matches nothing.
         planned_leads = leads if lead_ids is None else [x for x in leads if x.id in set(lead_ids)]
 
         # 2. classify, apply the skip rules, and build prompts (the last phase
@@ -1972,84 +1866,6 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
             work.append(item)
             # So a later lead sharing the key (or a re-entrant run) skips it.
             open_keys.add(item.dedupe_key)
-
-        # 2b. the agent path's synchronous prep (MUS-29): everything the loop
-        # would otherwise ask the ORM for, snapshotted into per-lead
-        # AgentLeadPlans via bulk reads. Run rows are created idempotently so a
-        # resume finds them; prior steps are non-empty only on resume. Behind
-        # `agent_enabled`, so the merged code is inert until an operator opts in.
-        agent_plans = None
-        checkpoint = None
-        if runtime.agent_enabled:
-            from project.app.models import AEAvailabilitySlot
-            from project.app.services.agent import state as agent_state
-            from project.app.services.agent import tools as agent_tools
-
-            lead_ids = [item.lead.id for item in work]
-            similar = {
-                item.lead.id: agent_tools.similar_won_deals_for(item.lead, leads) for item in work
-            }
-            ae_slots = tuple(
-                AEAvailabilitySlot.objects.order_by("slot_start", "ae_name").values(
-                    "ae_name", "ae_email", "slot_start", "slot_end"
-                )
-            )
-            prior_actions: dict[str, list[dict]] = {}
-            for prior in (
-                OutreachAction.objects.filter(lead_id__in=lead_ids)
-                .order_by("created_at", "id")
-                .values("lead_id", "action_type", "status", "reason", "created_at")
-            ):
-                prior_actions.setdefault(prior["lead_id"], []).append(
-                    {
-                        "date": prior["created_at"].date().isoformat(),
-                        "action_type": prior["action_type"],
-                        "status": prior["status"],
-                        "reason": prior["reason"],
-                    }
-                )
-            run_pks = agent_state.create_lead_runs(run.run_id, lead_ids)
-            # Reopen the runs a previous attempt left terminal while still owing
-            # this run a row — the claim CAS refuses `failed`/`exhausted`, so
-            # without this the lead is dropped on this resume and every later
-            # one. "Owes a row" excludes rows phase 5 will supersede, so the
-            # condition below mirrors that DELETE clause for clause.
-            from django.db.models import Q
-
-            keep = set(
-                OutreachAction.objects.filter(trace_run_id=run.run_id)
-                .exclude(
-                    Q(dedupe_key__in=[item.dedupe_key for item in work])
-                    & Q(
-                        status__in=(
-                            OutreachAction.STATUS_PENDING,
-                            OutreachAction.STATUS_SNOOZED,
-                        )
-                    )
-                    & failed_generation_filter()
-                )
-                .values_list("lead_id", flat=True)
-            )
-            agent_state.reopen_runs(
-                run.run_id, [lead_id for lead_id in lead_ids if lead_id not in keep]
-            )
-            # One Checkpoint per run: its lock binds to phase 3's event loop and
-            # its connection borrow captures THIS thread's wrapper.
-            checkpoint = agent_state.Checkpoint(trace_run_id=run.run_id)
-            agent_plans = {
-                item.lead.id: AgentLeadPlan(
-                    lead_run_pk=run_pks[item.lead.id],
-                    prior_steps=agent_state.load_prior_steps(run_pks[item.lead.id]),
-                    context=agent_tools.build_tool_context(
-                        item.lead,
-                        prior_actions.get(item.lead.id, ()),
-                        similar[item.lead.id],
-                        ae_slots,
-                        today,
-                    ),
-                )
-                for item in work
-            }
 
         # A span per lead, opened here and closed in phase 4 — it deliberately
         # covers both, since "how long did this lead take" runs from the provider
@@ -2067,9 +1883,7 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
 
         # 3. call the provider, concurrently -- no ORM in this phase, at all.
         client, client_error = _resolve_client(work)
-        outcomes = _run_coroutine(
-            _agenerate_all(work, lead_spans, client, client_error, runtime, agent_plans, checkpoint)
-        )
+        outcomes = _run_coroutine(_agenerate_all(work, lead_spans, client, client_error, runtime))
 
         # 4. run the output gates
         # strict=True on every zip: a silently truncated zip would drop leads
@@ -2122,13 +1936,9 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
                 rule_trace=rule_trace,
                 verification=verification,
             )
-            for item, review, outcome, (rule_trace, verification) in zip(
-                work, reviews, outcomes, snapshots, strict=True
+            for item, review, (rule_trace, verification) in zip(
+                work, reviews, snapshots, strict=True
             )
-            # A lost claim is not a failure to report: the winning worker's own
-            # finalize writes this lead's row (contract: AgentClaimLost produces
-            # no OutreachAction row).
-            if not isinstance(outcome.error, AgentClaimLost)
         ]
         with transaction.atomic():
             # Supersede the failed-attempt rows this run replaces (they were let
@@ -2145,20 +1955,6 @@ def plan_outreach(resume_run_id: str | None = None, lead_ids: Collection[str] | 
             # return pk-populated objects, since the serializer emits `id` —
             # pinned by tests_planner_perf and, on deploys CI never sees, by
             # checks.bulk_create_pk_check (app.E003).
-            #
-            # Idempotent finalize (MUS-29): a lead that already has a row for
-            # this trace_run_id was finished by an earlier finalize of the same
-            # run, and writing it again would be the duplicate the resume
-            # guarantee forbids. Read inside the transaction so a rival's
-            # committed rows are visible; oa_one_row_per_lead_per_run is the hard
-            # guard beneath. Agent path only — a resume can only re-enter there.
-            if agent_plans is not None:
-                already = set(
-                    OutreachAction.objects.filter(trace_run_id=run.run_id).values_list(
-                        "lead_id", flat=True
-                    )
-                )
-                rows = [row for row in rows if row.lead_id not in already]
             planned = OutreachAction.objects.bulk_create(rows)
 
         # After the write, deliberately: a run that rolled back escapes with

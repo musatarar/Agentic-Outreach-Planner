@@ -74,40 +74,15 @@ OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
 OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
 OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
 
-# --- Agentic copy step (MUS-29) ------------------------------------------------
-# Gates the tool-calling agent path in plan_outreach(); off means the
-# single-shot copy call runs. The three budgets bound one lead's loop:
-# provider calls, tool executions, wall-clock seconds.
-OUTREACH_AGENT_ENABLED = (os.environ.get("OUTREACH_AGENT_ENABLED") or "").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-OUTREACH_AGENT_MAX_STEPS = _env_int("OUTREACH_AGENT_MAX_STEPS", 6)
-OUTREACH_AGENT_MAX_TOOL_CALLS = _env_int("OUTREACH_AGENT_MAX_TOOL_CALLS", 8)
-OUTREACH_AGENT_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_AGENT_PER_LEAD_TIMEOUT_S", 300.0)
-
-# --- Provider call content capture (MUS-72) ------------------------------------
-# Off means ProviderTrace rows stay skeletons. On, each row also stores the bytes
-# actually sent and the answer returned -- lead PII plus third-party CRM text at
-# rest, so it is an operator decision, never a default.
-OUTREACH_TRACE_CONTENT_ENABLED = (
-    os.environ.get("OUTREACH_TRACE_CONTENT_ENABLED") or ""
-).strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # The key formerly hardcoded here is committed to git and must never be reused.
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     raise ImproperlyConfigured(
-        "DJANGO_SECRET_KEY is not set. Copy .env.example to .env (it ships a "
-        "freshly generated key for local/demo use) or set your own via the "
-        "environment for production."
+        "DJANGO_SECRET_KEY is not set. Run `python scripts/setup_env.py` to "
+        "write .env with a freshly generated key, or set the variable in the "
+        "environment yourself."
     )
 
 # SECURITY WARNING: don't run with debug turned on in production!
