@@ -1,7 +1,7 @@
 """Component artifact: agent_models (MUS-29).
 
 Pins the agent-loop schema (migration 0007_agent_loop): ``AgentLeadRun`` epoch-CAS
-claims, append-only ``AgentStep``, ``ReviewDecision`` send kinds, and terminal ``sent``.
+claims, append-only ``AgentStep``, and ``ReviewDecision`` send kinds.
 """
 
 from django.db import IntegrityError, transaction
@@ -122,20 +122,3 @@ class AgentRunSchemaTests(TestCase):
         row = alr.objects.get(pk=run.pk)
         self.assertEqual(row.claimed_by, "worker-a")
         self.assertEqual(row.claim_epoch, seen + 1)
-
-    def test_approved_to_sent_is_allowed_and_sent_is_terminal(self):
-        self.assertTrue(hasattr(OutreachAction, "STATUS_SENT"))  # red at skeleton
-        action = OutreachAction.objects.create(
-            lead=self.lead, priority=1, action_type="trial_engagement_followup", reason="r"
-        )
-        action.status = OutreachAction.STATUS_APPROVED
-        self.assertTrue(action.can_transition_to(OutreachAction.STATUS_SENT))
-        self.assertTrue(action.can_transition_to(OutreachAction.STATUS_PENDING))
-        action.status = OutreachAction.STATUS_SENT
-        for target in (
-            OutreachAction.STATUS_PENDING,
-            OutreachAction.STATUS_APPROVED,
-            OutreachAction.STATUS_SNOOZED,
-            OutreachAction.STATUS_DISMISSED,
-        ):
-            self.assertFalse(action.can_transition_to(target))

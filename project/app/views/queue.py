@@ -357,7 +357,7 @@ class QueueApproveView(QueueMutationView):
             if latest is not None:
                 latest.committed = True
                 latest.save(update_fields=["committed"])
-            # Record of human dispatch
+            # Record of the human approval: who, and over exactly which bytes.
             approved = action.effective_copy
             ReviewDecision.objects.create(
                 outreach_action=action,

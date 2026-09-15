@@ -1,4 +1,4 @@
-"""The outreach decision audit trail: planner output through the send record."""
+"""The outreach decision audit trail: planner output through reviewer decisions."""
 
 from django.db import models
 from django.db.models import Q
@@ -21,13 +21,11 @@ class OutreachAction(models.Model):  # what the planner decided/did
     STATUS_APPROVED = "approved"
     STATUS_SNOOZED = "snoozed"
     STATUS_DISMISSED = "dismissed"
-    STATUS_SENT = "sent"  # terminal: recorded outbound mail exists (MUS-29)
     STATUS_CHOICES = [
         (STATUS_PENDING, "Pending"),
         (STATUS_APPROVED, "Approved"),
         (STATUS_SNOOZED, "Snoozed"),
         (STATUS_DISMISSED, "Dismissed"),
-        (STATUS_SENT, "Sent"),
     ]
 
     TRIGGER_TOMORROW = "tomorrow"
@@ -90,14 +88,13 @@ class OutreachAction(models.Model):  # what the planner decided/did
     verification = models.JSONField(default=dict, blank=True)
 
     # The state machine. Anything not listed is a 409 `invalid_transition`,
-    # never a silent no-op. `sent` is terminal; undo of a dismissal must also
-    # revoke the suppression.
+    # never a silent no-op. Undo of a dismissal must also revoke the
+    # suppression.
     ALLOWED_TRANSITIONS = {
         STATUS_PENDING: (STATUS_APPROVED, STATUS_SNOOZED, STATUS_DISMISSED),
         STATUS_SNOOZED: (STATUS_APPROVED, STATUS_SNOOZED, STATUS_DISMISSED, STATUS_PENDING),
-        STATUS_APPROVED: (STATUS_PENDING, STATUS_SENT),
+        STATUS_APPROVED: (STATUS_PENDING,),
         STATUS_DISMISSED: (STATUS_PENDING,),
-        STATUS_SENT: (),
     }
 
     # Editing is not a status transition, so it needs its own guard.
@@ -157,8 +154,8 @@ class ReviewDecision(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     # ---- Send-decision fields (MUS-29); blank on resolution kinds ----------
-    # Snapshot of `effective_copy` at decision time, hash-bound so dispatch
-    # refuses to send anything else.
+    # Snapshot of `effective_copy` at decision time, plus its digest, so the
+    # record says exactly which bytes the reviewer approved.
     approved_copy = models.TextField(blank=True, default="")
     approved_body_sha256 = models.CharField(max_length=64, blank=True, default="")
     # Stamped by undo; a voided approval is kept for audit and never authorizes a send.
@@ -242,22 +239,3 @@ class OutreachEdit(models.Model):
 
     def __str__(self):
         return f"edit of action {self.outreach_action_id} @ {self.created_at:%Y-%m-%d %H:%M}"
-
-
-class OutboundSend(models.Model):
-    """The single send record: the DB backstop against double-send (MUS-29).
-
-    The OneToOne makes a second send row impossible. PROTECT on both FKs:
-    records of real outbound mail must outlive everything that produced them.
-    """
-
-    outreach_action = models.OneToOneField(
-        OutreachAction, on_delete=models.PROTECT, related_name="outbound_send"
-    )
-    decision = models.ForeignKey(ReviewDecision, on_delete=models.PROTECT, related_name="+")
-    body_sha256 = models.CharField(max_length=64)
-    channel = models.CharField(max_length=16, default="console")
-    sent_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"send for action {self.outreach_action_id}"

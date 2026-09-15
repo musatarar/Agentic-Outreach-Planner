@@ -339,8 +339,6 @@ class CrashResumeTests(TestCase):
             fields,
             {"draft_text", "error", "steps_used", "tool_calls_used", "attempts", "elapsed_s"},
         )
-        src = inspect.getsource(agent_loop) + inspect.getsource(state)
-        self.assertNotIn("dispatch", src)  # services/agent/ never imports the send gate
 
 
 @override_settings(
