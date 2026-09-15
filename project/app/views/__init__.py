@@ -3,23 +3,14 @@
 from .auth import AuthConsumeView, AuthLogoutView, AuthMeView, AuthRequestLinkView
 from .leads import LeadComposeView, LeadListView
 from .llm import LLMCatalogView, LLMConfigTestView, LLMConfigView
-from .outreach import (
-    OutreachListView,
-    OutreachReportView,
-    OutreachRunView,
-    ReviewDecisionListCreateView,
-    ReviewQueueView,
-)
-from .queue import (
-    QueueApproveView,
-    QueueDetailView,
-    QueueDismissView,
-    QueueDoneView,
-    QueueEditView,
-    QueueListView,
-    QueueSnoozeView,
-    QueueUndoView,
-    QueueVerifyView,
+from .outreach import OutreachRunView
+from .review import (
+    ReviewApproveView,
+    ReviewDismissView,
+    ReviewEditView,
+    ReviewListView,
+    ReviewReopenView,
+    ReviewVerifyView,
 )
 
 __all__ = [
@@ -32,18 +23,11 @@ __all__ = [
     "LLMCatalogView",
     "LLMConfigTestView",
     "LLMConfigView",
-    "OutreachListView",
-    "OutreachReportView",
     "OutreachRunView",
-    "QueueApproveView",
-    "QueueDetailView",
-    "QueueDismissView",
-    "QueueDoneView",
-    "QueueEditView",
-    "QueueListView",
-    "QueueSnoozeView",
-    "QueueUndoView",
-    "QueueVerifyView",
-    "ReviewDecisionListCreateView",
-    "ReviewQueueView",
+    "ReviewApproveView",
+    "ReviewDismissView",
+    "ReviewEditView",
+    "ReviewListView",
+    "ReviewReopenView",
+    "ReviewVerifyView",
 ]

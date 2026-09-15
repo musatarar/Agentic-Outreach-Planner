@@ -10,8 +10,6 @@ from .llm import (
 from .outreach import (
     DismissedOutreachKey,
     OutreachAction,
-    OutreachEdit,
-    ReviewDecision,
 )
 
 __all__ = [
@@ -23,6 +21,4 @@ __all__ = [
     "LLMProvider",
     "LoginToken",
     "OutreachAction",
-    "OutreachEdit",
-    "ReviewDecision",
 ]

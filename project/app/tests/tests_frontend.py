@@ -4,27 +4,11 @@ from django.test import TestCase
 class FrontendTestCase(TestCase):
     """Minimal frontend tests."""
 
-    def test_index_page_returns_200(self):
-        """Test that the index page loads successfully."""
+    def test_root_redirects_to_the_leads_page(self):
+        """`/` is not a React route: it sends you to the book of leads."""
         response = self.client.get("/")
-        self.assertEqual(response.status_code, 200)
-
-    def test_index_page_contains_title(self):
-        """Test that the index page contains 'Outreach Planner'."""
-        response = self.client.get("/")
-        self.assertContains(response, "Outreach Planner")
-
-    def test_reports_page_returns_200_with_title(self):
-        """Test that the reports page loads and contains its title."""
-        response = self.client.get("/reports/")
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Outreach Reports")
-
-    def test_next_actions_page_returns_200_with_title(self):
-        """Test that the BD Dashboard page loads and contains its title."""
-        response = self.client.get("/next-actions/")
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "BD Dashboard")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/leads/")
 
     def test_leads_shell_renders(self):
         """The leads table's shell loads, uses the SPA template, and sets the CSRF cookie.
@@ -50,7 +34,7 @@ class FrontendTestCase(TestCase):
 
 
 class AuthShellTests(TestCase):
-    """The four SPA shells (MUS-38): deliberately public, and each sets the csrftoken
+    """The three SPA shells (MUS-38): deliberately public, and each sets the csrftoken
     cookie because /signin and /auth/consume POST before any other page has run."""
 
     def test_signin_shell_renders(self):
@@ -71,24 +55,17 @@ class AuthShellTests(TestCase):
         response = self.client.get("/inbox")
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "app/inbox.html")
-        self.assertContains(response, "Triage Inbox")
-        self.assertIn("csrftoken", response.cookies)
-
-    def test_done_shell_renders(self):
-        response = self.client.get("/done")
-        self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "app/done.html")
-        self.assertContains(response, "Done Today")
+        self.assertContains(response, "Review Inbox")
         self.assertIn("csrftoken", response.cookies)
 
     def test_shells_are_public(self):
         """No shell redirects an anonymous visitor; 302 here means @login_required crept in."""
-        for url in ("/signin", "/auth/consume", "/inbox", "/done"):
+        for url in ("/signin", "/auth/consume", "/inbox"):
             with self.subTest(url=url):
                 self.assertEqual(self.client.get(url).status_code, 200)
 
     def test_trailing_slash_variants_are_not_routed(self):
         """The React routes carry no trailing slash; /inbox/ must 404, not silently work."""
-        for url in ("/signin/", "/auth/consume/", "/inbox/", "/done/"):
+        for url in ("/signin/", "/auth/consume/", "/inbox/"):
             with self.subTest(url=url):
                 self.assertEqual(self.client.get(url).status_code, 404)

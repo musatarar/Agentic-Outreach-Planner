@@ -1,14 +1,13 @@
-"""Copy normalization, verification snapshots and edit diffs (MUS-39).
+"""Copy normalization and verification snapshots (MUS-39).
 
-Shared between ``plan_outreach()`` and the triage queue views — a service must
-not import from the API layer. Normalization happens *before* storing copy or
+Shared between ``plan_outreach()`` and the review views — a service must not
+import from the API layer. Normalization happens *before* storing copy or
 computing any offset; verification and approval each have one reading here.
 """
 
 from __future__ import annotations
 
 import datetime
-import difflib
 from typing import Any
 
 from project.app.services import verify
@@ -68,37 +67,3 @@ def can_approve(report: dict | None) -> bool:
     if not report:
         return False
     return bool(report.get("can_approve", False))
-
-
-def diff_edit(before: str, after: str) -> dict:
-    """Summarize one reviewer edit for the eval corpus (MUS-21).
-
-    ``diff_ops`` is schema v1: ``SequenceMatcher`` opcodes minus ``"equal"``
-    runs, each carrying its before/after text.
-    """
-    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
-    ops: list[dict] = []
-    chars_added = 0
-    chars_removed = 0
-    for op, a0, a1, b0, b1 in matcher.get_opcodes():
-        if op == "equal":
-            continue
-        ops.append(
-            {
-                "op": op,
-                "a0": a0,
-                "a1": a1,
-                "b0": b0,
-                "b1": b1,
-                "before": before[a0:a1],
-                "after": after[b0:b1],
-            }
-        )
-        chars_added += b1 - b0
-        chars_removed += a1 - a0
-    return {
-        "diff_ops": ops,
-        "chars_added": chars_added,
-        "chars_removed": chars_removed,
-        "similarity": matcher.ratio(),
-    }

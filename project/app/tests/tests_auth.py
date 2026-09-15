@@ -473,7 +473,7 @@ class ConsumeEndpointTests(AuthAPITestCase):
     def test_consume_rotates_the_csrf_token(self):
         # Contract 9.12: a pre-consume csrftoken 403s unless the client re-reads
         # the cookie.
-        self.client.get("/")
+        self.client.get("/leads/")
         before = self.client.cookies["csrftoken"].value
         issued = self._issue()
 
@@ -659,14 +659,17 @@ class UnauthenticatedAccessTests(APITestCase):
     PREVIOUSLY_PUBLIC = [
         ("get", "/api/leads/"),
         ("get", "/api/outreach/"),
-        ("get", "/api/reports/"),
-        ("get", "/api/review-queue/"),
-        ("get", "/api/review-decisions/"),
         ("get", "/api/llm/catalog/"),
         ("get", "/api/llm/config/"),
         ("post", "/api/outreach/run/"),
-        ("post", "/api/review-decisions/"),
         ("post", "/api/llm/config/test/"),
+        # The review surface: the permission check runs before the view, so an
+        # id that does not exist still answers 401 rather than 404.
+        ("post", "/api/outreach/1/edit/"),
+        ("post", "/api/outreach/1/verify/"),
+        ("post", "/api/outreach/1/approve/"),
+        ("post", "/api/outreach/1/dismiss/"),
+        ("post", "/api/outreach/1/reopen/"),
     ]
 
     def test_every_previously_public_endpoint_is_401_when_anonymous(self):
@@ -687,14 +690,6 @@ class UnauthenticatedAccessTests(APITestCase):
         resp = self.client.get("/api/leads/")
         self.assertEqual(resp.headers["WWW-Authenticate"], 'Session realm="api"')
 
-    def test_queue_surface_is_401_when_anonymous(self):
-        """Contract 9.4 applies to MUS-39's `/api/queue/` surface too; the
-        assertion activates when that route lands."""
-        resp = self.client.get("/api/queue/")
-        if resp.status_code == 404:
-            self.skipTest("/api/queue/ arrives with MUS-39; this assertion activates then")
-        self.assertEqual(resp.status_code, 401)
-
     def test_the_allow_any_exemption_list_is_exactly_three_endpoints(self):
         exempt = {
             pattern.name
@@ -706,7 +701,7 @@ class UnauthenticatedAccessTests(APITestCase):
     def test_the_html_shells_stay_public(self):
         # The shells render an empty #root; @login_required would replace the
         # designed sign-in redirect with a Django 302.
-        for url in ("/", "/reports/", "/next-actions/", "/settings/"):
+        for url in ("/leads/", "/inbox", "/signin", "/settings/"):
             with self.subTest(url=url):
                 self.assertEqual(Client().get(url).status_code, 200)
 
@@ -718,7 +713,7 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
 
     def test_stale_csrf_token_is_rejected_and_the_fresh_one_is_accepted(self):
         client = Client(enforce_csrf_checks=True)
-        client.get("/")  # @ensure_csrf_cookie shell
+        client.get("/signin")  # @ensure_csrf_cookie shell
         stale = client.cookies["csrftoken"].value
 
         issued = login_links.issue_login_link(ALLOWED)
@@ -734,7 +729,7 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
         self.assertNotEqual(fresh, stale)
 
         with_stale = client.post(
-            "/api/review-decisions/",
+            "/api/outreach/run/",
             json.dumps({}),
             content_type="application/json",
             HTTP_X_CSRFTOKEN=stale,
@@ -743,7 +738,7 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
         self.assertEqual(with_stale.json()["code"], "csrf_failed")
 
         with_fresh = client.post(
-            "/api/review-decisions/",
+            "/api/outreach/run/",
             json.dumps({}),
             content_type="application/json",
             HTTP_X_CSRFTOKEN=fresh,
@@ -766,5 +761,5 @@ class AuthenticatedAPITestCaseTests(AuthenticatedAPITestCase):
 
     def test_json_format_requests_still_work(self):
         # client_class is APIClient so existing format="json" call sites keep working.
-        resp = self.client.post("/api/review-decisions/", {}, format="json")
+        resp = self.client.put("/api/llm/config/", {}, format="json")
         self.assertEqual(resp.status_code, 400)

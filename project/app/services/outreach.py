@@ -30,10 +30,6 @@ from project.app.services.llm.retry import acall_with_retry
 
 MAX_COPY_TOKENS = 500
 
-# Schema version of the trace envelope produced by `explain()`.
-# Bump only with a coordinated FE change.
-TRACE_SCHEMA_VERSION = 1
-
 # Phrases (lowercase) suggesting the lead asked to be contacted later — a "hold".
 HOLD_PHRASES = [
     "waiting on",
@@ -66,22 +62,11 @@ POWER_USER_DEALS = 5  # deals closed to count as a power user
 POWER_USER_SUBMISSIONS = 10  # quote submissions to count as a power user
 
 # Priority score -> priority band; the first band whose ``min_score`` the score
-# reaches wins. Emitted verbatim in the trace envelope.
+# reaches wins.
 PRIORITY_BANDS = (
     {"priority": 1, "min_score": 5},
     {"priority": 2, "min_score": 2},
     {"priority": 3, "min_score": 0},
-)
-
-# Action rules, in the order `determine_action` evaluates them. Index into this
-# tuple is the frozen ``matched_rule_index``.
-ACTION_RULES = (
-    ("R1_complete_onboarding", "Demo completed but never signed up"),
-    ("R2_power_user", "Power user near a reward / volume-pricing milestone"),
-    ("R3_follow_up_after_hold", "Hold period has passed and the lead went quiet"),
-    ("R4_reengage_dormant", "Signed up but stopped using the portal"),
-    ("R5_nudge_usage", "Active but underusing"),
-    ("R6_unknown", "No pattern matched — needs human"),
 )
 
 
@@ -134,10 +119,6 @@ def _notes_blob(lead):
     return " ".join(sanitize.sanitize_untrusted(p) for p in parts).lower()
 
 
-def _contains_any(text, phrases):
-    return any(p in text for p in phrases)
-
-
 def _matched_phrase(text, phrases):
     for p in phrases:
         if p in text:
@@ -181,230 +162,16 @@ def _gone_quiet(lead, today):
     needs a structured corroborator (a real ``no_reply`` email event, or a
     genuinely stale trusted ``last_contacted_date``); see SECURITY.md.
     """
-    return _gone_quiet_from(
-        _days_since(getattr(lead, "last_contacted_date", None), today),
-        _had_no_reply_email(lead),
-        _matched_phrase(_notes_blob(lead), STALL_PHRASES),
-    )
-
-
-def _gone_quiet_from(days_contact, no_reply, stall_phrase):
-    """The gone-quiet predicate over already-evaluated inputs, split out so the
-    trace records the same evaluation the branch was taken on."""
+    days_contact = _days_since(getattr(lead, "last_contacted_date", None), today)
     if days_contact is None or days_contact < QUIET_CONTACT_DAYS:
         return False
     # Structured corroborator: a real no-reply email is definitive on its own.
-    if no_reply:
+    if _had_no_reply_email(lead):
         return True
     # A stall phrase counts only alongside a genuinely stale trusted contact date.
-    if days_contact >= STALE_CONTACT_DAYS and stall_phrase is not None:
-        return True
+    if days_contact >= STALE_CONTACT_DAYS:
+        return _matched_phrase(_notes_blob(lead), STALL_PHRASES) is not None
     return False
-
-
-# --------------------------------------------------------------------------
-# rule trace primitives
-# --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Condition:
-    """One evaluated rule condition, recorded exactly as it was evaluated."""
-
-    id: str
-    field: str
-    label: str
-    operator: str
-    threshold: Any
-    value: Any
-    unit: str
-    passed: bool
-    weight: int
-    source: str
-    display: str
-
-    def to_dict(self) -> dict:
-        return {
-            "kind": "condition",
-            "id": self.id,
-            "field": self.field,
-            "label": self.label,
-            "operator": self.operator,
-            "threshold": _jsonable(self.threshold),
-            "value": _jsonable(self.value),
-            "unit": self.unit,
-            "passed": self.passed,
-            "weight": self.weight,
-            "source": self.source,
-            "display": self.display,
-        }
-
-
-@dataclass(frozen=True)
-class ConditionGroup:
-    """A compound signal. Nesting is one level only: no group holds a group."""
-
-    id: str
-    label: str
-    operator: str  # "all_of" | "any_of"
-    passed: bool
-    weight: int
-    display: str
-    conditions: tuple
-
-    def to_dict(self) -> dict:
-        return {
-            "kind": "group",
-            "id": self.id,
-            "label": self.label,
-            "operator": self.operator,
-            "passed": self.passed,
-            "weight": self.weight,
-            "display": self.display,
-            "conditions": [c.to_dict() for c in self.conditions],
-        }
-
-
-def _jsonable(value):
-    """Make a threshold/value JSON-serializable (MUS-39 persists this)."""
-    if isinstance(value, datetime.datetime):
-        return value.isoformat()
-    if isinstance(value, datetime.date):
-        return value.isoformat()
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
-
-
-def _render_number(value):
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
-
-
-def _render(value, unit):
-    """Render a threshold/value for the mono `display` string."""
-    if value is None:
-        return "(none)"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if unit == "days":
-        return f"{_render_number(value)}d"
-    if unit == "usd":
-        return f"${_render_number(value):,}"
-    if unit == "date":
-        return _jsonable(value)
-    if unit == "text":
-        return f'"{value}"'
-    return f"{_render_number(value)}"
-
-
-def _display_for(*, id, field, operator, threshold, value, unit, source):
-    """Server-rendered mono string; the FE prints it verbatim."""
-    # Container-sourced predicates read as their own id — the field name alone says nothing.
-    if source in ("events", "notes") or unit == "bool":
-        return f"{id} → {_render(value, unit)}"
-    if operator in ("exists", "absent"):
-        return f"{field} {operator} → {_render(value, unit)}"
-    if value is None:
-        return f"{field} {operator} {threshold} → (unset)"
-    return f"{field} {operator} {_render(threshold, unit)} → {_render(value, unit)}"
-
-
-def _evaluate(operator, value, threshold, null_passes):
-    """Perform the comparison. ``_cond`` never re-evaluates the expression."""
-    if operator == "exists":
-        return bool(value)
-    if operator == "absent":
-        return not bool(value)
-    if operator == "contains":
-        # `value` is the matched needle (or None when nothing matched).
-        return value is not None
-    if operator == "==":
-        return value == threshold
-    if operator == "!=":
-        return value != threshold
-    if operator == "in":
-        return value in threshold
-    if value is None:
-        # Some rules treat a missing value as satisfying the condition
-        # (e.g. never contacted counts as overdue), most do not.
-        return null_passes
-    if operator == ">=":
-        return value >= threshold
-    if operator == ">":
-        return value > threshold
-    if operator == "<=":
-        return value <= threshold
-    if operator == "<":
-        return value < threshold
-    raise ValueError(f"unsupported operator: {operator!r}")
-
-
-def _cond(
-    *,
-    id,
-    field,
-    label,
-    operator,
-    threshold,
-    value,
-    unit,
-    weight=0,
-    source="lead",
-    trace=None,
-    null_passes=False,
-) -> Condition:
-    """Evaluate one condition, record it, and return it; callers branch on the
-    returned ``.passed`` so the trace and the taken branch can never disagree."""
-    passed = _evaluate(operator, value, threshold, null_passes)
-    condition = Condition(
-        id=id,
-        field=field,
-        label=label,
-        operator=operator,
-        threshold=threshold,
-        value=value,
-        unit=unit,
-        passed=passed,
-        weight=weight,
-        source=source,
-        display=_display_for(
-            id=id,
-            field=field,
-            operator=operator,
-            threshold=threshold,
-            value=value,
-            unit=unit,
-            source=source,
-        ),
-    )
-    if trace is not None:
-        trace.append(condition.to_dict())
-    return condition
-
-
-def _group(*, id, label, operator, weight, conditions, trace=None, passed=None) -> ConditionGroup:
-    """Record a compound signal built from already-evaluated conditions."""
-    if passed is None:
-        if operator == "all_of":
-            passed = all(c.passed for c in conditions)
-        elif operator == "any_of":
-            passed = any(c.passed for c in conditions)
-        else:
-            raise ValueError(f"unsupported group operator: {operator!r}")
-    group = ConditionGroup(
-        id=id,
-        label=label,
-        operator=operator,
-        passed=passed,
-        weight=weight,
-        display=f"{id} → {'true' if passed else 'false'}",
-        conditions=tuple(conditions),
-    )
-    if trace is not None:
-        trace.append(group.to_dict())
-    return group
 
 
 # --------------------------------------------------------------------------
@@ -412,208 +179,46 @@ def _group(*, id, label, operator, weight, conditions, trace=None, passed=None) 
 # --------------------------------------------------------------------------
 
 
-def _score_priority(lead, today):
-    """Additive priority scoring. Returns ``(priority, score, signals)``, where
-    ``signals`` is the ``Condition``/``ConditionGroup`` dicts in evaluation order."""
-    signals: list = []
+def determine_priority(lead, today=None) -> int:
+    """Score a lead and map to priority 1 (highest) .. 3 (lowest).
+
+    Additive scoring: every signal that fires adds its weight, and the first
+    band the total reaches wins. Pure and duck-typed — the rules eval runs this
+    without a database.
+    """
+    today = today or datetime.date.today()
     score = 0
 
     # Book size: bigger books are worth more attention.
     book = getattr(lead, "estimated_book_size_usd", 0) or 0
-    c_book_very_large = _cond(
-        id="book_size_very_large",
-        field="estimated_book_size_usd",
-        label="estimated book size",
-        operator=">=",
-        threshold=5_000_000,
-        value=book,
-        unit="usd",
-        weight=2,
-        source="lead",
-        trace=signals,
-    )
-    c_book_large = _cond(
-        id="book_size_large",
-        field="estimated_book_size_usd",
-        label="estimated book size",
-        operator=">=",
-        threshold=2_000_000,
-        value=book,
-        unit="usd",
-        weight=1,
-        source="lead",
-        trace=signals,
-    )
-    if c_book_very_large.passed:
+    if book >= 5_000_000:
         score += 2
-    elif c_book_large.passed:
+    elif book >= 2_000_000:
         score += 1
 
     # Demo completed but never signed up: high-value conversion opportunity.
-    signed_up = getattr(lead, "signed_up_date", None)
-    g_demo = _group(
-        id="demo_without_signup",
-        label="demo completed, never signed up",
-        operator="all_of",
-        weight=2,
-        conditions=[
-            _cond(
-                id="stage_is_demo_completed",
-                field="stage",
-                label="stage",
-                operator="==",
-                threshold="demo_completed",
-                value=getattr(lead, "stage", ""),
-                unit="text",
-                source="lead",
-            ),
-            _cond(
-                id="signed_up_date_absent",
-                field="signed_up_date",
-                label="signed up date",
-                operator="absent",
-                threshold=None,
-                value=_as_date(signed_up),
-                unit="date",
-                source="lead",
-            ),
-        ],
-        trace=signals,
-    )
-    if g_demo.passed:
+    signed_up = _as_date(getattr(lead, "signed_up_date", None))
+    if getattr(lead, "stage", "") == "demo_completed" and not signed_up:
         score += 2
 
     # We reached out, time passed, and they went quiet (stall notes / no-reply).
     days_contact = _days_since(getattr(lead, "last_contacted_date", None), today)
-    no_reply = _had_no_reply_email(lead)
-    stall_phrase = _matched_phrase(_notes_blob(lead), STALL_PHRASES)
-    g_quiet = _group(
-        id="gone_quiet",
-        label="reached out, went quiet",
-        operator="all_of",
-        weight=2,
-        conditions=[
-            _cond(
-                id="contact_old_enough",
-                field="days_since_last_contact",
-                label="days since last contact",
-                operator=">=",
-                threshold=QUIET_CONTACT_DAYS,
-                value=days_contact,
-                unit="days",
-                source="derived",
-            ),
-            _cond(
-                id="no_reply_email_present",
-                field="events",
-                label="email_sent with outcome=no_reply",
-                operator="exists",
-                threshold=None,
-                value=no_reply,
-                unit="bool",
-                source="events",
-            ),
-            _cond(
-                id="stall_phrase_in_notes",
-                field="hubspot_notes",
-                label="stall phrase in notes",
-                operator="contains",
-                threshold="STALL_PHRASES",
-                value=stall_phrase,
-                unit="text",
-                source="notes",
-            ),
-        ],
-        # NOT a literal conjunction: a no-reply email alone suffices, and a stall
-        # phrase needs a stale contact date — see _gone_quiet_from.
-        passed=_gone_quiet_from(days_contact, no_reply, stall_phrase),
-        trace=signals,
-    )
-    if g_quiet.passed:
+    if _gone_quiet(lead, today):
         score += 2
 
     # Contact is overdue regardless of why (never contacted counts as overdue).
-    c_contact_stale = _cond(
-        id="contact_stale",
-        field="days_since_last_contact",
-        label="days since last contact",
-        operator=">",
-        threshold=STALE_CONTACT_DAYS,
-        value=days_contact,
-        unit="days",
-        weight=1,
-        source="derived",
-        null_passes=True,
-        trace=signals,
-    )
-    if c_contact_stale.passed:
+    if days_contact is None or days_contact > STALE_CONTACT_DAYS:
         score += 1
 
     # Trial at risk: signed up a while ago, zero deals closed.
     deals = getattr(lead, "deals_closed", 0) or 0
-    g_trial = _group(
-        id="trial_at_risk",
-        label="trial at risk",
-        operator="all_of",
-        weight=1,
-        conditions=[
-            _cond(
-                id="signup_old_enough",
-                field="days_since_signup",
-                label="days since signup",
-                operator=">",
-                threshold=TRIAL_AT_RISK_DAYS,
-                value=_days_since(signed_up, today),
-                unit="days",
-                source="derived",
-            ),
-            _cond(
-                id="zero_deals",
-                field="deals_closed",
-                label="deals closed",
-                operator="==",
-                threshold=0,
-                value=deals,
-                unit="count",
-                source="lead",
-            ),
-        ],
-        trace=signals,
-    )
-    if g_trial.passed:
+    days_signup = _days_since(signed_up, today)
+    if days_signup is not None and days_signup > TRIAL_AT_RISK_DAYS and deals == 0:
         score += 1
 
     # Hot revenue engagement: heavy submitters/closers deserve attention too.
-    g_hot = _group(
-        id="hot_engagement",
-        label="hot revenue engagement",
-        operator="any_of",
-        weight=1,
-        conditions=[
-            _cond(
-                id="deals_power_user",
-                field="deals_closed",
-                label="deals closed",
-                operator=">=",
-                threshold=POWER_USER_DEALS,
-                value=deals,
-                unit="count",
-                source="lead",
-            ),
-            _cond(
-                id="submissions_power_user",
-                field="quotes_submitted",
-                label="quotes submitted",
-                operator=">=",
-                threshold=POWER_USER_SUBMISSIONS,
-                value=getattr(lead, "quotes_submitted", 0) or 0,
-                unit="count",
-                source="lead",
-            ),
-        ],
-        trace=signals,
-    )
-    if g_hot.passed:
+    submitted = getattr(lead, "quotes_submitted", 0) or 0
+    if deals >= POWER_USER_DEALS or submitted >= POWER_USER_SUBMISSIONS:
         score += 1
 
     priority = PRIORITY_BANDS[-1]["priority"]
@@ -621,20 +226,6 @@ def _score_priority(lead, today):
         if score >= band["min_score"]:
             priority = band["priority"]
             break
-    return priority, score, signals
-
-
-def determine_priority(lead, today=None, *, trace: list | None = None) -> int:
-    """Score a lead and map to priority 1 (highest) .. 3 (lowest).
-
-    ``trace`` is a keyword-only *out*-parameter: when a list is passed, the
-    ``Condition``/``ConditionGroup`` dicts behind the score are appended to it;
-    the return value is unaffected.
-    """
-    today = today or datetime.date.today()
-    priority, _score, signals = _score_priority(lead, today)
-    if trace is not None:
-        trace.extend(signals)
     return priority
 
 
@@ -643,34 +234,15 @@ def determine_priority(lead, today=None, *, trace: list | None = None) -> int:
 # --------------------------------------------------------------------------
 
 
-def _rule_env(index, conditions, action_type, rejected):
-    rule_id, rule_label = ACTION_RULES[index]
-    return {
-        "value": action_type,
-        "rule_id": rule_id,
-        "rule_label": rule_label,
-        "matched_rule_index": index,
-        "conditions": list(conditions),
-        "rejected_rules": rejected,
-    }
+def determine_action(lead, today=None) -> tuple[str, str]:
+    """Classify the right outreach action for a lead. Returns (action_type, reason).
 
-
-def _rejected_rule(index, conditions):
-    rule_id, rule_label = ACTION_RULES[index]
-    return {
-        "rule_id": rule_id,
-        "rule_label": rule_label,
-        "matched": False,
-        "conditions": list(conditions),
-    }
-
-
-def _classify_action(lead, today):
-    """Core classifier. Returns ``(action_type, reason, action_envelope)``.
-
-    Conditions short-circuit in rule order, so a rejected rule records only the
-    conditions actually reached.
+    The six rules are evaluated in order and the first match wins; `reason` is
+    the plain-text why a reviewer reads and the prompt carries. Pure and
+    duck-typed, exactly like :func:`determine_priority`.
     """
+    today = today or datetime.date.today()
+
     name = getattr(lead, "contact_name", "this lead")
     notes = getattr(lead, "hubspot_notes", "") or ""
     blob = _notes_blob(lead)
@@ -682,322 +254,100 @@ def _classify_action(lead, today):
     days_login = _days_since(last_login, today)
     days_contact = _days_since(getattr(lead, "last_contacted_date", None), today)
     milestone = _milestone_from_notes(lead)
-    signed_up = getattr(lead, "signed_up_date", None)
-    rejected: list = []
+    signed_up = _as_date(getattr(lead, "signed_up_date", None))
 
     # 1. Demo completed but never signed up -> complete onboarding.
-    r1: list = []
-    c_stage = _cond(
-        id="stage_is_demo_completed",
-        field="stage",
-        label="stage",
-        operator="==",
-        threshold="demo_completed",
-        value=getattr(lead, "stage", ""),
-        unit="text",
-        source="lead",
-        trace=r1,
-    )
-    if c_stage.passed:
-        c_no_signup = _cond(
-            id="signed_up_date_absent",
-            field="signed_up_date",
-            label="signed up date",
-            operator="absent",
-            threshold=None,
-            value=_as_date(signed_up),
-            unit="date",
-            source="lead",
-            trace=r1,
+    if getattr(lead, "stage", "") == "demo_completed" and not signed_up:
+        reason = (
+            f"{name} completed a demo but never signed up, and the agency's "
+            f"estimated book is ${book:,.0f}."
         )
-        if c_no_signup.passed:
-            reason = (
-                f"{name} completed a demo but never signed up, and the agency's "
-                f"estimated book is ${book:,.0f}."
-            )
-            stall = _matched_phrase(blob, STALL_PHRASES)
-            promise = _sentence_containing(notes, "follow up") or _sentence_containing(
-                notes, "get back"
-            )
-            if promise:
-                reason += f' Notes say: "{promise}"'
-            if days_contact is not None:
-                reason += f" Last contact was {days_contact} days ago"
-                reason += " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
-            return (
-                actions.COMPLETE_ONBOARDING,
-                reason,
-                _rule_env(0, r1, actions.COMPLETE_ONBOARDING, rejected),
-            )
-    rejected.append(_rejected_rule(0, r1))
+        stall = _matched_phrase(blob, STALL_PHRASES)
+        promise = _sentence_containing(notes, "follow up") or _sentence_containing(
+            notes, "get back"
+        )
+        if promise:
+            reason += f' Notes say: "{promise}"'
+        if days_contact is not None:
+            reason += f" Last contact was {days_contact} days ago"
+            reason += " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
+        return actions.COMPLETE_ONBOARDING, reason
 
     # 2. Power user near a reward/volume-pricing milestone.
-    r2: list = []
-    c_deals_power = _cond(
-        id="deals_power_user",
-        field="deals_closed",
-        label="deals closed",
-        operator=">=",
-        threshold=POWER_USER_DEALS,
-        value=deals,
-        unit="count",
-        source="lead",
-        trace=r2,
-    )
-    if c_deals_power.passed:
-        c_subs_power = _cond(
-            id="submissions_power_user",
-            field="quotes_submitted",
-            label="quotes submitted",
-            operator=">=",
-            threshold=POWER_USER_SUBMISSIONS,
-            value=submitted,
-            unit="count",
-            source="lead",
-            trace=r2,
+    if deals >= POWER_USER_DEALS and submitted >= POWER_USER_SUBMISSIONS:
+        reason = (
+            f"{name} is a power user: {created} quotes created, {submitted} "
+            f"submitted, {deals} deals closed, last login {last_login}."
         )
-        if c_subs_power.passed:
-            reason = (
-                f"{name} is a power user: {created} quotes created, {submitted} "
-                f"submitted, {deals} deals closed, last login {last_login}."
+        if milestone:
+            remaining = max(milestone - deals, 0)
+            reason += (
+                f" HubSpot notes flag a volume-pricing conversation at the "
+                f"{milestone}-deal milestone — only {remaining} deals away."
             )
-            c_milestone = _cond(
-                id="milestone_from_notes",
-                field="hubspot_notes",
-                label="deal milestone in notes",
-                operator="exists",
-                threshold=None,
-                value=milestone,
-                unit="count",
-                source="notes",
-                trace=r2,
-            )
-            if c_milestone.passed:
-                remaining = max(milestone - deals, 0)
-                _cond(
-                    id="deals_remaining_to_milestone",
-                    field="deals_remaining",
-                    label="deals to milestone",
-                    operator=">",
-                    threshold=0,
-                    value=remaining,
-                    unit="count",
-                    source="derived",
-                    trace=r2,
-                )
-                reason += (
-                    f" HubSpot notes flag a volume-pricing conversation at the "
-                    f"{milestone}-deal milestone — only {remaining} deals away."
-                )
-            snippet = _sentence_containing(notes, "volume pricing")
-            if snippet:
-                reason += f' Notes: "{snippet}"'
-            return (
-                actions.POWER_USER_REWARD,
-                reason,
-                _rule_env(1, r2, actions.POWER_USER_REWARD, rejected),
-            )
-    rejected.append(_rejected_rule(1, r2))
+        snippet = _sentence_containing(notes, "volume pricing")
+        if snippet:
+            reason += f' Notes: "{snippet}"'
+        return actions.POWER_USER_REWARD, reason
 
     # 3. On hold ("contact me later" / waiting on budget) and the hold passed.
-    r3: list = []
     hold_phrase = _matched_phrase(blob, HOLD_PHRASES)
-    c_hold = _cond(
-        id="hold_phrase_in_notes",
-        field="hubspot_notes",
-        label="hold phrase in notes",
-        operator="contains",
-        threshold="HOLD_PHRASES",
-        value=hold_phrase,
-        unit="text",
-        source="notes",
-        trace=r3,
-    )
-    if c_hold.passed:
-        c_quiet = _cond(
-            id="gone_quiet",
-            field="gone_quiet",
-            label="reached out, went quiet",
-            operator="==",
-            threshold=True,
-            value=_gone_quiet(lead, today),
-            unit="bool",
-            source="derived",
-            trace=r3,
-        )
-        if c_quiet.passed:
-            reason = f"{name} put us on hold and the hold reason has now passed."
-            snippet = _sentence_containing(notes, hold_phrase)
-            if not snippet:
-                for event in _events_list(lead):
-                    meta = getattr(event, "meta", None) or {}
-                    snippet = _sentence_containing(str(meta.get("notes", "")), hold_phrase)
-                    if snippet:
-                        break
-            if snippet:
-                reason += f' Notes: "{snippet}"'
-            if days_contact is not None:
-                reason += f" Last contacted {days_contact} days ago"
-                reason += (
-                    " and a follow-up email got no reply." if _had_no_reply_email(lead) else "."
-                )
-            if days_login is not None:
-                reason += f" Last portal login was {days_login} days ago ({last_login})."
-            return (
-                actions.FOLLOW_UP_AFTER_HOLD,
-                reason,
-                _rule_env(2, r3, actions.FOLLOW_UP_AFTER_HOLD, rejected),
-            )
-    rejected.append(_rejected_rule(2, r3))
+    if hold_phrase is not None and _gone_quiet(lead, today):
+        reason = f"{name} put us on hold and the hold reason has now passed."
+        snippet = _sentence_containing(notes, hold_phrase)
+        if not snippet:
+            for event in _events_list(lead):
+                meta = getattr(event, "meta", None) or {}
+                snippet = _sentence_containing(str(meta.get("notes", "")), hold_phrase)
+                if snippet:
+                    break
+        if snippet:
+            reason += f' Notes: "{snippet}"'
+        if days_contact is not None:
+            reason += f" Last contacted {days_contact} days ago"
+            reason += " and a follow-up email got no reply." if _had_no_reply_email(lead) else "."
+        if days_login is not None:
+            reason += f" Last portal login was {days_login} days ago ({last_login})."
+        return actions.FOLLOW_UP_AFTER_HOLD, reason
 
     # 4. Onboarded but stopped using the portal entirely.
-    r4: list = []
-    c_signed_up = _cond(
-        id="signed_up_date_present",
-        field="signed_up_date",
-        label="signed up date",
-        operator="exists",
-        threshold=None,
-        value=_as_date(signed_up),
-        unit="date",
-        source="lead",
-        trace=r4,
-    )
-    if c_signed_up.passed:
-        c_dormant = _cond(
-            id="login_dormant",
-            field="days_since_last_login",
-            label="days since last login",
-            operator=">",
-            threshold=DORMANT_DAYS,
-            value=days_login,
-            unit="days",
-            source="derived",
-            null_passes=True,  # never logged in reads as maximally dormant
-            trace=r4,
-        )
-        if c_dormant.passed:
-            signed = _as_date(signed_up)
-            if days_login is None:
-                reason = f"{name} signed up on {signed} but has never logged in to the portal."
-            else:
-                reason = (
-                    f"{name} signed up on {signed} but hasn't logged in for "
-                    f"{days_login} days (last login {last_login}) — the trial has gone dormant."
-                )
-            return (
-                actions.REENGAGE_DORMANT,
-                reason,
-                _rule_env(3, r4, actions.REENGAGE_DORMANT, rejected),
+    # A lead that never logged in reads as maximally dormant.
+    if signed_up and (days_login is None or days_login > DORMANT_DAYS):
+        if days_login is None:
+            reason = f"{name} signed up on {signed_up} but has never logged in to the portal."
+        else:
+            reason = (
+                f"{name} signed up on {signed_up} but hasn't logged in for "
+                f"{days_login} days (last login {last_login}) — the trial has gone dormant."
             )
-    rejected.append(_rejected_rule(3, r4))
+        return actions.REENGAGE_DORMANT, reason
 
     # 5. Active but underusing -> nudge.
-    r5: list = []
-    c_login_recent = _cond(
-        id="login_recent",
-        field="days_since_last_login",
-        label="days since last login",
-        operator="<=",
-        threshold=DORMANT_DAYS,
-        value=days_login,
-        unit="days",
-        source="derived",
-        trace=r5,
-    )
-    if c_login_recent.passed:
-        c_created_positive = _cond(
-            id="quotes_created_positive",
-            field="quotes_created",
-            label="quotes created",
-            operator=">",
-            threshold=0,
-            value=created,
-            unit="count",
-            source="lead",
-            trace=r5,
-        )
-        c_no_submissions = _cond(
-            id="no_submissions",
-            field="quotes_submitted",
-            label="quotes submitted",
-            operator="==",
-            threshold=0,
-            value=submitted,
-            unit="count",
-            source="lead",
-            trace=r5,
-        )
-        if c_created_positive.passed and c_no_submissions.passed:
+    if days_login is not None and days_login <= DORMANT_DAYS:
+        if created > 0 and submitted == 0:
             reason = (
                 f"{name} logs in regularly (last login {last_login}) and has "
                 f"created {created} quotes but has never submitted one — needs "
                 f"help getting a first quote over the line."
             )
-            return actions.NUDGE_USAGE, reason, _rule_env(4, r5, actions.NUDGE_USAGE, rejected)
+            return actions.NUDGE_USAGE, reason
 
-        c_deals_positive = _cond(
-            id="deals_positive",
-            field="deals_closed",
-            label="deals closed",
-            operator=">",
-            threshold=0,
-            value=deals,
-            unit="count",
-            source="lead",
-            trace=r5,
-        )
-        c_milestone5 = _cond(
-            id="milestone_from_notes",
-            field="hubspot_notes",
-            label="deal milestone in notes",
-            operator="exists",
-            threshold=None,
-            value=milestone,
-            unit="count",
-            source="notes",
-            trace=r5,
-        )
-        if c_milestone5.passed:
-            c_below_milestone = _cond(
-                id="deals_below_milestone",
-                field="deals_closed",
-                label="deals closed",
-                operator="<",
-                threshold=milestone,
-                value=deals,
-                unit="count",
-                source="lead",
-                trace=r5,
+        if deals > 0 and milestone and deals < milestone:
+            remaining = milestone - deals
+            reason = (
+                f"{name} is using the portal steadily ({created} quotes created, "
+                f"{deals} deals closed, last login {last_login}) but is {remaining} "
+                f"deals short of the {milestone}-deal commitment target in the "
+                f"notes — a well-timed push could convert the trial."
             )
-            if c_deals_positive.passed and c_below_milestone.passed:
-                remaining = milestone - deals
-                reason = (
-                    f"{name} is using the portal steadily ({created} quotes created, "
-                    f"{deals} deals closed, last login {last_login}) but is {remaining} "
-                    f"deals short of the {milestone}-deal commitment target in the "
-                    f"notes — a well-timed push could convert the trial."
-                )
-                return actions.NUDGE_USAGE, reason, _rule_env(4, r5, actions.NUDGE_USAGE, rejected)
+            return actions.NUDGE_USAGE, reason
 
-        c_below_power_user = _cond(
-            id="deals_below_power_user",
-            field="deals_closed",
-            label="deals closed",
-            operator="<",
-            threshold=POWER_USER_DEALS,
-            value=deals,
-            unit="count",
-            source="lead",
-            trace=r5,
-        )
-        if c_deals_positive.passed and c_below_power_user.passed:
+        if deals > 0 and deals < POWER_USER_DEALS:
             reason = (
                 f"{name} is active (last login {last_login}) with {deals} deals "
                 f"closed but momentum is modest — encourage more volume."
             )
-            return actions.NUDGE_USAGE, reason, _rule_env(4, r5, actions.NUDGE_USAGE, rejected)
-    rejected.append(_rejected_rule(4, r5))
+            return actions.NUDGE_USAGE, reason
 
     # 6. Nothing matched -> escalate to a human.
     reason = (
@@ -1006,48 +356,7 @@ def _classify_action(lead, today):
         f"last_login={last_login}, last_contacted={_as_date(getattr(lead, 'last_contacted_date', None))}. "
         f"BD should review the HubSpot notes and decide the next step manually."
     )
-    return actions.UNKNOWN, reason, _rule_env(5, [], actions.UNKNOWN, rejected)
-
-
-def determine_action(lead, today=None, *, trace: list | None = None) -> tuple[str, str]:
-    """Classify the right outreach action for a lead. Returns (action_type, reason).
-
-    ``trace`` is a keyword-only *out*-parameter: every ``Condition`` dict
-    evaluated is appended to it in evaluation order. Use :func:`explain` for
-    the structured envelope.
-    """
-    today = today or datetime.date.today()
-    action_type, reason, env = _classify_action(lead, today)
-    if trace is not None:
-        for rule in env["rejected_rules"]:
-            trace.extend(rule["conditions"])
-        trace.extend(env["conditions"])
-    return action_type, reason
-
-
-def explain(lead, today=None) -> dict:
-    """Assemble the v1 rule-trace envelope (MUS-39) — the single public trace
-    API. Pure, Django-free and duck-typed, exactly like the two rule functions."""
-    today = today or datetime.date.today()
-    priority, score, signals = _score_priority(lead, today)
-    _action_type, _reason, action_env = _classify_action(lead, today)
-    generated_at = (
-        datetime.datetime.now(datetime.timezone.utc)
-        .replace(microsecond=0)
-        .strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
-    return {
-        "version": TRACE_SCHEMA_VERSION,
-        "today": today.isoformat(),
-        "generated_at": generated_at,
-        "priority": {
-            "value": priority,
-            "score": score,
-            "bands": [dict(band) for band in PRIORITY_BANDS],
-            "signals": signals,
-        },
-        "action": action_env,
-    }
+    return actions.UNKNOWN, reason
 
 
 # --------------------------------------------------------------------------
@@ -1153,7 +462,7 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
 
 class CopyGenerationGaveUp(RuntimeError):
     """The provider call failed for good, plus what the attempt cost
-    (``attempts``, ``elapsed_s``) — the review-queue message needs both."""
+    (``attempts``, ``elapsed_s``) — the reviewer's message needs both."""
 
     def __init__(self, error, attempts, elapsed_s):
         super().__init__(str(error))
@@ -1786,10 +1095,6 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority.
 
-    Traced end to end (MUS-25): one ``invoke_agent outreach_planner`` span per
-    run, one ``plan_lead`` span per lead, one ``chat {model}`` span per HTTP
-    attempt. With no OTLP endpoint configured those statements are no-ops.
-
     ``lead_ids`` (MUS-68) narrows the run to the named clients; ``None`` plans
     the whole book. A scoped run still *reads* every lead on purpose: the read is
     cheap and keeps the classification input identical either way.
@@ -1820,9 +1125,7 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
         )
     )
     open_keys = set(
-        OutreachAction.objects.filter(
-            status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED)
-        )
+        OutreachAction.objects.filter(status=OutreachAction.STATUS_PENDING)
         .exclude(dedupe_key="")
         # A failed-generation row is not a recommendation, so it must not hold
         # the dedupe slot; phase 5 supersedes it.
@@ -1831,8 +1134,8 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     )
 
     # The run's date, fixed once: phases 2, 4 and 5 are separated by every LLM
-    # call in the run, so a run straddling midnight would otherwise persist a
-    # `reason` and a `rule_trace` computed on different days.
+    # call in the run, so a run straddling midnight would otherwise classify and
+    # verify the same lead against two different days.
     today = datetime.date.today()
 
     # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
@@ -1866,17 +1169,12 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     for item, outcome in zip(work, outcomes, strict=True):
         reviews.append(_review(item, outcome, level, today))
 
-    # 5. write. The snapshots are computed FIRST, outside the transaction:
-    # they are several queries per lead and only the inserts need atomicity.
-    snapshots = [
-        (
-            # Taken once at planning time and never recomputed: every
-            # relative figure in the trace ("28d since last contact") is only
-            # true as of `trace.today`.
-            explain(item.lead, today),
-            queue_copy.build_verification(
-                item.lead, review.suggested_copy, item.action_type, level=level, today=today
-            ),
+    # 5. write. The verification snapshots are computed FIRST, outside the
+    # transaction: they are several queries per lead and only the inserts need
+    # atomicity.
+    verifications = [
+        queue_copy.build_verification(
+            item.lead, review.suggested_copy, item.action_type, level=level, today=today
         )
         for item, review in zip(work, reviews, strict=True)
     ]
@@ -1890,20 +1188,19 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
             needs_human=review.needs_human,
             further_action=review.further_action,
             dedupe_key=item.dedupe_key,
-            rule_trace=rule_trace,
             verification=verification,
         )
-        for item, review, (rule_trace, verification) in zip(work, reviews, snapshots, strict=True)
+        for item, review, verification in zip(work, reviews, verifications, strict=True)
     ]
     with transaction.atomic():
         # Supersede the failed-attempt rows this run replaces (they were let
         # through the open-item rule on purpose), so a lead that failed
         # Monday and succeeded Tuesday does not show both. Deleted rather
-        # than marked: a failed attempt carries no draft, and its only
-        # possible decision — a snooze — answered a different question.
+        # than marked: a failed attempt carries no draft, so there is nothing
+        # a reviewer decided about it.
         OutreachAction.objects.filter(
             dedupe_key__in=[item.dedupe_key for item in work],
-            status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
+            status=OutreachAction.STATUS_PENDING,
         ).filter(failed_generation_filter()).delete()
 
         # `bulk_create` skips `save()` and its signals (unused here) and must

@@ -42,7 +42,7 @@ class CsrfTrustedOriginTests(TestCase):
     def _post_logout(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.user)
-        client.get("/")  # mints the csrftoken cookie
+        client.get("/leads/")  # mints the csrftoken cookie
         token = client.cookies["csrftoken"].value
         return client.post(
             "/api/auth/logout/",

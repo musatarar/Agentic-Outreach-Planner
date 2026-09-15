@@ -219,8 +219,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth_request_ip": LOGIN_RATE_LIMIT_IP,
         "auth_consume_ip": "60/hour",
-        "queue_verify": "120/min",
+        # The live grounding check, hit once per debounced keystroke.
+        "copy_verify": "120/min",
+        # The review inbox list.
+        "outreach_list": "120/min",
     },
+    # No list endpoint serializes an unbounded table: pagination is the
+    # default, and the review list narrows it further with `?page_size=`.
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 25,
 }
 
 # Explicit `project.app` handler: Django's default only attaches one to the
@@ -236,10 +243,3 @@ LOGGING = {
         },
     },
 }
-
-# --- Triage queue (MUS-39) ----------------------------------------------------
-TRIAGE_UNDO_WINDOW_SECONDS = int(os.environ.get("TRIAGE_UNDO_WINDOW_SECONDS", "300"))
-TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS = int(
-    os.environ.get("TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS", "14")
-)
-TRIAGE_TIMEZONE = os.environ.get("TRIAGE_TIMEZONE", "UTC")
