@@ -1,5 +1,7 @@
 """Domain-split models; every model is importable from ``project.app.models``."""
 
+from project.app.rules.models import ActionType, OutreachRule
+
 from .agent import AEAvailabilitySlot, AgentLeadRun, AgentStep
 from .auth import LoginToken
 from .lead import Event, Lead
@@ -17,7 +19,6 @@ from .outreach import (
     OutreachEdit,
     ReviewDecision,
 )
-from .rules import ActionType, OutreachRule
 
 __all__ = [
     "AEAvailabilitySlot",

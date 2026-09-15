@@ -17,10 +17,9 @@ from django.db.models import Q
 class ActionType(models.Model):
     """One kind of outreach a user's rules can select (their action catalog).
 
-    The per-user replacement for the hardcoded ``ACTION_TYPES``/``ACTION_META``
-    (services/actions.py). ``key`` is the machine token a firing rule writes
-    into ``OutreachAction.action_type``, so it shares that field's length and
-    the snake_case shape of the existing constants.
+    ``key`` is the machine token a firing rule writes into
+    ``OutreachAction.action_type``, so it shares that field's length and
+    snake_case shape.
     """
 
     URGENCY_LOW = "low"
@@ -83,10 +82,8 @@ class OutreachRule(models.Model):
       ("hubspot notes show they need help with something") the LLM seam
       evaluates against the lead's sanitized, fenced data.
 
-    Rules are checked in ``(order, id)`` and the first match wins, exactly like
-    the compiled rule tuple this replaces (``ACTION_RULES`` in
-    services/outreach.py); no user rule matching still falls through to the
-    needs-human UNKNOWN path.
+    Rules are checked in ``(order, id)`` and the first match wins; no user
+    rule matching still falls through to the needs-human UNKNOWN path.
     """
 
     KIND_DETERMINISTIC = "deterministic"
@@ -96,9 +93,9 @@ class OutreachRule(models.Model):
         (KIND_INFERENCE, "AI inference"),
     ]
 
-    # ``conditions`` payload schema, pinned like the rule-trace envelope
-    # (TRACE_SCHEMA_VERSION in services/outreach.py). Version 1, mirroring the
-    # trace vocabulary so a stored rule and its recorded evaluation read alike:
+    # ``conditions`` payload schema, version-pinned like the rule-trace
+    # envelope and sharing its vocabulary so a stored rule and its recorded
+    # evaluation read alike:
     #
     #   {
     #     "version": 1,
@@ -110,10 +107,10 @@ class OutreachRule(models.Model):
     #     ],
     #   }
     #
-    # Condition operators are services/outreach.py's ``_evaluate`` set
-    # (==, !=, >, >=, <, <=, in, exists, absent, contains); ``source`` is the
-    # trace's lead | events | notes | derived. Fields reference the Lead/Event
-    # shape for now — user-defined data shapes are deliberately deferred.
+    # Condition operators are the rules engine's evaluation set
+    # (==, !=, >, >=, <, <=, in, exists, absent, contains); ``source`` is
+    # lead | events | notes | derived. Fields reference the Lead/Event shape
+    # for now — user-defined data shapes are deliberately deferred.
     CONDITIONS_SCHEMA_VERSION = 1
 
     # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the
@@ -156,22 +153,15 @@ class OutreachRule(models.Model):
         ]
 
     def build_inference_prompt(self):
-        """The instruction region for one evaluation of this rule against a
-        lead, naming the exact action id/key the verdict must reference.
+        """One line of the evaluation prompt: ``<predicate> ? "<action id>"``.
 
-        Lead data is appended by the caller, sanitized and fenced
-        (services/sanitize.py) — never inside this region.
+        The planner embeds these lines in a larger prompt and the model
+        answers with the quoted action id of the rule that applies.
         """
         if self.kind != self.KIND_INFERENCE:
             raise ValueError("Only inference rules build an inference prompt.")
         predicate = (self.inference_prompt or "").strip()[: self.INFERENCE_PROMPT_MAX_CHARS]
-        return (
-            "Decide whether the rule below applies to the lead described in the "
-            "fenced data block that follows.\n"
-            f"Rule: {predicate}\n"
-            f"If it applies, propose exactly the action with id {self.action_id} "
-            f"(key: {self.action.key}); otherwise propose no action."
-        )
+        return f'{predicate} ? "{self.action_id}"'
 
     def clean(self):
         """Enforce the kind <-> payload pairing and same-owner action selection.

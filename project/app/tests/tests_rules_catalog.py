@@ -106,10 +106,10 @@ class OutreachRuleTests(TestCase):
             conditions={},
             inference_prompt="the hubspot notes show they need help with something",
         )
-        prompt = rule.build_inference_prompt()
-        self.assertIn("they need help with something", prompt)
-        self.assertIn(f"id {appointment.pk}", prompt)
-        self.assertIn("key: set_up_appointment", prompt)
+        self.assertEqual(
+            rule.build_inference_prompt(),
+            f'the hubspot notes show they need help with something ? "{appointment.pk}"',
+        )
 
     def test_a_deterministic_rule_refuses_to_build_an_inference_prompt(self):
         with self.assertRaises(ValueError):
