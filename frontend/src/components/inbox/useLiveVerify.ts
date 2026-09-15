@@ -11,7 +11,7 @@ export interface LiveVerifyResult {
   report: VerificationReport | null;
   verifying: boolean;
   error: string | null;
-  /** True when `report` came from a dry-run rather than from the queue item. */
+  /** True when `report` came from a dry run rather than from the stored item. */
   isLive: boolean;
 }
 
@@ -22,7 +22,7 @@ export interface LiveVerifyResult {
  * and is discarded, never rendered against newer text.
  */
 export function useLiveVerify(
-  // Nullable so the hook call stays unconditional while the queue loads/drains.
+  // Nullable so the hook call stays unconditional while the inbox loads.
   itemId: number | null,
   committedReport: VerificationReport | null,
   draft: string,
