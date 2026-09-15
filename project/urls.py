@@ -8,7 +8,6 @@ from project.app.views.frontend import (
     auth_consume,
     inbox,
     leads,
-    settings,
     signin,
 )
 
@@ -22,7 +21,6 @@ urlpatterns = [
     path("auth/consume", auth_consume),
     path("inbox", inbox),
     path("leads/", leads),
-    path("settings/", settings),
     path("admin/", admin.site.urls),
     path("api/", include("project.app.urls")),
 ]

@@ -13,12 +13,6 @@ def leads(request):
 
 
 @ensure_csrf_cookie
-def settings(request):
-    """Render the Settings page (LLM provider/model/API key selection)."""
-    return render(request, "app/settings.html")
-
-
-@ensure_csrf_cookie
 def signin(request):
     """Render the sign-in page (magic-link request). Public: no data on it."""
     return render(request, "app/signin.html")

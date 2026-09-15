@@ -1,4 +1,4 @@
-import { getJson, postJson, putJson } from './client';
+import { getJson, postJson } from './client';
 import type {
   AuthConsumeInput,
   AuthConsumeResult,
@@ -8,10 +8,6 @@ import type {
   DismissInput,
   EditCopyInput,
   LeadRecord,
-  LLMCatalog,
-  LLMConfig,
-  LLMConfigInput,
-  LLMTestResult,
   OutreachAction,
   Paginated,
   ReviewItem,
@@ -53,18 +49,6 @@ export const dismissAction = (id: number, body: DismissInput) =>
 /** Back to pending; a reopened dismissal stops suppressing the lead. */
 export const reopenAction = (id: number) =>
   postJson<ReviewItem>(`/api/outreach/${id}/reopen/`, {});
-
-// ===== LLM configuration ===========================================
-
-export const fetchLLMCatalog = () => getJson<LLMCatalog>('/api/llm/catalog/');
-
-export const fetchLLMConfig = () => getJson<LLMConfig>('/api/llm/config/');
-
-export const saveLLMConfig = (config: LLMConfigInput) =>
-  putJson<LLMConfig>('/api/llm/config/', config);
-
-export const testLLMConfig = (config: LLMConfigInput) =>
-  postJson<LLMTestResult>('/api/llm/config/test/', config);
 
 // ===== magic-link auth =============================================
 
