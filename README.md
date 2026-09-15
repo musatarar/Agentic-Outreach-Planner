@@ -41,11 +41,11 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 2. Copy the env file: DJANGO_SECRET_KEY is required (a fresh local/demo key
-#    is already filled in). Also set a provider key (default: groq — free
-#    tier, no credit card at console.groq.com) if you want the LLM copy step;
-#    it's picked up as a fallback until you save one via /api/llm/config/.
-cp .env.example .env               # then edit .env and fill in the LLM key
+# 2. Write .env from .env.example with a freshly generated DJANGO_SECRET_KEY
+#    (required). Also set a provider key (default: groq — free tier, no credit
+#    card at console.groq.com) if you want the LLM copy step; it's picked up as
+#    a fallback until you save one via /api/llm/config/.
+python scripts/setup_env.py        # then edit .env and fill in the LLM key
 
 # 3. Migrate, seed the demo pipeline + LLM catalog, and run
 python manage.py migrate
@@ -68,8 +68,9 @@ with AI-drafted emails render in ~20–30s. Full walkthrough with sample results
 No local Python needed — just Docker:
 
 ```bash
-cp .env.example .env   # required: DJANGO_SECRET_KEY and LOGIN_ALLOWED_EMAILS.
-docker compose up      # optionally set a provider key too
+python scripts/setup_env.py   # writes .env with a fresh DJANGO_SECRET_KEY;
+                              # then set LOGIN_ALLOWED_EMAILS in it.
+docker compose up             # optionally set a provider key too
 ```
 
 This starts Postgres, builds the app image, applies migrations, seeds the demo pipeline, and

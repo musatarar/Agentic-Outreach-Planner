@@ -105,9 +105,9 @@ OUTREACH_TRACE_CONTENT_ENABLED = (
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     raise ImproperlyConfigured(
-        "DJANGO_SECRET_KEY is not set. Copy .env.example to .env (it ships a "
-        "freshly generated key for local/demo use) or set your own via the "
-        "environment for production."
+        "DJANGO_SECRET_KEY is not set. Run `python scripts/setup_env.py` to "
+        "write .env with a freshly generated key, or set the variable in the "
+        "environment yourself."
     )
 
 # SECURITY WARNING: don't run with debug turned on in production!

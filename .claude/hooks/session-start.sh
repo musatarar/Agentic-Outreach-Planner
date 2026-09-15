@@ -17,8 +17,8 @@ if ! .venv/bin/python -c 'import sys; raise SystemExit(sys.version_info[:2] < (3
 fi
 .venv/bin/pip install -q -r requirements-dev.txt
 
-# settings.py refuses to boot without DJANGO_SECRET_KEY; the example ships a dev value.
-[ -f .env ] || cp .env.example .env
+# settings.py refuses to boot without DJANGO_SECRET_KEY; this mints a fresh one.
+[ -f .env ] || python3 scripts/setup_env.py
 
 npm install --prefix frontend --no-audit --no-fund
 
