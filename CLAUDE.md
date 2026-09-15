@@ -1,89 +1,202 @@
 # CLAUDE.md
 
-Guidance for Claude Code (claude.ai/code) when working in this repository.
-
-## Context
-
-**Locked In — Agentic Outreach Planner**: Django 4.2 + DRF backend with a committed
-React/TS frontend bundle. Deterministic rules decide which leads need outreach
-(`project/app/services/outreach.py`); a provider-agnostic LLM layer
-(`project/app/services/llm/`, selected via `config.toml`) only writes copy; a
-deterministic verifier (`services/verify.py`) grounds generated copy against the record
-and fails closed. See `README.md` for the product tour and `SECURITY.md` for the
-injection-hardening posture.
+Agentic outreach planner. Django 4.2 + DRF backend; React 18/TS frontend built by Vite
+into a bundle committed at project/app/static/frontend/ and served by Django (no Node in
+the runtime image). Rule functions in services/outreach.py select leads for outreach;
+provider calls generate message text only; services/verify.py checks generated copy
+against stored lead/event fields and blocks approval when checks fail; a human approval
+gate guards every outbound send.
 
 ## Commands
 
-Setup from a clean clone (Python 3.12+):
-
 ```bash
+# setup
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env                  # DJANGO_SECRET_KEY is required
+cp .env.example .env   # then REPLACE DJANGO_SECRET_KEY with a fresh value and set
+                       # DJANGO_DEBUG as needed — never keep the example's values
 ```
-
-Day to day:
 
 ```bash
-python manage.py runserver            # dev server (http://127.0.0.1:8000)
+# run
 python manage.py migrate
-python scripts/populate_demo_data.py  # single source of demo state
-python manage.py test project.app     # full backend suite
-python manage.py test project.app.tests.tests_logic.SomeCase.test_name  # single test
-ruff check . && ruff format --check .
-mypy project/app/services/            # CI runs exactly this target
-python evals/run_rules_eval.py        # rules regression vs committed baseline
+python manage.py runserver                      # http://127.0.0.1:8000
+python scripts/populate_demo_data.py            # demo data (ingest + LLM catalog seed)
 ```
 
-Frontend source lives in `frontend/`; the built bundle is committed to
-`project/app/static/frontend/`. After frontend changes: `npm run build` and commit the
-bundle (CI fails if it goes stale). SQLite by default; `DATABASE_URL` switches to
-Postgres; `docker compose up` runs the full stack.
+```bash
+# tests — Django's unittest runner. There is NO pytest, no conftest.
+python manage.py test project.app                                  # full backend suite
+python manage.py test project.app.tests.tests_queue                # one module
+python manage.py test project.app.tests.tests_queue.Cls.test_name  # one test
+# Test modules are tests_<subject>.py; test names are full behavioral sentences —
+# grep for the behavior in plain English to find the right test.
+DATABASE_URL=<postgres-url> python manage.py test project.app      # Postgres parity
+                                                # (CI runs py3.12/3.13 x sqlite/postgres)
+```
 
-## Workflow
+```bash
+# lint / types / migrations — run before any commit; this mirrors CI exactly
+ruff check . && ruff format --check .
+mypy project/app/services/          # CI typechecks exactly this path, nothing more
+python manage.py makemigrations --check --dry-run   # must be clean
+```
 
-An instruction is a hope; a gate is a fact. Every rule below is marked **[gate]**
-(machine-enforced) or **[convention]** (discipline + review) — don't confuse the two.
+```bash
+# rules-engine regression (pure Python, no DB, no network, frozen clock)
+python evals/run_rules_eval.py      # diffs against evals/baselines/ — baselines change
+                                    # only by explicit human decision, never to make a run pass
+```
 
-1. **Green CI or no merge** [gate]. 
-2. **Red first** [convention]. The first commit of a PR is failing tests that specify the
-   behavior; implementation comes after. Paste the failing test output into the PR
-   description as the receipt.
-3. **One ticket, one PR** [convention]. Break work into Linear tickets before writing
-   code (`to-issues` skill converts plans). Keep PRs to one concern, roughly ≤400 changed
-   lines — split rather than grow.
-4. **Big features get an integration branch** [convention]. Cut `feat/<x>` from
-   `master`, stack small PRs into it, land it when green. Required checks apply on
-   `feat/*` too, so the branch can't rot.
-5. **Squash merge only** [gate — repo setting]. One PR = one commit on `master`;
-   `git revert` is the undo path.
-6. **Plans follow the planning discipline** [convention]. Before writing any
-   implementation plan (ticket plan, multi-PR breakdown, ADR), invoke the
-   `planning-discipline` skill and hold the plan to it.
+```bash
+# frontend — only when frontend/ changed
+cd frontend && npm ci && npm run typecheck && npm test && npm run build
+git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
+# NEVER hand-edit project/app/static/frontend/** — it is build output. Rebuild + commit.
+```
 
-## Comments & docstrings
+## Architecture in 30 seconds
 
-- **Verbosity != clarity** [convention]. Assume the reader understands the code
-  generally. Module/class docstrings state purpose in 1–3 lines; test docstrings pin
-  the behavior in one line; non-obvious or security-critical facts survive as
-  compressed one-liners (point at SECURITY.md rather than re-arguing it). No design
-  history, no alternatives considered, no restating what the code shows.
+- project/app/services/outreach.py — rules engine + planner orchestrator (numbered
+  phases in comments). project/app/services/llm/ — provider-agnostic LLM layer.
+  services/verify.py — grounding verifier. services/dispatch.py — the send gate.
+  services/agent/ — flag-gated tool-calling copy loop (OUTREACH_AGENT_ENABLED, default off).
+- Registries (start here to find anything): project/app/models/__init__.py,
+  project/app/views/__init__.py, project/app/serializers/__init__.py,
+  frontend/src/api/endpoints.ts (every frontend API call, one line each).
+- Constraint/index names (oa_queue_order, rd_one_live_send_per_action, ...) appear
+  verbatim in model and migration — grep the name to get the whole story.
+- Area codes name the governed seams: docs/areas.toml maps each slug (llm-seam,
+  async-phase, dispatch-gate, ...) to its paths, contract, and gate; `# area:` comments
+  mark the binding sites. Reference areas — not line numbers, not tickets — in plans,
+  PRs, and reviews. Ticket IDs (MUS-nn) in comments remain as history pointers — grep
+  one to find a feature's past.
 
-## Testing & database
+## Database & migrations — hard rules
 
-- **Fixtures, not live edits**: tests use `setUpTestData()`/fixtures. Never modify
-  `db.sqlite3` directly.
-- `python scripts/populate_demo_data.py` is the single source of truth for demo state.
-- `python manage.py test` builds a fresh test database every run and mocks every LLM
-  provider call. Real-provider evals are separate, manually gated workflows — never on
-  push/PR.
-- **Existing tests are pinned**: needing to edit one to land a change is a design smell —
-  redesign (usually flag-gating) or get explicit authorization first (details in the
-  `planning-discipline` skill).
-- **Frontend testing uses the `webapp-testing` skill**
+- NEVER edit a migration that is committed on the default branch. Additive follow-up
+  migrations only. (A hook blocks this; do not work around it.)
+- Run `python manage.py makemigrations --check --dry-run` after any model change.
+- Dev is usually SQLite; production is Postgres (DATABASE_URL). DDL that is instant on
+  SQLite can stall Postgres: index adds take a SHARE lock (writes blocked for the
+  build); constraint adds via ALTER TABLE take ACCESS EXCLUSIVE (all access blocked).
+  Either is a production stall on a hot table. Any index/constraint on outreachaction,
+  lead, or event is a hot-table change: use the /safe-migration skill, prefer
+  concurrent operations with atomic = False, and get human review.
+- One concern per migration. Schema migrations carry no data operations; seeding lives
+  in idempotent management commands (the repo has zero RunPython migrations — keep it so).
+- New columns: nullable-or-constant-default first (Postgres adds constant defaults
+  instantly), backfill in batches via a management command, then constrain.
+- Do not write to the checked-in SQLite file; the Django test runner creates a
+  throwaway database for each run.
 
-## Git
+## ORM & query discipline
 
-- One worktree per branch/task (`.claude/worktrees/<name>`); never switch branches in
-  the main checkout. Merge conflicts are the collision detector between parallel agents.
-- Linear auto-named branches (`musansht/mus-NN-*`) are fine everywhere.
+- Query budgets are pinned by test (see tests_planner_perf.py — budgets computed from
+  connection.ops.bulk_batch_size so they hold on both backends). A budget increase is a
+  reviewed decision, not a test fix.
+- List endpoints must not serialize unbounded tables; add pagination and a throttle
+  scope to any new list/expensive endpoint (settings.py REST_FRAMEWORK block).
+- Prefetch rule: only .all() is served from a prefetch cache — any filtered call
+  re-queries. Slice prefetched collections in Python, not in the queryset.
+- No Django signals anywhere; all writes go through explicit service functions. Do not
+  introduce signals.
+- Race-sensitive logic gets a database-level guard (partial unique constraint or
+  conditional UPDATE), never a read-then-check. Existing patterns to copy:
+  single-use login-token redemption, the agent-run epoch-CAS claim,
+  rd_one_live_send_per_action.
+
+## Transactions
+
+- ATOMIC_REQUESTS is off (settings.py does not set it): no view is wrapped in a
+  transaction automatically. Writes that must land together go in one explicit
+  transaction.atomic block in the service function that owns them — never spread
+  across helpers each committing separately.
+- select_for_update only inside an explicit transaction.atomic block (it errors
+  outside one). The dispatch send path — re-read by sha256 under select_for_update
+  inside the consuming transaction — is the exemplar to copy.
+- Never hold a transaction open across the async provider-call phase: collect inputs,
+  close the transaction, await, then write results in a new atomic block. A
+  transaction spanning the event-loop hop pins a connection for the full provider
+  latency and can deadlock against the planner's own writes.
+
+## Async seam — do not cross it
+
+- plan_outreach is sync; only the provider-call phase runs on an event loop. NO ORM
+  calls inside that async phase — it raises SynchronousOnlyOperation at runtime and
+  nothing static will warn you. The agent checkpoint writer is the single, documented
+  exception; do not add a second.
+- services/llm/ must not import Django at module level (runtime.py keeps Django imports
+  function-local so the package imports without Django). Preserve this.
+
+## LLM layer
+
+- Adding a provider currently requires edits in three places: the client registry
+  (services/llm/__init__.py), the env-var map (services/llm/config.py), and the
+  telemetry provider-name map (telemetry/genai.py). Missing the third silently drops
+  telemetry attribution. Edit all three or consolidate first.
+- Retryability lives on the error class (services/llm/errors.py). Retry policy and
+  timeouts are cost multipliers — flag any change as a spend change in the PR.
+- Never log or persist raw prompts/completions outside the ProviderTrace content path;
+  telemetry spans carry sha256 hashes only. Do not add content keys to spans.
+- The stub provider is gated by OUTREACH_ALLOW_STUB_LLM=1 and exists for benchmarks and
+  tests only. Never weaken that gate.
+
+## Security invariants — do not weaken, escalate instead
+
+- Lead-controlled text (CRM notes, event payloads) is untrusted input everywhere:
+  sanitize before it enters any prompt; tool results are sanitized, length-capped, and
+  server-bound to the lead id. The same rule applies in the frontend: never interpolate
+  lead-controlled fields into anything prompt-bound.
+- suggested_copy on OutreachAction is immutable once written (the eval corpus diffs it);
+  reviewer edits create OutreachEdit rows.
+- The verifier fails closed: a missing/blank verification report blocks approval. The
+  dispatch gate re-reads effective copy by sha256 inside the consuming transaction —
+  never "simplify" the double check.
+- COPY_VERIFY_LEVEL=off disables grounding checks silently. Never set it in committed
+  config; treat any diff containing it as human-review-required.
+- Magic-link auth stores only hashed tokens, single-use via conditional UPDATE, with
+  timing-equalized failure paths and REMOTE_ADDR-only IP trust. Changes here are
+  human-gated.
+
+## Settings & env conventions
+
+- All configuration is environment variables; settings.py is the single source of
+  defaults (docker-compose passes planner knobs through blank on purpose — do not
+  restate defaults elsewhere).
+- Use the _env_int/_env_number/_env_list helpers in settings.py for new variables:
+  blank means unset, and bad values must raise ImproperlyConfigured naming the variable.
+  (Some older vars use bare int() — fix opportunistically, never imitate.)
+- Every new setting gets a .env.example entry and a docker-compose passthrough.
+- DJANGO_SECRET_KEY is mandatory (boot fails without it). Boot-time system checks live
+  in project/app/checks.py — add one when a misconfiguration should fail boot rather
+  than fail at first use.
+
+## Tests
+
+- Fixtures via setUpTestData and factory helpers; pin dates to constants (the suites
+  freeze TODAY) rather than reading the clock; patch django.utils.timezone.now only
+  where the view under test reads it.
+- Every LLM provider interaction is mocked — doubles subclass the real LLMClient so
+  seam changes fail loudly. Never let a test reach a real provider.
+- Do not edit or delete an existing test to make a change pass; a failing existing
+  test requires human sign-off before either the test or the code changes.
+- Two suites assert repo-infrastructure facts via git grep / git check-ignore; if one
+  fails after a legitimate change, update its manifest — that is the intended workflow,
+  not a defect.
+- Coverage floor is 90 (pyproject.toml); DRF throttle history persists across tests —
+  clear it in setUp/tearDown as tests_auth.py does.
+
+## What always needs a human before merge
+
+Migrations; auth/session/throttle code; services/dispatch.py and the approval gate;
+sanitization and verifier logic; feature-flag default flips; anything changing provider
+spend (models, retries, concurrency, prompt size); any retention/deletion touching
+audit tables (ProviderTrace*, AgentStep, OutreachEdit, LoginToken); any change to
+.claude/ or CI workflow configuration.
+
+## Deploy (placeholders — code does not determine these)
+
+- Production server/WSGI setup: <not yet defined — the container currently runs the dev
+  server; see the release-check skill before any real deployment>
+- Production DATABASE_URL / migration execution window: <define with the deploy story>
