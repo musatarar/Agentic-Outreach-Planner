@@ -28,8 +28,8 @@ python scripts/populate_demo_data.py            # demo data (ingest + LLM catalo
 ```bash
 # tests — Django's unittest runner. There is NO pytest, no conftest.
 python manage.py test project.app                                  # full backend suite
-python manage.py test project.app.tests.tests_queue                # one module
-python manage.py test project.app.tests.tests_queue.Cls.test_name  # one test
+python manage.py test project.app.tests.tests_review                # one module
+python manage.py test project.app.tests.tests_review.Cls.test_name  # one test
 # Test modules are tests_<subject>.py; test names are full behavioral sentences —
 # grep for the behavior in plain English to find the right test.
 DATABASE_URL=<postgres-url> python manage.py test project.app      # Postgres parity
@@ -64,8 +64,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 - Registries (start here to find anything): project/app/models/__init__.py,
   project/app/views/__init__.py, project/app/serializers/__init__.py,
   frontend/src/api/endpoints.ts (every frontend API call, one line each).
-- Constraint/index names (oa_queue_order, rd_one_live_send_per_action, ...) appear
-  verbatim in model and migration — grep the name to get the whole story.
+- Constraint/index names (oa_queue_order, oa_done_order, ...) appear verbatim in
+  model and migration — grep the name to get the whole story.
 - Ticket IDs (MUS-nn) in comments remain as history pointers — grep one to find a
   feature's past.
 
@@ -100,7 +100,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   introduce signals.
 - Race-sensitive logic gets a database-level guard (partial unique constraint or
   conditional UPDATE), never a read-then-check. Existing patterns to copy:
-  single-use login-token redemption, rd_one_live_send_per_action.
+  single-use login-token redemption, the reopen-of-dismiss revoke.
 
 ## Transactions
 
@@ -140,8 +140,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   sanitize before it enters any prompt; tool results are sanitized, length-capped, and
   server-bound to the lead id. The same rule applies in the frontend: never interpolate
   lead-controlled fields into anything prompt-bound.
-- suggested_copy on OutreachAction is immutable once written (the eval corpus diffs it);
-  reviewer edits create OutreachEdit rows.
+- suggested_copy on OutreachAction is immutable once written; a reviewer's edit lands
+  in edited_copy, so the two can always be diffed.
 - The verifier fails closed: a missing/blank verification report blocks approval.
 - COPY_VERIFY_LEVEL=off disables grounding checks silently. Never set it in committed
   config; treat any diff containing it as human-review-required.
@@ -181,8 +181,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 Migrations; auth/session/throttle code; the approval gate; sanitization and verifier
 logic; feature-flag default flips; anything changing provider spend (models, retries,
-concurrency, prompt size); any retention/deletion touching audit tables (OutreachEdit,
-LoginToken); any change to .claude/ or CI workflow configuration.
+concurrency, prompt size); any retention/deletion touching audit tables (LoginToken);
+any change to .claude/ or CI workflow configuration.
 
 ## Deploy (placeholders — code does not determine these)
 

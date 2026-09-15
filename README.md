@@ -55,13 +55,9 @@ python manage.py runserver
 
 No `DATABASE_URL` is needed for this path — it falls back to SQLite at `./db.sqlite3`.
 
-Snoozed triage items return to the queue via `python manage.py unsnooze_due` (add `--dry-run`
-to see what it would do). It is idempotent and cheap — two conditional `UPDATE`s — so run it
-from cron every minute in anything long-lived.
-
-Open **http://127.0.0.1:8000/**, click **"Run Outreach Plan"**, watch prioritized cards
-with AI-drafted emails render in ~20–30s. Full walkthrough with sample results in
-[DEMO.md](DEMO.md).
+Open **http://127.0.0.1:8000/**, sign in with the console link, click **"Generate all"** on
+the leads page, and watch the drafts land in the review inbox in ~20–30s. Full walkthrough
+with sample results in [DEMO.md](DEMO.md).
 
 ### Or with Docker
 
@@ -109,31 +105,26 @@ is `console` **and** the address is allowlisted.
 
 | Layer | Where | What |
 |---|---|---|
-| Models | `project/app/models/` | `Lead`, `Event`, `OutreachAction` (decision audit log), `ReviewDecision` |
+| Models | `project/app/models/` | `Lead`, `Event`, `OutreachAction` (decision audit log), `DismissedOutreachKey` |
 | Logic | `project/app/services/outreach.py` | Priority scoring + action classification — pure Python, no LLM |
 | LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via the DB-backed `LLMConfiguration` (see `/api/llm/config/`) |
 | API | `project/app/views/`, `urls.py` | DRF APIViews at `/api/*` |
-| Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: planner board, reports, BD dashboard — consumes the `/api/*` endpoints |
+| Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: the book of leads and the review inbox — consumes the `/api/*` endpoints |
 
-### Triage queue
+### Review flow
 
-`OutreachAction` carries a lifecycle — `pending → approved | snoozed | dismissed`, with a
-short server-timed undo window — behind `/api/queue/*`. Three things in it are worth knowing:
+`OutreachAction` carries a lifecycle — `pending → approved | dismissed`, either of them
+reopened back to `pending` — behind `/api/outreach/<id>/{edit,verify,approve,dismiss,reopen}/`.
+Three things in it are worth knowing:
 
-- **`suggested_copy` is immutable, forever.** A reviewer's edits go in `edited_copy`, and every
-  edit appends an `OutreachEdit` row holding the before/after pair and its diff. That diff is the
-  quiet payoff of the whole product: every correction a human makes is labeled training data for
-  the copy evals, and it only exists at the moment of editing. Dump it with
-  `python manage.py dump_edit_corpus --committed-only > corpus.jsonl`.
-- **Snooze is not skip.** It takes a judgement about *when* the lead should come back —
-  `tomorrow`, `in_3_days`, `next_week`, a `custom` date, or `on_activity` ("come back when they
-  actually do something"). `on_activity` records a watermark so historical events can't wake it,
-  plus a 14-day backstop, because a lead that never acts would otherwise be indistinguishable
-  from a dismiss nobody chose. `manage.py unsnooze_due` sweeps both kinds.
+- **`suggested_copy` is immutable, forever.** A reviewer's edits go in `edited_copy`, so what
+  the model wrote and what a human actually sent can always be diffed.
+- **Approval is a judgement, not a send.** The server re-verifies the copy in play and refuses
+  the approval when a claim does not match the record; approved copy leaves via the clipboard.
 - **Dismiss is permanent.** It writes a suppression ledger row keyed on
   `sha256("v1|{lead_id}|{action_type}")`, which `plan_outreach()` consults *before* generating
   copy — so a re-run neither resurrects the recommendation nor pays for an LLM call to
-  rediscover it. Undo inside the window revokes the suppression in the same transaction.
+  rediscover it. Reopening a dismissal revokes the suppression in the same transaction.
 
 ### Planner run
 
@@ -291,9 +282,10 @@ be at least `OUTREACH_REQUEST_TIMEOUT_S` (two individually-plausible numbers the
 round give a 100% failure rate), and `OUTREACH_MAX_IN_FLIGHT` has a ceiling of 256 — a typo
 guard, not a capacity limit.
 
-The React build is **committed** to `project/app/static/frontend/`, and Django still serves the three routes
-(`/`, `/reports/`, `/next-actions/`) as thin shells (`templates/app/spa_base.html`). So `manage.py runserver`
-alone runs the whole app — **no Node required** to demo or review.
+The React build is **committed** to `project/app/static/frontend/`, and Django serves every route
+(`/leads/`, `/inbox`, `/settings/`, plus the two auth pages) as a thin shell
+(`templates/app/spa_base.html`). So `manage.py runserver` alone runs the whole app — **no Node
+required** to demo or review.
 
 ## Stack
 
