@@ -1,13 +1,11 @@
 import { getJson, postJson, putJson } from './client';
 import type {
-  AgentTrace,
   AuthConsumeInput,
   AuthConsumeResult,
   AuthMe,
   AuthRequestLinkInput,
   AuthRequestLinkResult,
   DismissInput,
-  DoneResponse,
   EditCopyInput,
   LeadRecord,
   LLMCatalog,
@@ -15,36 +13,48 @@ import type {
   LLMConfigInput,
   LLMTestResult,
   OutreachAction,
-  QueueItem,
-  QueueResponse,
-  ReviewDecision,
-  ReviewDecisionInput,
-  ReviewQueue,
-  SnoozeInput,
+  Paginated,
+  ReviewItem,
   VerificationReport,
   VerifyCopyInput,
 } from './types';
 
-export const fetchOutreach = () => getJson<OutreachAction[]>('/api/outreach/');
+// ===== leads =======================================================
 
 /** Every lead in the book, full records (MUS-68's `LeadSerializer`). */
 export const fetchLeads = () => getJson<LeadRecord[]>('/api/leads/');
 
-export const runOutreachPlan = () =>
-  postJson<OutreachAction[]>('/api/outreach/run/', {});
+/** Plan the whole book. */
+export const runOutreachPlan = () => postJson<OutreachAction[]>('/api/outreach/run/', {});
 
-export const fetchReports = () => getJson<OutreachAction[]>('/api/reports/');
+/** Plan one client (MUS-68). 409 when there is nothing new to recommend. */
+export const composeForLead = (leadId: string) =>
+  postJson<OutreachAction>(`/api/leads/${leadId}/compose/`, {});
 
-export const fetchOutreachTrace = (id: number) =>
-  getJson<AgentTrace>(`/api/outreach/${id}/trace/`);
+// ===== review inbox ================================================
 
-export const fetchReviewQueue = () => getJson<ReviewQueue>('/api/review-queue/');
+/** The inbox: the latest action per lead, paginated. */
+export const fetchOutreach = (page?: number) =>
+  getJson<Paginated<ReviewItem>>(page ? `/api/outreach/?page=${page}` : '/api/outreach/');
 
-export const fetchReviewDecisions = () =>
-  getJson<ReviewDecision[]>('/api/review-decisions/');
+export const editCopy = (id: number, body: EditCopyInput) =>
+  postJson<ReviewItem>(`/api/outreach/${id}/edit/`, body);
 
-export const createReviewDecision = (decision: ReviewDecisionInput) =>
-  postJson<ReviewDecision>('/api/review-decisions/', decision);
+/** Dry run: only `edit` persists. */
+export const verifyCopy = (id: number, body: VerifyCopyInput) =>
+  postJson<VerificationReport>(`/api/outreach/${id}/verify/`, body);
+
+export const approveAction = (id: number) =>
+  postJson<ReviewItem>(`/api/outreach/${id}/approve/`, {});
+
+export const dismissAction = (id: number, body: DismissInput) =>
+  postJson<ReviewItem>(`/api/outreach/${id}/dismiss/`, body);
+
+/** Back to pending; a reopened dismissal stops suppressing the lead. */
+export const reopenAction = (id: number) =>
+  postJson<ReviewItem>(`/api/outreach/${id}/reopen/`, {});
+
+// ===== LLM configuration ===========================================
 
 export const fetchLLMCatalog = () => getJson<LLMCatalog>('/api/llm/catalog/');
 
@@ -67,30 +77,3 @@ export const consumeLoginToken = (body: AuthConsumeInput) =>
   postJson<AuthConsumeResult>('/api/auth/consume/', body);
 
 export const logout = () => postJson<void>('/api/auth/logout/', {});
-
-// ===== triage queue ================================================
-
-export const fetchQueue = () => getJson<QueueResponse>('/api/queue/');
-
-export const fetchQueueItem = (id: number) =>
-  getJson<QueueItem>(`/api/queue/${id}/`);
-
-export const fetchDone = () => getJson<DoneResponse>('/api/queue/done/');
-
-export const editQueueCopy = (id: number, body: EditCopyInput) =>
-  postJson<QueueItem>(`/api/queue/${id}/edit/`, body);
-
-export const verifyQueueCopy = (id: number, body: VerifyCopyInput) =>
-  postJson<VerificationReport>(`/api/queue/${id}/verify/`, body);
-
-export const approveQueueItem = (id: number) =>
-  postJson<QueueItem>(`/api/queue/${id}/approve/`, {});
-
-export const snoozeQueueItem = (id: number, body: SnoozeInput) =>
-  postJson<QueueItem>(`/api/queue/${id}/snooze/`, body);
-
-export const dismissQueueItem = (id: number, body: DismissInput) =>
-  postJson<QueueItem>(`/api/queue/${id}/dismiss/`, body);
-
-export const undoQueueItem = (id: number) =>
-  postJson<QueueItem>(`/api/queue/${id}/undo/`, {});

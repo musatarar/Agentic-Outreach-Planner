@@ -7,10 +7,6 @@ import { SignOutButton } from './SignOutButton';
 const LINKS = [
   { to: '/leads/', label: 'Leads' },
   { to: '/inbox', label: 'Inbox' },
-  { to: '/done', label: 'Done' },
-  { to: '/', label: 'Planner' },
-  { to: '/reports/', label: 'Reports' },
-  { to: '/next-actions/', label: 'BD Dashboard' },
   { to: '/settings/', label: 'Settings' },
 ];
 

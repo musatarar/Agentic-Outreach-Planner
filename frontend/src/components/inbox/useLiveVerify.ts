@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../api/client';
-import { verifyQueueCopy } from '../../api/endpoints';
+import { verifyCopy } from '../../api/endpoints';
 import type { VerificationReport } from '../../api/types';
 
 /** the debounce; the endpoint is throttled at 120/min. */
@@ -57,7 +57,7 @@ export function useLiveVerify(
     const timer = window.setTimeout(() => {
       const token = (latestRequest.current += 1);
       setVerifying(true);
-      verifyQueueCopy(itemId, { copy: draft })
+      verifyCopy(itemId, { copy: draft })
         .then((response) => {
           if (token !== latestRequest.current) return;
           if (response.copy !== draftRef.current) return; // stale

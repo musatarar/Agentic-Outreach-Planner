@@ -14,7 +14,7 @@
   color: var(--color-text-muted);
 }
 
-/* Non-fatal: the leads loaded, the queue did not. Amber rather than red —
+/* Non-fatal: the leads loaded, the inbox did not. Amber rather than red —
    nothing is broken, some badges are just missing. */
 .leads-warning {
   margin: 0 0 var(--space-4);
@@ -26,7 +26,19 @@
   font-size: var(--text-sm);
 }
 
-/* Six columns do not fit a phone. Scroll the table, never the page. */
+/* What a Generate click did, including "nothing, and here is why" — the 409
+   the planner answers when a lead already has an open recommendation. */
+.leads-notice {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Seven columns do not fit a phone. Scroll the table, never the page. */
 .leads-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--color-border);

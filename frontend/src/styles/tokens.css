@@ -148,8 +148,6 @@
   --color-status-approved-fg: #ffffff;
   --color-status-approved-bg: #1a1a18;
 
-  --color-status-snoozed-fg: #56564f;
-  --color-status-snoozed-bg: #f4f4f1;
 
   --color-status-dismissed-fg: #6d6d66;
   --color-status-dismissed-bg: #f4f4f1;
@@ -207,12 +205,9 @@
   /* ---- Z-index ---------------------------------------------------------- */
   --z-base: 0;
   --z-sticky: 100;
-  --z-popover: 200;
-  --z-overlay: 300;
   --z-toast: 400;
 
   /* ---- Layout ----------------------------------------------------------- */
-  --rail-width: 180px;
   --header-height: 56px;
   --content-gutter: 1.5rem;
   --card-max-width: 46rem;
@@ -281,8 +276,6 @@
   --color-status-approved-fg: #0d0d0c;
   --color-status-approved-bg: #f2f2ef;
 
-  --color-status-snoozed-fg: #b0b0a7;
-  --color-status-snoozed-bg: #1f1f1c;
 
   --color-status-dismissed-fg: #85857c;
   --color-status-dismissed-bg: #1a1a18;
@@ -352,8 +345,6 @@
     --color-status-approved-fg: #0d0d0c;
     --color-status-approved-bg: #f2f2ef;
 
-    --color-status-snoozed-fg: #b0b0a7;
-    --color-status-snoozed-bg: #1f1f1c;
 
     --color-status-dismissed-fg: #85857c;
     --color-status-dismissed-bg: #1a1a18;
