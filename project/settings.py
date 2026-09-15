@@ -18,9 +18,11 @@ if _env_file.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-# LLM provider/model/key selection lives in the database (LLMConfiguration),
-# managed via /api/llm/*. These env vars are the fallback when no key is
-# stored (see project/app/services/llm/config.py):
+# LLM provider/model/key selection is environment-only and is read in
+# project/app/services/llm/config.py, not here -- nothing under services/llm/
+# may read Django settings. LLM_PROVIDER picks the adapter (default groq),
+# LLM_MODEL optionally overrides its default model, and the key comes from the
+# provider's own variable:
 #   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, aliased in config.py)
 #   chatgpt  -> OPENAI_API_KEY
 #   deepseek -> DEEPSEEK_API_KEY

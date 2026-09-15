@@ -447,7 +447,7 @@ Write the email now. Requirements:
 def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     """Generate a personalized outreach email via the configured LLM provider.
 
-    The provider is selected via the database-backed ``LLMConfiguration``; see
+    The provider is selected by ``LLM_PROVIDER``; see
     :mod:`project.app.services.llm`. Returns the text.
 
     ``prompt``/``client`` let the planner pass pre-built values so its phase 3

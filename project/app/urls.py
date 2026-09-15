@@ -7,7 +7,6 @@ from project.app.views.auth import (
     AuthRequestLinkView,
 )
 from project.app.views.leads import LeadComposeView, LeadListView
-from project.app.views.llm import LLMCatalogView, LLMConfigTestView, LLMConfigView
 from project.app.views.outreach import OutreachRunView
 from project.app.views.review import (
     ReviewApproveView,
@@ -38,8 +37,4 @@ urlpatterns = [
     path("outreach/<int:pk>/approve/", ReviewApproveView.as_view(), name="outreach-approve"),
     path("outreach/<int:pk>/dismiss/", ReviewDismissView.as_view(), name="outreach-dismiss"),
     path("outreach/<int:pk>/reopen/", ReviewReopenView.as_view(), name="outreach-reopen"),
-    # --- LLM configuration (MUS-32) ---
-    path("llm/catalog/", LLMCatalogView.as_view(), name="llm-catalog"),
-    path("llm/config/", LLMConfigView.as_view(), name="llm-config"),
-    path("llm/config/test/", LLMConfigTestView.as_view(), name="llm-config-test"),
 ]
