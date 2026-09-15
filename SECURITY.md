@@ -56,7 +56,7 @@ text. *Does not cover* cases where the structured signals genuinely support esca
 that is correct behavior, not an attack.
 
 **5. Shape validation on the output** (`validate_copy` in `plan_outreach`, backed by
-`evals/copy_checks.py`). Subject line present, one CTA, sane body length, no leaked
+`project/app/services/copy_checks.py`). Subject line present, one CTA, sane body length, no leaked
 preamble. Fail-closed: the draft is kept but routed to a human (`needs_human=True`) with the
 problems spelled out. *Covers* injections that visibly derail the output — a dumped system
 prompt, a refusal, an essay instead of an email. *Does not cover* a well-formed email

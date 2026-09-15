@@ -583,7 +583,7 @@ def validate_copy(email):
     Grounding is :mod:`project.app.services.verify`'s job: shape here, substance
     there.
     """
-    from evals import copy_checks  # lazy: keeps this module importable standalone
+    from project.app.services import copy_checks  # lazy: keeps this module importable standalone
 
     if not email or not email.strip():
         return ["Generated copy is empty."]

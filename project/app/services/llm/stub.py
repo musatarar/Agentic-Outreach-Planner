@@ -72,10 +72,9 @@ class StubClient(LLMClient):
     ):
         if os.environ.get(ALLOW_ENV_VAR) != "1":
             raise StubLLMNotAllowed(
-                f"The stub LLM provider is for benchmarking only. Set {ALLOW_ENV_VAR}=1 "
-                "to build one (evals/bench_planner.py does). If you are seeing this "
-                "from the app, something has selected provider 'stub' -- check "
-                "LLM_PROVIDER."
+                f"The stub LLM provider is for tests and benchmarks only. Set "
+                f"{ALLOW_ENV_VAR}=1 to build one. If you are seeing this from the app, "
+                "something has selected provider 'stub' -- check LLM_PROVIDER."
             )
         super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)
         self.latency_mean_s = latency_mean_s

@@ -75,7 +75,6 @@ class OutreachAction(models.Model):  # what the planner decided/did
     class Meta:
         indexes = [
             models.Index(fields=["status", "priority", "lead"], name="oa_queue_order"),
-            models.Index(fields=["status", "-status_changed_at"], name="oa_done_order"),
         ]
 
     def __str__(self):

@@ -25,7 +25,10 @@ own job on every push and pull request.
 | `run_rules_eval.py` | Loader, metrics, confusion matrix, regression gate. |
 | `golden/leads.jsonl` | Hand-labeled leads with the correct `(expected_action, expected_priority)`. |
 | `baselines/rules.json` | Recorded per-action precision/recall/F1 that the gate protects. |
-| `copy_checks.py` | Deterministic shape checks on generated copy. Not eval-only: `services/outreach.py::validate_copy` imports it as the planner's shape gate. |
+
+That is the whole directory: everything here serves the rules gate and nothing else.
+The planner's deterministic shape checks on generated copy, which used to live here, are
+application code and ship as `project/app/services/copy_checks.py`.
 
 Golden records are one JSON object per line; `//` and blank lines are ignored. Date fields
 accept an ISO string, `null`, or an integer meaning that many days before `TODAY`, so
