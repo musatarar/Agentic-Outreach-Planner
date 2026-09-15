@@ -1181,23 +1181,16 @@ async def agenerate_copy(
     if timeouts is None:
         timeouts = llm_runtime.get_timeouts()
 
-    # Local import: the module stays importable with no telemetry configured.
-    from project.app.services.telemetry import genai
-
     attempts = 0
     last_error = None
     started = time.monotonic()
-
-    # Built once and shared by every attempt (MUS-25): one `chat {model}` CLIENT
-    # span per HTTP attempt, siblings under the same lead.
-    call_scope = genai.provider_call_scope(genai.ProviderCall.from_client(client, MAX_COPY_TOKENS))
 
     async def attempt():
         nonlocal attempts, last_error
         attempts += 1
         try:
-            # `agenerate`, not `acomplete`: the span recorder needs the full
-            # LLMResult while the attempt's span is still open.
+            # `agenerate`, not `acomplete`: the caller needs the full LLMResult,
+            # not just its text.
             return await client.agenerate(
                 prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
             )
@@ -1212,7 +1205,7 @@ async def agenerate_copy(
         # loop, backoff sleeps included. `asyncio.timeout` rather than `wait_for`
         # so a CancelledError from somewhere else still reads as a cancellation.
         async with asyncio.timeout(timeouts.per_lead_s) as budget:
-            result = await acall_with_retry(attempt, policy=retry, attempt_scope=call_scope)
+            result = await acall_with_retry(attempt, policy=retry)
             return result.text
     except LLMError as exc:
         raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
@@ -1508,16 +1501,14 @@ async def _agenerate_for(item, client, runtime, client_error=None):
     return CopyOutcome(text=text)
 
 
-async def _agenerate_all(work, lead_spans, client, client_error, runtime):
+async def _agenerate_all(work, client, client_error, runtime):
     """Phase 3 for the whole run: every lead at once, at most
     ``runtime.max_in_flight`` of them actually talking to the provider.
 
-    ``lead_spans`` rides along zipped with ``work`` (MUS-25): each provider call
-    runs with its own span active, per *task*, so in-flight leads cannot leak
-    spans into each other. A semaphore rather than a chunked loop, so the next
-    lead starts the instant a slot frees. ``return_exceptions=True`` keeps one
-    dead lead from cancelling the gather; ``gather`` preserves argument order, so
-    phase 4 can keep zipping positionally.
+    A semaphore rather than a chunked loop, so the next lead starts the instant a
+    slot frees. ``return_exceptions=True`` keeps one dead lead from cancelling
+    the gather; ``gather`` preserves argument order, so phase 4 can keep zipping
+    positionally.
 
     The client is closed on the way out: ``asyncio.run`` closes its loop but not
     the transports on it, so without this every run strands a connection pool on
@@ -1525,18 +1516,17 @@ async def _agenerate_all(work, lead_spans, client, client_error, runtime):
     """
     semaphore = asyncio.Semaphore(runtime.max_in_flight)
 
-    async def bounded(item, lead_span):
+    async def bounded(item):
         # Skip cases never take a slot — they have no provider call to make.
         outcome = _outcome_without_calling(item, client_error)
         if outcome is not None:
             return outcome
         async with semaphore:
-            with lead_span.active():
-                return await _agenerate_for(item, client, runtime, client_error)
+            return await _agenerate_for(item, client, runtime, client_error)
 
     try:
         results = await asyncio.gather(
-            *(bounded(item, span) for item, span in zip(work, lead_spans, strict=True)),
+            *(bounded(item) for item in work),
             return_exceptions=True,
         )
     finally:
@@ -1810,7 +1800,6 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
 
     from project.app.models import DismissedOutreachKey, Lead, OutreachAction
     from project.app.services import queue_copy
-    from project.app.services.telemetry import genai
 
     # Resolved once so a mid-run configuration change cannot make half a run
     # behave differently from the other half.
@@ -1846,124 +1835,82 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     # `reason` and a `rule_trace` computed on different days.
     today = datetime.date.today()
 
-    with genai.run_span(verify_level=level, max_in_flight=runtime.max_in_flight) as run:
-        # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
-        # walked four times in a run (phases 2, 3's prompt, 4 and 5), so this is
-        # two queries instead of 1 + 4N.
-        leads = list(Lead.objects.prefetch_related("events"))
+    # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
+    # walked four times in a run (phases 2, 3's prompt, 4 and 5), so this is
+    # two queries instead of 1 + 4N.
+    leads = list(Lead.objects.prefetch_related("events"))
 
-        # The clients this run plans for: the set that gets classified, prompted
-        # and written. An unknown id matches nothing.
-        planned_leads = leads if lead_ids is None else [x for x in leads if x.id in set(lead_ids)]
+    # The clients this run plans for: the set that gets classified, prompted
+    # and written. An unknown id matches nothing.
+    planned_leads = leads if lead_ids is None else [x for x in leads if x.id in set(lead_ids)]
 
-        # 2. classify, apply the skip rules, and build prompts (the last phase
-        #    before the provider call)
-        work = []
-        for lead in planned_leads:
-            item = _build_work_item(lead, suppressed, open_keys, today)
-            if item is None:
-                continue
-            work.append(item)
-            # So a later lead sharing the key (or a re-entrant run) skips it.
-            open_keys.add(item.dedupe_key)
+    # 2. classify, apply the skip rules, and build prompts (the last phase
+    #    before the provider call)
+    work = []
+    for lead in planned_leads:
+        item = _build_work_item(lead, suppressed, open_keys, today)
+        if item is None:
+            continue
+        work.append(item)
+        # So a later lead sharing the key (or a re-entrant run) skips it.
+        open_keys.add(item.dedupe_key)
 
-        # A span per lead, opened here and closed in phase 4 — it deliberately
-        # covers both, since "how long did this lead take" runs from the provider
-        # call to the verdict. The run owns them, so an escape in between cannot
-        # leave one open (an unended span is never exported at all).
-        lead_spans = [
-            run.start_lead(
-                lead_id=item.lead.id,
-                action_type=item.action_type,
-                priority=item.priority,
-                prompt=item.prompt,
-            )
-            for item in work
-        ]
+    # 3. call the provider, concurrently -- no ORM in this phase, at all.
+    client, client_error = _resolve_client(work)
+    outcomes = _run_coroutine(_agenerate_all(work, client, client_error, runtime))
 
-        # 3. call the provider, concurrently -- no ORM in this phase, at all.
-        client, client_error = _resolve_client(work)
-        outcomes = _run_coroutine(_agenerate_all(work, lead_spans, client, client_error, runtime))
+    # 4. run the output gates
+    # strict=True on every zip: a silently truncated zip would drop leads
+    # from the run without a trace.
+    reviews = []
+    for item, outcome in zip(work, outcomes, strict=True):
+        reviews.append(_review(item, outcome, level, today))
 
-        # 4. run the output gates
-        # strict=True on every zip: a silently truncated zip would drop leads
-        # from the run without a trace.
-        reviews = []
-        for item, outcome, lead_span in zip(work, outcomes, lead_spans, strict=True):
-            with lead_span.active():
-                review = _review(item, outcome, level, today)
-            genai.finish_lead(
-                lead_span,
-                run_id=run.run_id,
-                lead_id=item.lead.id,
-                skipped=item.action_type == actions.UNKNOWN,
-                generated=outcome.error is None and bool(outcome.text),
-                needs_human=review.needs_human,
-                shape_problem_count=review.shape_problem_count,
-                violation_count=review.violation_count,
-                output_text=review.suggested_copy,
-                failure=outcome.error,
-            )
-            reviews.append(review)
-
-        # 5. write. The snapshots are computed FIRST, outside the transaction:
-        # they are several queries per lead and only the inserts need atomicity.
-        snapshots = [
-            (
-                # Taken once at planning time and never recomputed: every
-                # relative figure in the trace ("28d since last contact") is only
-                # true as of `trace.today`.
-                explain(item.lead, today),
-                queue_copy.build_verification(
-                    item.lead, review.suggested_copy, item.action_type, level=level, today=today
-                ),
-            )
-            for item, review in zip(work, reviews, strict=True)
-        ]
-        rows = [
-            OutreachAction(
-                lead=item.lead,
-                priority=item.priority,
-                action_type=item.action_type,
-                reason=item.reason,
-                suggested_copy=review.suggested_copy,
-                needs_human=review.needs_human,
-                further_action=review.further_action,
-                dedupe_key=item.dedupe_key,
-                # Stamped so a row traces back to its run, and a lead span can
-                # name the row it will produce before that row exists.
-                trace_run_id=run.run_id,
-                rule_trace=rule_trace,
-                verification=verification,
-            )
-            for item, review, (rule_trace, verification) in zip(
-                work, reviews, snapshots, strict=True
-            )
-        ]
-        with transaction.atomic():
-            # Supersede the failed-attempt rows this run replaces (they were let
-            # through the open-item rule on purpose), so a lead that failed
-            # Monday and succeeded Tuesday does not show both. Deleted rather
-            # than marked: a failed attempt carries no draft, and its only
-            # possible decision — a snooze — answered a different question.
-            OutreachAction.objects.filter(
-                dedupe_key__in=[item.dedupe_key for item in work],
-                status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
-            ).filter(failed_generation_filter()).delete()
-
-            # `bulk_create` skips `save()` and its signals (unused here) and must
-            # return pk-populated objects, since the serializer emits `id` —
-            # pinned by tests_planner_perf and, on deploys CI never sees, by
-            # checks.bulk_create_pk_check (app.E003).
-            planned = OutreachAction.objects.bulk_create(rows)
-
-        # After the write, deliberately: a run that rolled back escapes with
-        # `error.type` on the run span rather than a summary of rows it never
-        # created.
-        run.finish(
-            lead_count=len(work),
-            needs_human_count=sum(1 for review in reviews if review.needs_human),
+    # 5. write. The snapshots are computed FIRST, outside the transaction:
+    # they are several queries per lead and only the inserts need atomicity.
+    snapshots = [
+        (
+            # Taken once at planning time and never recomputed: every
+            # relative figure in the trace ("28d since last contact") is only
+            # true as of `trace.today`.
+            explain(item.lead, today),
+            queue_copy.build_verification(
+                item.lead, review.suggested_copy, item.action_type, level=level, today=today
+            ),
         )
+        for item, review in zip(work, reviews, strict=True)
+    ]
+    rows = [
+        OutreachAction(
+            lead=item.lead,
+            priority=item.priority,
+            action_type=item.action_type,
+            reason=item.reason,
+            suggested_copy=review.suggested_copy,
+            needs_human=review.needs_human,
+            further_action=review.further_action,
+            dedupe_key=item.dedupe_key,
+            rule_trace=rule_trace,
+            verification=verification,
+        )
+        for item, review, (rule_trace, verification) in zip(work, reviews, snapshots, strict=True)
+    ]
+    with transaction.atomic():
+        # Supersede the failed-attempt rows this run replaces (they were let
+        # through the open-item rule on purpose), so a lead that failed
+        # Monday and succeeded Tuesday does not show both. Deleted rather
+        # than marked: a failed attempt carries no draft, and its only
+        # possible decision — a snooze — answered a different question.
+        OutreachAction.objects.filter(
+            dedupe_key__in=[item.dedupe_key for item in work],
+            status__in=(OutreachAction.STATUS_PENDING, OutreachAction.STATUS_SNOOZED),
+        ).filter(failed_generation_filter()).delete()
+
+        # `bulk_create` skips `save()` and its signals (unused here) and must
+        # return pk-populated objects, since the serializer emits `id` —
+        # pinned by tests_planner_perf and, on deploys CI never sees, by
+        # checks.bulk_create_pk_check (app.E003).
+        planned = OutreachAction.objects.bulk_create(rows)
 
     planned.sort(key=lambda a: a.priority)
     return planned
