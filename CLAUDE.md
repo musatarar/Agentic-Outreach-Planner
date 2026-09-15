@@ -5,7 +5,8 @@ into a bundle committed at project/app/static/frontend/ and served by Django (no
 the runtime image). Rule functions in services/outreach.py select leads for outreach;
 provider calls generate message text only; services/verify.py checks generated copy
 against stored lead/event fields and blocks approval when checks fail; a human approval
-gate guards every outbound send.
+gate guards every draft, and approved copy leaves via the reviewer's clipboard — the app
+sends nothing itself.
 
 ## Commands
 
@@ -13,8 +14,8 @@ gate guards every outbound send.
 # setup
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env   # then REPLACE DJANGO_SECRET_KEY with a fresh value and set
-                       # DJANGO_DEBUG as needed — never keep the example's values
+python scripts/setup_env.py   # writes .env from .env.example with a freshly generated
+                              # DJANGO_SECRET_KEY; never overwrites an existing .env
 ```
 
 ```bash
@@ -59,35 +60,32 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 - project/app/services/outreach.py — rules engine + planner orchestrator (numbered
   phases in comments). project/app/services/llm/ — provider-agnostic LLM layer.
-  services/verify.py — grounding verifier. services/dispatch.py — the send gate.
-  services/agent/ — flag-gated tool-calling copy loop (OUTREACH_AGENT_ENABLED, default off).
+  services/verify.py — grounding verifier. services/agent/ — flag-gated tool-calling
+  copy loop (OUTREACH_AGENT_ENABLED, default off).
 - Registries (start here to find anything): project/app/models/__init__.py,
   project/app/views/__init__.py, project/app/serializers/__init__.py,
   frontend/src/api/endpoints.ts (every frontend API call, one line each).
 - Constraint/index names (oa_queue_order, rd_one_live_send_per_action, ...) appear
   verbatim in model and migration — grep the name to get the whole story.
-- Area codes name the governed seams: docs/areas.toml maps each slug (llm-seam,
-  async-phase, dispatch-gate, ...) to its paths, contract, and gate; `# area:` comments
-  mark the binding sites. Reference areas — not line numbers, not tickets — in plans,
-  PRs, and reviews. Ticket IDs (MUS-nn) in comments remain as history pointers — grep
-  one to find a feature's past.
+- Ticket IDs (MUS-nn) in comments remain as history pointers — grep one to find a
+  feature's past.
 
 ## Database & migrations — hard rules
 
 - NEVER edit a migration that is committed on the default branch. Additive follow-up
-  migrations only. (A hook blocks this; do not work around it.)
+  migrations only.
 - Run `python manage.py makemigrations --check --dry-run` after any model change.
 - Dev is usually SQLite; production is Postgres (DATABASE_URL). DDL that is instant on
   SQLite can stall Postgres: index adds take a SHARE lock (writes blocked for the
   build); constraint adds via ALTER TABLE take ACCESS EXCLUSIVE (all access blocked).
   Either is a production stall on a hot table. Any index/constraint on outreachaction,
-  lead, or event is a hot-table change: use the /safe-migration skill, prefer
-  concurrent operations with atomic = False, and get human review.
+  lead, or event is a hot-table change: prefer concurrent operations with
+  atomic = False, and get human review.
 - One concern per migration. Schema migrations carry no data operations; seeding lives
   in idempotent management commands (the repo has zero RunPython migrations — keep it so).
 - New columns: nullable-or-constant-default first (Postgres adds constant defaults
   instantly), backfill in batches via a management command, then constrain.
-- Do not write to the checked-in SQLite file; the Django test runner creates a
+- Do not write to the local SQLite file; the Django test runner creates a
   throwaway database for each run.
 
 ## ORM & query discipline
@@ -113,8 +111,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   transaction.atomic block in the service function that owns them — never spread
   across helpers each committing separately.
 - select_for_update only inside an explicit transaction.atomic block (it errors
-  outside one). The dispatch send path — re-read by sha256 under select_for_update
-  inside the consuming transaction — is the exemplar to copy.
+  outside one).
 - Never hold a transaction open across the async provider-call phase: collect inputs,
   close the transaction, await, then write results in a new atomic block. A
   transaction spanning the event-loop hop pins a connection for the full provider
@@ -150,9 +147,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   lead-controlled fields into anything prompt-bound.
 - suggested_copy on OutreachAction is immutable once written (the eval corpus diffs it);
   reviewer edits create OutreachEdit rows.
-- The verifier fails closed: a missing/blank verification report blocks approval. The
-  dispatch gate re-reads effective copy by sha256 inside the consuming transaction —
-  never "simplify" the double check.
+- The verifier fails closed: a missing/blank verification report blocks approval.
 - COPY_VERIFY_LEVEL=off disables grounding checks silently. Never set it in committed
   config; treat any diff containing it as human-review-required.
 - Magic-link auth stores only hashed tokens, single-use via conditional UPDATE, with
@@ -189,14 +184,14 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 ## What always needs a human before merge
 
-Migrations; auth/session/throttle code; services/dispatch.py and the approval gate;
-sanitization and verifier logic; feature-flag default flips; anything changing provider
-spend (models, retries, concurrency, prompt size); any retention/deletion touching
-audit tables (ProviderTrace*, AgentStep, OutreachEdit, LoginToken); any change to
-.claude/ or CI workflow configuration.
+Migrations; auth/session/throttle code; the approval gate; sanitization and verifier
+logic; feature-flag default flips; anything changing provider spend (models, retries,
+concurrency, prompt size); any retention/deletion touching audit tables (ProviderTrace*,
+AgentStep, OutreachEdit, LoginToken); any change to .claude/ or CI workflow
+configuration.
 
 ## Deploy (placeholders — code does not determine these)
 
 - Production server/WSGI setup: <not yet defined — the container currently runs the dev
-  server; see the release-check skill before any real deployment>
+  server>
 - Production DATABASE_URL / migration execution window: <define with the deploy story>

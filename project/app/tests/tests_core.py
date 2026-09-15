@@ -34,7 +34,7 @@ class IngestDataCommandTests(TestCase):
         # Spot-check lead_001 fields parse correctly.
         lead = Lead.objects.get(id="lead_001")
         self.assertEqual(lead.agency_name, "Summit Risk Advisors")
-        self.assertEqual(lead.contact_email, "priya.nair@summitrisk.com")
+        self.assertEqual(lead.contact_email, "priya.nair@summitrisk.example.com")
         self.assertEqual(lead.state, "CO")
         self.assertEqual(lead.stage, "active_trial")
         self.assertEqual(lead.estimated_book_size_usd, 1400000)
