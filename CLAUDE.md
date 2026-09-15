@@ -9,17 +9,22 @@ gate guards every outbound send.
 
 ## Commands
 
+```bash
 # setup
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env   # then REPLACE DJANGO_SECRET_KEY with a fresh value and set
                        # DJANGO_DEBUG as needed — never keep the example's values
+```
 
+```bash
 # run
 python manage.py migrate
 python manage.py runserver                      # http://127.0.0.1:8000
 python scripts/populate_demo_data.py            # demo data (ingest + LLM catalog seed)
+```
 
+```bash
 # tests — Django's unittest runner. There is NO pytest, no conftest.
 python manage.py test project.app                                  # full backend suite
 python manage.py test project.app.tests.tests_queue                # one module
@@ -28,20 +33,27 @@ python manage.py test project.app.tests.tests_queue.Cls.test_name  # one test
 # grep for the behavior in plain English to find the right test.
 DATABASE_URL=<postgres-url> python manage.py test project.app      # Postgres parity
                                                 # (CI runs py3.12/3.13 x sqlite/postgres)
+```
 
+```bash
 # lint / types / migrations — run before any commit; this mirrors CI exactly
 ruff check . && ruff format --check .
 mypy project/app/services/          # CI typechecks exactly this path, nothing more
 python manage.py makemigrations --check --dry-run   # must be clean
+```
 
+```bash
 # rules-engine regression (pure Python, no DB, no network, frozen clock)
 python evals/run_rules_eval.py      # diffs against evals/baselines/ — baselines change
                                     # only by explicit human decision, never to make a run pass
+```
 
+```bash
 # frontend — only when frontend/ changed
 cd frontend && npm ci && npm run typecheck && npm test && npm run build
 git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
 # NEVER hand-edit project/app/static/frontend/** — it is build output. Rebuild + commit.
+```
 
 ## Architecture in 30 seconds
 
