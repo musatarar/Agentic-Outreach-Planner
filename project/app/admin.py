@@ -1,12 +1,14 @@
 from django.contrib import admin
 
 from project.app.models import (
+    ActionType,
     Event,
     Lead,
     LLMConfiguration,
     LLMModel,
     LLMProvider,
     OutreachAction,
+    OutreachRule,
 )
 
 
@@ -72,6 +74,20 @@ class LLMModelAdmin(admin.ModelAdmin):
     )
     list_filter = ("provider", "tier", "enabled")
     search_fields = ("model_id", "label")
+
+
+@admin.register(ActionType)
+class ActionTypeAdmin(admin.ModelAdmin):
+    list_display = ("key", "label", "owner", "urgency", "enabled", "updated_at")
+    list_filter = ("urgency", "enabled")
+    search_fields = ("key", "label", "owner__username")
+
+
+@admin.register(OutreachRule)
+class OutreachRuleAdmin(admin.ModelAdmin):
+    list_display = ("name", "owner", "kind", "action", "order", "enabled", "updated_at")
+    list_filter = ("kind", "enabled")
+    search_fields = ("name", "action__key", "owner__username")
 
 
 @admin.register(LLMConfiguration)

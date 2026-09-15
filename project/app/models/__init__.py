@@ -17,9 +17,11 @@ from .outreach import (
     OutreachEdit,
     ReviewDecision,
 )
+from .rules import ActionType, OutreachRule
 
 __all__ = [
     "AEAvailabilitySlot",
+    "ActionType",
     "AgentLeadRun",
     "AgentStep",
     "DismissedOutreachKey",
@@ -32,6 +34,7 @@ __all__ = [
     "OutboundSend",
     "OutreachAction",
     "OutreachEdit",
+    "OutreachRule",
     "ProviderTrace",
     "ProviderTraceContent",
     "ReviewDecision",
