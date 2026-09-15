@@ -153,16 +153,14 @@ POST /api/auth/consume/
 GET  /api/auth/me/
 ```
 
-Everything else — `/api/leads/`, `/api/outreach/*`, `/api/reports/`,
-`/api/review-queue/`, `/api/review-decisions/`, `/api/queue/*` and all three
-`/api/llm/*` endpoints — requires a session. That closes the gap this
-document listed as a known gap through MUS-32.
+Everything else — `/api/leads/`, `/api/leads/<id>/compose/` and
+`/api/outreach/*` — requires a session. That closes the gap this document
+listed as a known gap through MUS-32.
 
-The Django HTML shells (`/`, `/signin`, `/auth/consume`, `/reports/`,
-`/next-actions/`, `/settings/`) stay public **on purpose**. They render an
-empty `#root` and contain no data; access control for those pages is the
-client-side route guard, which produces a designed sign-in redirect rather
-than a Django 302.
+The Django HTML shells (`/`, `/signin`, `/auth/consume`, `/leads/`, `/inbox`)
+stay public **on purpose**. They render an empty `#root` and contain no data;
+access control for those pages is the client-side route guard, which produces
+a designed sign-in redirect rather than a Django 302.
 
 ### Magic link, not passwords
 
@@ -238,38 +236,28 @@ previously-public surface.
 
 ### HTTP Basic Auth is retired
 
-MUS-32 guarded `/api/llm/config/` and `/api/llm/config/test/` with a shared
-`LLM_ADMIN_USERNAME` / `LLM_ADMIN_PASSWORD` credential pair. Both the class
-and the settings are **deleted**. Two auth systems in a single-operator tool is
-one too many, and the stored provider API key — the actually-sensitive thing
-in this database — has no business sitting behind a *different* credential
-from everything else. `/settings/` is reachable once signed in.
+MUS-32 guarded the LLM configuration endpoints with a shared
+`LLM_ADMIN_USERNAME` / `LLM_ADMIN_PASSWORD` credential pair. The class, the
+settings and — since provider selection moved to the environment — those
+endpoints themselves are all **deleted**. Two auth systems in a
+single-operator tool was one too many; there is now one session, and one
+permission class in front of everything behind it.
 
 ## Secrets at rest
 
-Provider API keys saved via `PUT /api/llm/config/` are encrypted before
-being written to the database (`LLMConfiguration.encrypted_api_key`, a
-`BinaryField`) using Fernet symmetric encryption
-(`project/app/services/crypto.py`). The encryption key,
-`LLM_KEY_ENCRYPTION_KEY`, is a dedicated env var — **not** derived from
-`DJANGO_SECRET_KEY` — so rotating one never silently invalidates the other.
+The application stores **no** provider API key. Which provider runs, on which
+model, and with which key is environment configuration only — `LLM_PROVIDER`,
+`LLM_MODEL` and the provider's own variable (`GROQ_API_KEY`,
+`ANTHROPIC_API_KEY`, ...), read in `project/app/services/llm/config.py` and
+never written anywhere.
 
-- If `LLM_KEY_ENCRYPTION_KEY` is unset but a row with a stored key already
-  exists in the database, a Django system check (`project/app/checks.py`)
-  fails loudly at boot (`manage.py check`/`runserver`/etc.), rather than
-  waiting for the first LLM call to blow up with a decryption error.
-- The key is never returned by the API: `GET`/`PUT /api/llm/config/`
-  responses expose only `has_key` (bool), `key_last_four` (last 4 chars of
-  the plaintext, stored alongside the ciphertext), and `key_source`
-  (`"database"` | `"environment"` | `"none"`) — never the key itself, never
-  the ciphertext blob.
-- The Django admin (`project/app/admin.py::LLMConfigurationAdmin`) excludes
-  `encrypted_api_key` from every list/detail view — the stored key can't be
-  read (encrypted or otherwise) from the admin UI.
-- `POST /api/llm/config/test/` never echoes the key or the raw
-  provider-SDK exception text back to the caller; failures are mapped to one
-  of four `error_kind` values (`auth`, `rate_limit`, `unknown_model`,
-  `network`) with a generic, safe message.
+- There is no key column, no encryption key to manage and no endpoint that
+  accepts a key, so there is nothing here to leak, decrypt or rotate. The one
+  secret the app owns is `DJANGO_SECRET_KEY`.
+- A key is only ever handed to the adapter that makes the call. No response
+  body, log line or admin page renders one.
+- `LoginToken` stores hashes, never raw tokens — see **Magic link, not
+  passwords** above.
 
 ## Known gaps (tracked separately, not fixed here)
 

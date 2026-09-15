@@ -13,10 +13,9 @@ of an account exec digging through HubSpot and Slack every morning.
   testable Python (book size, lifecycle stage, "gone quiet" detection, recency) — the LLM
   is only used for copywriting, never for the judgment call. See
   [`services/outreach.py`](project/app/services/outreach.py).
-- **Provider-agnostic LLM layer.** Swap Claude / OpenAI / DeepSeek / Groq via the
-  `/api/llm/config/` endpoint (backed by the `LLMConfiguration` model, encrypted key
-  storage, no code changes, no vendor lock-in). See
-  [`services/llm/`](project/app/services/llm/).
+- **Provider-agnostic LLM layer.** Swap Claude / OpenAI / DeepSeek / Groq with one
+  environment variable (`LLM_PROVIDER`, optionally `LLM_MODEL`) — no code changes, no
+  vendor lock-in. See [`services/llm/`](project/app/services/llm/).
 - **Safe default for the unknown.** Leads the rules can't classify are flagged
   `needs_human=True` and routed to a BD review queue instead of getting an
   auto-generated email.
@@ -42,14 +41,13 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # 2. Write .env from .env.example with a freshly generated DJANGO_SECRET_KEY
-#    (required). Also set a provider key (default: groq — free tier, no credit
-#    card at console.groq.com) if you want the LLM copy step; it's picked up as
-#    a fallback until you save one via /api/llm/config/.
+#    (required). Also set a provider key (default provider: groq — free tier,
+#    no credit card at console.groq.com) if you want the LLM copy step.
 python scripts/setup_env.py        # then edit .env and fill in the LLM key
 
-# 3. Migrate, seed the demo pipeline + LLM catalog, and run
+# 3. Migrate, seed the demo pipeline, and run
 python manage.py migrate
-python scripts/populate_demo_data.py   # loads the sample pipeline + LLM catalog
+python scripts/populate_demo_data.py   # loads the sample pipeline
 python manage.py runserver
 ```
 
@@ -107,7 +105,7 @@ is `console` **and** the address is allowlisted.
 |---|---|---|
 | Models | `project/app/models/` | `Lead`, `Event`, `OutreachAction` (decision audit log), `DismissedOutreachKey` |
 | Logic | `project/app/services/outreach.py` | Priority scoring + action classification — pure Python, no LLM |
-| LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected via the DB-backed `LLMConfiguration` (see `/api/llm/config/`) |
+| LLM | `project/app/services/llm/` | Adapter per provider behind a common interface, selected by `LLM_PROVIDER` / `LLM_MODEL` |
 | API | `project/app/views/`, `urls.py` | DRF APIViews at `/api/*` |
 | Frontend | `frontend/` (source), `project/app/static/frontend/` (built) | React + TS SPA: the book of leads and the review inbox — consumes the `/api/*` endpoints |
 
@@ -141,9 +139,9 @@ run inside an event loop; phase 3 gets a loop of its own and hands back plain va
 construction is deliberately hoisted into phase 2 for the same reason — it walks `lead.events`,
 and a lazy query inside `gather` raises `SynchronousOnlyOperation`.
 
-How hard a run drives the provider is deployment configuration, not product configuration, so
-it lives in the environment rather than in the DB-backed `LLMConfiguration` that selects the
-provider. All seven are optional; the defaults below are what you get with none of them set.
+How hard a run drives the provider is deployment configuration, and lives in the environment
+alongside `LLM_PROVIDER` / `LLM_MODEL`. All seven are optional; the defaults below are what
+you get with none of them set.
 
 | Variable | Default | What it bounds |
 |---|--:|---|
@@ -167,24 +165,26 @@ retryable failures has to be given up on rather than waited out.
 
 ### Database cost
 
-A run's **read** cost is 11 queries, flat in lead count: two dedupe-ledger reads, the leads,
-their events (one prefetch), four to resolve the provider, and the transaction plus the
-supersede sweep. On top of that come the INSERTs, which are *not* flat and are the backend's
+A run's **read** cost is 7 queries, flat in lead count: two dedupe-ledger reads, the leads,
+their events (one prefetch), and the transaction plus the supersede sweep. Resolving the
+provider used to cost four more, reading the LLM catalog tables; it reads the environment now.
+On top of that come the INSERTs, which are *not* flat and are the backend's
 decision rather than ours — Django's SQLite backend caps a batch at
-`max_query_params (999) ÷ fields`, which is **55 rows** for `OutreachAction`, while Postgres
-sends one statement at any size. So a 200-lead run is 14 queries on the SQLite CI leg and 11 on
+`max_query_params (999) ÷ fields`, which is **76 rows** for `OutreachAction`, while Postgres
+sends one statement at any size. So a 200-lead run is 10 queries on the SQLite CI leg and 8 on
 the Postgres one.
 
 Before `prefetch_related("events")` the read cost was `10 + 11N` — every lead's events were
 re-read by the classifier, the prompt builder, the grounding verifier and the trace snapshot in
-turn. Measured by reverting the prefetch and re-running the assertion:
+turn. Measured by reverting the prefetch and re-running the assertion — back when resolving
+the provider still cost four queries a run, so subtract 4 from every cell for today's numbers:
 
 | 12 leads | `COPY_VERIFY_LEVEL=off` | `standard` (the default) |
 |---|--:|--:|
 | Before | 95 | 143 |
 | After | 12 | 12 |
 
-At the 200-lead benchmark size that is roughly 2,200 queries before, 14 after.
+At the 200-lead benchmark size that is roughly 2,200 queries before, 10 after.
 
 `project/app/tests/tests_planner_perf.py` is the regression lock, and it is three assertions rather
 than one: a fixed count at 12 leads, the *same* read cost at 3 leads and at 60 (a constant on
@@ -223,11 +223,11 @@ leads classify to no automated pattern and cost no call, mirroring the labelled 
 so the pool is the whole difference and maintaining a second serial code path to make the table
 look rigorous would mean shipping a planner nobody runs.
 
-The stub cannot be reached from the app: `seed_llm_catalog` creates no `LLMProvider` row for
-it (and the Settings UI lists providers from that table), its constructor refuses to build
-unless `OUTREACH_ALLOW_STUB_LLM=1` (set only by the benchmark), and the only thing that asks
-for it by name is `build_client("stub")` inside the benchmark itself. All three barriers are
-pinned by `project/app/tests/tests_stub_provider.py`.
+The stub cannot be reached from the app: its constructor refuses to build unless
+`OUTREACH_ALLOW_STUB_LLM=1` (set only by the benchmark), so even `LLM_PROVIDER=stub` gets a
+refusal rather than a fake provider, and the only thing that asks for it by name is
+`build_client("stub")` inside the benchmark itself. Both barriers are pinned by
+`project/app/tests/tests_stub_provider.py`.
 
 Reproduce with `python evals/bench_planner.py --leads 200 --concurrency 8`, and
 `--concurrency 1` for the before; `--update-readme` rewrites the table above from the
@@ -283,7 +283,7 @@ round give a 100% failure rate), and `OUTREACH_MAX_IN_FLIGHT` has a ceiling of 2
 guard, not a capacity limit.
 
 The React build is **committed** to `project/app/static/frontend/`, and Django serves every route
-(`/leads/`, `/inbox`, `/settings/`, plus the two auth pages) as a thin shell
+(`/leads/`, `/inbox`, plus the two auth pages) as a thin shell
 (`templates/app/spa_base.html`). So `manage.py runserver` alone runs the whole app — **no Node
 required** to demo or review.
 

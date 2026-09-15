@@ -12,7 +12,7 @@ per lead. AEs open one page each morning instead of digging through HubSpot and 
 
 # 2. Migrate and load the pipeline data (with the venv active)
 python manage.py migrate
-python scripts/populate_demo_data.py   # ingests leads/events + seeds the LLM catalog
+python scripts/populate_demo_data.py   # ingests leads and events
 ```
 
 ## Run the demo

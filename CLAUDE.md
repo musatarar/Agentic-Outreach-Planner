@@ -22,7 +22,7 @@ python scripts/setup_env.py   # writes .env from .env.example with a freshly gen
 # run
 python manage.py migrate
 python manage.py runserver                      # http://127.0.0.1:8000
-python scripts/populate_demo_data.py            # demo data (ingest + LLM catalog seed)
+python scripts/populate_demo_data.py            # demo data (leads + events ingest)
 ```
 
 ```bash
@@ -125,9 +125,12 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 ## LLM layer
 
+- Provider/model/key selection is environment-only (services/llm/config.py): LLM_PROVIDER
+  (default groq), LLM_MODEL (blank = the adapter's own DEFAULT_MODEL), and the provider's
+  key var. Nothing about it is stored in the database or editable through the API.
 - Adding a provider currently requires edits in two places: the client registry
-  (services/llm/__init__.py) and the env-var map (services/llm/config.py). Edit both or
-  consolidate first.
+  (services/llm/__init__.py) and the env-var map (services/llm/config.py, which is also
+  the set of values LLM_PROVIDER accepts). Edit both or consolidate first.
 - Retryability lives on the error class (services/llm/errors.py). Retry policy and
   timeouts are cost multipliers — flag any change as a spend change in the PR.
 - Never log or persist raw prompts/completions.
