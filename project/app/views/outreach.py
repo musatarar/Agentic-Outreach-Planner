@@ -11,27 +11,14 @@ from project.app.services.actions import ACTION_META, SELECTABLE_ACTION_TYPES
 
 
 class OutreachRunView(APIView):
-    """POST /api/outreach/run/ — run the planner and return created actions.
-
-    Optional body ``{"resume_run_id": "<uuid>"}`` re-enters a crashed agent run
-    (MUS-29); ``plan_outreach`` itself decides the two 400s (``unknown_run``,
-    ``agent_disabled``) since scripts and tests call it directly too.
-    """
+    """POST /api/outreach/run/ — run the planner and return created actions."""
 
     def post(self, request, *args, **kwargs):
         # Imported inside the method so this module loads independently of the
         # service module.
-        from project.app.services.outreach import AgentDisabled, UnknownRun, plan_outreach
+        from project.app.services.outreach import plan_outreach
 
-        data = request.data if isinstance(request.data, dict) else {}
-        resume_run_id = str(data.get("resume_run_id") or "") or None
-
-        try:
-            actions = plan_outreach(resume_run_id=resume_run_id)
-        except UnknownRun:
-            return Response({"error": "unknown_run"}, status=status.HTTP_400_BAD_REQUEST)
-        except AgentDisabled:
-            return Response({"error": "agent_disabled"}, status=status.HTTP_400_BAD_REQUEST)
+        actions = plan_outreach()
         actions = sorted(actions, key=lambda a: (a.priority, a.lead_id))
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

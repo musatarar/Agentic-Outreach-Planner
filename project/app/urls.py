@@ -26,7 +26,6 @@ from project.app.views.queue import (
     QueueUndoView,
     QueueVerifyView,
 )
-from project.app.views.trace import OutreachTraceView
 
 # Included at the `api/` prefix by project/urls.py.
 urlpatterns = [
@@ -48,7 +47,6 @@ urlpatterns = [
     path("queue/<int:pk>/undo/", QueueUndoView.as_view(), name="queue-undo"),
     # --- existing ---
     path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
-    path("outreach/<int:pk>/trace/", OutreachTraceView.as_view(), name="outreach-trace"),
     path("outreach/", OutreachListView.as_view(), name="outreach-list"),
     path("leads/", LeadListView.as_view(), name="lead-list"),
     # --- per-client composition (MUS-68) ---

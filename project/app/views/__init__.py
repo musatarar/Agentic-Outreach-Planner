@@ -21,7 +21,6 @@ from .queue import (
     QueueUndoView,
     QueueVerifyView,
 )
-from .trace import OutreachTraceView
 
 __all__ = [
     "AuthConsumeView",
@@ -36,7 +35,6 @@ __all__ = [
     "OutreachListView",
     "OutreachReportView",
     "OutreachRunView",
-    "OutreachTraceView",
     "QueueApproveView",
     "QueueDetailView",
     "QueueDismissView",
