@@ -1,22 +1,10 @@
 """User-defined outreach catalog: action types and the rules that select them.
 
-Today the action vocabulary is hardcoded (services/actions.py) and the rules
-that pick an action are compiled into services/outreach.py. These models move
-both into data owned by a user: the user outlines deterministic rules
-("deals_closed > 20 -> reward_power_user") and AI inferences ("notes show they
-need help -> set up an appointment"), and the planner evaluates them later —
-deterministic rules in-process, inference rules via the LLM seam with all
-lead-controlled text sanitized and fenced (never inside the rule's own prompt
-region).
-
-Two invariants these models deliberately do NOT relax:
-
-- Every outbound send stays behind the global human approval gate
-  (services/dispatch.py). A rule chooses *what to propose*, never whether a
-  send may skip review, so there is no "auto-send" flag here to weaken.
-- OutreachAction audit rows keep snapshotting the action *key string*
-  (``OutreachAction.action_type``), not an FK into this catalog: audit rows
-  must stay self-contained across catalog renames and deletions.
+The user outlines deterministic rules ("deals_closed > 20 ->
+reward_power_user") and AI inferences ("notes show they need help -> set up an
+appointment"); the planner evaluates them later — deterministic rules
+in-process, inference rules via the LLM seam against sanitized, fenced lead
+data.
 """
 
 from django.conf import settings
@@ -44,8 +32,7 @@ class ActionType(models.Model):
         (URGENCY_HIGH, "High"),
     ]
 
-    # Cap on ``description``: it is prompt-bound (the copy prompt's "Planned
-    # action" line), so unbounded operator text is unbounded prompt spend.
+    # ``description`` is prompt-bound (the copy prompt's "Planned action" line).
     DESCRIPTION_MAX_CHARS = 500
 
     owner = models.ForeignKey(
@@ -64,9 +51,7 @@ class ActionType(models.Model):
         ],
     )
     label = models.CharField(max_length=255)  # "Reward power user (volume pricing)"
-    # Operator-authored elaboration of what the action means, for reviewers and
-    # for the copy prompt. Authored by the authenticated user — NOT
-    # lead-controlled — but prompt-bound, hence the cap.
+    # What the action means, for reviewers and for the copy prompt.
     description = models.TextField(
         blank=True, default="", validators=[MaxLengthValidator(DESCRIPTION_MAX_CHARS)]
     )
@@ -131,25 +116,21 @@ class OutreachRule(models.Model):
     # shape for now — user-defined data shapes are deliberately deferred.
     CONDITIONS_SCHEMA_VERSION = 1
 
-    # Cap on ``inference_prompt``: operator-authored but prompt-bound, so the
-    # cap bounds per-rule provider spend. Services re-enforce this at prompt
-    # build time; the validator catches it at the editing surface.
+    # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the
+    # cap bounds per-rule provider spend.
     INFERENCE_PROMPT_MAX_CHARS = 2000
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="outreach_rules"
     )
-    # RESTRICT, not PROTECT: deleting a catalog entry that live rules still
-    # select must be an explicit two-step (delete/repoint the rules first),
-    # never a silent sweep — but an owner delete may sweep both together,
-    # which PROTECT would wedge even though the rules fall in the same cascade.
+    # RESTRICT: a still-selected action cannot be deleted directly but falls
+    # with its owner's cascade.
     action = models.ForeignKey(ActionType, on_delete=models.RESTRICT, related_name="rules")
     name = models.CharField(max_length=255)  # "Reward power users"
     kind = models.CharField(max_length=16, choices=KIND_CHOICES)
     # Deterministic payload (schema above); {} on inference rules.
     conditions = models.JSONField(default=dict, blank=True)
-    # Inference predicate; "" on deterministic rules. Evaluated *against* fenced
-    # lead data — never interpolate lead-controlled text into this region.
+    # Inference predicate; "" on deterministic rules.
     inference_prompt = models.TextField(
         blank=True, default="", validators=[MaxLengthValidator(INFERENCE_PROMPT_MAX_CHARS)]
     )
@@ -174,15 +155,29 @@ class OutreachRule(models.Model):
             ),
         ]
 
+    def build_inference_prompt(self):
+        """The instruction region for one evaluation of this rule against a
+        lead, naming the exact action id/key the verdict must reference.
+
+        Lead data is appended by the caller, sanitized and fenced
+        (services/sanitize.py) — never inside this region.
+        """
+        if self.kind != self.KIND_INFERENCE:
+            raise ValueError("Only inference rules build an inference prompt.")
+        predicate = (self.inference_prompt or "").strip()[: self.INFERENCE_PROMPT_MAX_CHARS]
+        return (
+            "Decide whether the rule below applies to the lead described in the "
+            "fenced data block that follows.\n"
+            f"Rule: {predicate}\n"
+            f"If it applies, propose exactly the action with id {self.action_id} "
+            f"(key: {self.action.key}); otherwise propose no action."
+        )
+
     def clean(self):
         """Enforce the kind <-> payload pairing and same-owner action selection.
 
-        A rule carrying the wrong payload would silently never fire (or fire on
-        stale leftovers); a rule selecting another user's action type would fire
-        someone else's catalog entry and wedge that owner's delete against our
-        RESTRICT (the foreign rule is outside their cascade). Cross-table
-        ownership cannot be a DB constraint, so editing surfaces must run
-        ``full_clean()``.
+        Cross-table ownership cannot be a DB constraint, so editing surfaces
+        must run ``full_clean()``.
         """
         problems = {}
         if self.action_id is not None and self.action.owner_id != self.owner_id:

@@ -87,10 +87,7 @@ class OutreachRuleTests(TestCase):
             name="Offer help when they ask for it",
             kind=OutreachRule.KIND_INFERENCE,
             conditions={},
-            inference_prompt=(
-                "The hubspot notes show they need help with something: set up "
-                "an appointment for us."
-            ),
+            inference_prompt="the hubspot notes show they need help with something",
         )
         deterministic.full_clean()
         inference.full_clean()
@@ -99,7 +96,24 @@ class OutreachRuleTests(TestCase):
         self.assertEqual(deterministic.action.key, "reward_power_user")
         inference.refresh_from_db()
         self.assertEqual(inference.action.key, "set_up_appointment")
-        self.assertIn("need help", inference.inference_prompt)
+
+    def test_an_inference_rule_builds_its_prompt_naming_the_exact_action(self):
+        appointment = _action(self.user, key="set_up_appointment", label="Set up an appointment")
+        rule = self._rule(
+            action=appointment,
+            name="Offer help when they ask for it",
+            kind=OutreachRule.KIND_INFERENCE,
+            conditions={},
+            inference_prompt="the hubspot notes show they need help with something",
+        )
+        prompt = rule.build_inference_prompt()
+        self.assertIn("they need help with something", prompt)
+        self.assertIn(f"id {appointment.pk}", prompt)
+        self.assertIn("key: set_up_appointment", prompt)
+
+    def test_a_deterministic_rule_refuses_to_build_an_inference_prompt(self):
+        with self.assertRaises(ValueError):
+            self._rule().build_inference_prompt()
 
     def test_rules_evaluate_in_order_then_id(self):
         second = self._rule(name="second", order=5)
