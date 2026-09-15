@@ -49,7 +49,8 @@ cp .env.example .env               # then edit .env and fill in the LLM key
 
 # 3. Migrate, seed the demo pipeline + LLM catalog, and run
 python manage.py migrate
-python scripts/populate_demo_data.py   # loads the sample pipeline + LLM catalog
+python scripts/populate_demo_data.py   # EMPTIES the DB, then loads the sample
+                                       # pipeline + LLM catalog + rules catalog
 python manage.py runserver
 ```
 

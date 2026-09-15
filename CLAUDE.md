@@ -21,7 +21,8 @@ cp .env.example .env   # then REPLACE DJANGO_SECRET_KEY with a fresh value and s
 # run
 python manage.py migrate
 python manage.py runserver                      # http://127.0.0.1:8000
-python scripts/populate_demo_data.py            # demo data (ingest + LLM catalog seed)
+python scripts/populate_demo_data.py            # demo data (EMPTIES the DB first;
+                                                # ingest + LLM/rules catalog seeds)
 ```
 
 ```bash
