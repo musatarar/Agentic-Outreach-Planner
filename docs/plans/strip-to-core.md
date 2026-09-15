@@ -1,6 +1,6 @@
 # Strip to Core — audit findings & execution plan
 
-Date: 2026-09-15 · Base: `master` @ `b374260` · Status: **awaiting owner sign-off**
+Date: 2026-09-15 · Base: `master` @ `b374260` · Status: **executed — Phases 1–7 landed on `claude/lucid-thompson-o5tckm`, 2026-09-15** (numbers at the end)
 
 The owner's brief: strip the project down to four pillars — **LLM layer, OutreachAction,
 Users, Leads** — and make it as approachable and plug-and-play as possible. This document
@@ -424,3 +424,17 @@ Real email/CRM sending (the strip removes the *fiction* of sending; adding real
 dispatch later is a fresh, gated design), gunicorn/production serving (unchanged:
 still a dev-server demo, now honestly labeled), auth redesign (D1: magic-link stays
 as-is), re-adding telemetry behind a real backend, and any new features.
+
+---
+
+## Executed
+
+Phases 1–7 landed. Measured as in the headline table (built bundle and lockfile
+excluded), estimate → actual: tracked lines ≈20,500 → **22,933** (−48% from 44,326);
+backend tests 6,900 → **8,139**; frontend src 5,400 → **4,584**; evals 511 → **667**;
+models/routes/pages 5/~13/4 → **5 / 14 / 4**; suite ~500 → **542 green at 96% coverage**;
+167 tracked files. The overshoot is tests kept rather than cut, plus one route that
+stayed its own (`leads/<id>/compose/`). Phase 7 squashed the 14 migrations into a single
+`0001_initial` — an owner-approved, one-time override of the never-edit-a-committed-
+migration rule, safe because nothing is deployed; existing checkouts delete `db.sqlite3`
+and re-seed.
