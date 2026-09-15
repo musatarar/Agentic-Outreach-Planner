@@ -131,14 +131,12 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 ## LLM layer
 
-- Adding a provider currently requires edits in three places: the client registry
-  (services/llm/__init__.py), the env-var map (services/llm/config.py), and the
-  telemetry provider-name map (telemetry/genai.py). Missing the third silently drops
-  telemetry attribution. Edit all three or consolidate first.
+- Adding a provider currently requires edits in two places: the client registry
+  (services/llm/__init__.py) and the env-var map (services/llm/config.py). Edit both or
+  consolidate first.
 - Retryability lives on the error class (services/llm/errors.py). Retry policy and
   timeouts are cost multipliers — flag any change as a spend change in the PR.
-- Never log or persist raw prompts/completions outside the ProviderTrace content path;
-  telemetry spans carry sha256 hashes only. Do not add content keys to spans.
+- Never log or persist raw prompts/completions.
 - The stub provider is gated by OUTREACH_ALLOW_STUB_LLM=1 and exists for benchmarks and
   tests only. Never weaken that gate.
 

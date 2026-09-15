@@ -11,7 +11,7 @@ from project.app.services.llm import errors, retry
 
 
 class _RecordingScope:
-    """Stands in for a per-attempt telemetry span, recording enter, result and exit."""
+    """Stands in for a per-attempt caller scope, recording enter, result and exit."""
 
     def __init__(self, attempt, events):
         self.attempt = attempt
