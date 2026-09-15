@@ -1,24 +1,14 @@
-# Runtime dependencies for the Agentic Outreach Planner.
-# Pinned to the versions the project was built and tested against (Python 3.12+).
+# Runtime dependencies. Python 3.12+.
 #   pip install -r requirements.txt
 
 Django==4.2.30
 djangorestframework==3.16.1
 
-# Database. SQLite is the zero-setup local default (see project/settings.py);
-# Postgres is used via DATABASE_URL (docker-compose.yml sets this for you).
+# SQLite is the local default; DATABASE_URL switches to Postgres.
 dj-database-url==3.1.2
 psycopg2-binary==2.9.12
 
-# LLM providers.
-#   claude              -> anthropic SDK
-#   chatgpt / deepseek / groq -> plain REST over httpx (no vendor SDK needed;
-#                                see project/app/services/llm/openai_compatible.py)
+# LLM providers: claude uses the anthropic SDK, the OpenAI-compatible three
+# (chatgpt, deepseek, groq) talk REST over httpx with no vendor SDK.
 anthropic==0.109.1
 httpx==0.28.1
-
-# The OpenAI-compatible providers above talk HTTP directly, so their vendor SDKs
-# are NOT required to run the app. Uncomment only if you swap the adapters to use
-# the official SDKs:
-#   openai==1.109.1
-#   groq==0.11.0
