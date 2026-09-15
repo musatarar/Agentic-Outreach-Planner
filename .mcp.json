@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "linear-server": {
-      "transport": "http",
-      "url": "https://mcp.linear.app/mcp"
-    }
-  }
-}

@@ -5,15 +5,14 @@ on:
     branches: [master]
   pull_request:
 
-# Mini-PR pushes are frequent: cancel superseded runs per PR, but never cancel
-# master pushes (their queue order matters for the coverage badge).
+# Cancel superseded runs per PR; never cancel a master push.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The test suite mocks every LLM provider call, so no real API key is
-  # needed here. Real-provider evals are a separate, gated workflow.
+  # The test suite mocks every LLM provider call, so no API key is needed and
+  # no job here reaches a provider.
   DJANGO_SETTINGS_MODULE: project.settings
   # Required by settings.py; a throwaway value is fine, CI never serves traffic.
   DJANGO_SECRET_KEY: ci-only-not-a-real-secret
@@ -74,9 +73,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Django 4.2.30 only advertises 3.9-3.12 support, but the runtime was
-        # bumped to require 3.12+ (MUS-18); 3.13 is included here because the
-        # full suite has been verified to pass on it.
+        # Django 4.2.30 only advertises 3.9-3.12 support; the runtime requires
+        # 3.12+, and 3.13 is included because the full suite passes on it.
         python-version: ["3.12", "3.13"]
         database: ["sqlite", "postgres"]
     services:
@@ -119,44 +117,6 @@ jobs:
           coverage run manage.py test project.app
           coverage report
 
-  coverage-badge:
-    name: Update coverage badge
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -r requirements-dev.txt
-      - run: coverage run manage.py test project.app
-      # The badge lives on the unprotected `badges` branch (README points
-      # shields.io at its coverage.json): a no-bypass ruleset on master forbids
-      # the old direct push of a README edit.
-      - name: Write shields.io endpoint JSON
-        run: |
-          PCT=$(coverage report --format=total)
-          if [ "$PCT" -ge 90 ]; then COLOR=brightgreen; elif [ "$PCT" -ge 75 ]; then COLOR=yellow; else COLOR=red; fi
-          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' "$PCT" "$COLOR" > "$RUNNER_TEMP/coverage.json"
-      - name: Push to the badges branch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git fetch origin badges; then
-            git checkout -B badges origin/badges
-          else
-            git checkout --orphan badges
-            git rm -r -f -q . 2>/dev/null || true
-          fi
-          cp "$RUNNER_TEMP/coverage.json" coverage.json
-          git add coverage.json
-          git diff --staged --quiet || git commit -m "chore: update coverage badge data"
-          git push origin badges
-
   # The rules regression eval is part of plain CI: pure Python against the
   # committed golden set + baseline, no network, milliseconds.
   rules-eval:
@@ -173,9 +133,7 @@ jobs:
 
   # Rulesets require status checks *by name*, and the test matrix produces one
   # name per cell — this single stable name is what gets protected. It fails on
-  # any failed/cancelled/skipped dependency. coverage-badge is deliberately not
-  # a dependency: it only runs on master pushes, so on PRs it would always
-  # report "skipped" and wedge this job red.
+  # any failed/cancelled/skipped dependency.
   ci-ok:
     name: ci-ok
     needs: [lint, typecheck, frontend, test, rules-eval]
