@@ -6,16 +6,11 @@ from unittest import mock
 
 from django.test import TestCase
 
-from project.app import models as app_models
-from project.app.models import Lead
-from project.app.services.agent import loop as agent_loop
-from project.app.services.agent import state, tools
 from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import openai_compatible as oa_mod
-from project.app.services.llm.base import FINISH_TOOL_CALLS, LLMClient, LLMResult
+from project.app.services.llm.base import FINISH_TOOL_CALLS
 from project.app.services.llm.chat_types import Message, ToolCallRequest, ToolSpec
 from project.app.services.llm.errors import LLMEmptyCompletionError, LLMMalformedResponseError
-from project.app.services.llm.runtime import get_planner_runtime
 
 HISTORY_TOOL = ToolSpec(
     name="get_lead_history",
@@ -276,87 +271,3 @@ class ClaudeToolResultFoldTests(TestCase):
         self.assertEqual([m["role"] for m in wire], ["user", "user", "assistant", "user"])
         self.assertEqual(len(wire[1]["content"]), 1)
         self.assertEqual(len(wire[3]["content"]), 1)
-
-
-def _narrating_tool_call_turn():
-    """A tool-call turn whose text is the model narrating its way to the call."""
-    return LLMResult(
-        text="<function=get_lead_history{}></function> Subject: Checking in",
-        provider="fake",
-        model="m",
-        finish_reason=FINISH_TOOL_CALLS,
-        raw_finish_reason="tool_calls",
-        tool_calls=(ToolCallRequest(id="c9", name="get_lead_history", arguments={}),),
-    )
-
-
-class _FakeChatClient(LLMClient):
-    """Scripted chat client (each agent test module carries its own copy)."""
-
-    provider_name = "fake"
-
-    def __init__(self, script):
-        super().__init__(model="fake-model", default_max_tokens=1)
-        self.script, self.chat_calls = list(script), []
-
-    def generate(self, prompt, max_tokens=None, timeout=None):
-        raise AssertionError("agent loop must not take the blocking path")
-
-    async def agenerate_chat(self, messages, *, tools=(), max_tokens=None, timeout=None):
-        self.chat_calls.append({"messages": list(messages), "tools": tuple(tools)})
-        return self.script.pop(0)
-
-
-class LoopFinishReasonTests(TestCase):
-    """A tool-call turn's text must never become the final draft, including on
-    the forced-final turn where tools are not offered."""
-
-    @classmethod
-    def setUpTestData(cls):
-        cls.lead = Lead.objects.create(
-            id="lead_mus66",
-            agency_name="A",
-            contact_name="C",
-            contact_email="c@a.com",
-            contact_phone="1",
-            state="TX",
-            num_producers=3,
-            years_in_business=4,
-            estimated_book_size_usd=1,
-            stage="active_trial",
-        )
-
-    def _run(self, script):
-        pks = state.create_lead_runs("run-mus66", [self.lead.id])
-        client = _FakeChatClient(script)
-        outcome = asyncio.run(
-            agent_loop.run_agent_lead(
-                prompt="PROMPT",
-                lead_run_pk=pks[self.lead.id],
-                prior_steps=state.load_prior_steps(pks[self.lead.id]),
-                context=tools.build_tool_context(self.lead, (), (), (), None),
-                client=client,
-                runtime=get_planner_runtime(),
-                checkpoint=state.Checkpoint(),
-            )
-        )
-        return outcome, client, pks[self.lead.id]
-
-    def test_narration_on_a_tool_call_turn_never_becomes_the_draft(self):
-        tool_turn = LLMResult(
-            text="",
-            provider="fake",
-            model="m",
-            finish_reason=FINISH_TOOL_CALLS,
-            raw_finish_reason="tool_calls",
-            tool_calls=(ToolCallRequest(id="c1", name="get_lead_history", arguments={}),),
-        )
-        # Five tool turns spend the step budget; the sixth is the forced final.
-        outcome, client, pk = self._run([tool_turn] * 5 + [_narrating_tool_call_turn()])
-        self.assertEqual(client.chat_calls[-1]["tools"], ())  # forced final, no tools offered
-        self.assertEqual(outcome.draft_text, "")
-        self.assertFalse(
-            app_models.AgentStep.objects.filter(lead_run_id=pk, kind="final").exists(),
-            "the model's narration was persisted as the run's final draft",
-        )
-        self.assertEqual(app_models.AgentLeadRun.objects.get(pk=pk).status, "exhausted")

@@ -60,8 +60,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 - project/app/services/outreach.py — rules engine + planner orchestrator (numbered
   phases in comments). project/app/services/llm/ — provider-agnostic LLM layer.
-  services/verify.py — grounding verifier. services/agent/ — flag-gated tool-calling
-  copy loop (OUTREACH_AGENT_ENABLED, default off).
+  services/verify.py — grounding verifier.
 - Registries (start here to find anything): project/app/models/__init__.py,
   project/app/views/__init__.py, project/app/serializers/__init__.py,
   frontend/src/api/endpoints.ts (every frontend API call, one line each).
@@ -101,8 +100,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   introduce signals.
 - Race-sensitive logic gets a database-level guard (partial unique constraint or
   conditional UPDATE), never a read-then-check. Existing patterns to copy:
-  single-use login-token redemption, the agent-run epoch-CAS claim,
-  rd_one_live_send_per_action.
+  single-use login-token redemption, rd_one_live_send_per_action.
 
 ## Transactions
 
@@ -121,8 +119,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 - plan_outreach is sync; only the provider-call phase runs on an event loop. NO ORM
   calls inside that async phase — it raises SynchronousOnlyOperation at runtime and
-  nothing static will warn you. The agent checkpoint writer is the single, documented
-  exception; do not add a second.
+  nothing static will warn you. There are no exceptions.
 - services/llm/ must not import Django at module level (runtime.py keeps Django imports
   function-local so the package imports without Django). Preserve this.
 
@@ -134,8 +131,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
   telemetry attribution. Edit all three or consolidate first.
 - Retryability lives on the error class (services/llm/errors.py). Retry policy and
   timeouts are cost multipliers — flag any change as a spend change in the PR.
-- Never log or persist raw prompts/completions outside the ProviderTrace content path;
-  telemetry spans carry sha256 hashes only. Do not add content keys to spans.
+- Never log or persist raw prompts/completions: telemetry spans carry sha256 hashes
+  only. Do not add content keys to spans.
 - The stub provider is gated by OUTREACH_ALLOW_STUB_LLM=1 and exists for benchmarks and
   tests only. Never weaken that gate.
 
@@ -186,9 +183,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 Migrations; auth/session/throttle code; the approval gate; sanitization and verifier
 logic; feature-flag default flips; anything changing provider spend (models, retries,
-concurrency, prompt size); any retention/deletion touching audit tables (ProviderTrace*,
-AgentStep, OutreachEdit, LoginToken); any change to .claude/ or CI workflow
-configuration.
+concurrency, prompt size); any retention/deletion touching audit tables (OutreachEdit,
+LoginToken); any change to .claude/ or CI workflow configuration.
 
 ## Deploy (placeholders — code does not determine these)
 
