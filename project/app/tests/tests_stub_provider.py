@@ -70,6 +70,7 @@ class StubIsUnreachableFromTheAppTests(TestCase):
         self.assertEqual(
             sorted(hits),
             [
+                "CLAUDE.md",
                 "README.md",
                 "evals/bench_planner.py",
                 "project/app/services/llm/stub.py",
