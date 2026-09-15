@@ -28,6 +28,7 @@ from project.app.services.llm import (
     wrap_unexpected,
 )
 from project.app.services.llm import runtime as llm_runtime
+from project.app.services.llm.cooldown import CooldownGate
 from project.app.services.llm.retry import acall_with_retry
 
 MAX_COPY_TOKENS = 500
@@ -1183,7 +1184,7 @@ class CopyGenerationGaveUp(RuntimeError):
 
 
 async def agenerate_copy(
-    lead, action_type, reason, *, prompt=None, client=None, retry=None, timeouts=None
+    lead, action_type, reason, *, prompt=None, client=None, retry=None, timeouts=None, gate=None
 ):
     """Async twin of :func:`generate_copy`, and the planner's path: it awaits
     the provider and — unlike the sync twin — **it retries**.
@@ -1191,7 +1192,8 @@ async def agenerate_copy(
     **Pass ``client``**: the fallback resolution is an ORM read, which inside a
     running loop is a ``SynchronousOnlyOperation``. ``retry``/``timeouts``
     default to the configured policy; the planner passes them resolved once per
-    run. Raises :class:`CopyGenerationGaveUp` when the call fails for good.
+    run, along with ``gate`` — the run's shared :class:`CooldownGate`. Raises
+    :class:`CopyGenerationGaveUp` when the call fails for good.
     """
     prompt = _prompt_for(lead, action_type, reason, prompt)
     if client is None:
@@ -1232,7 +1234,9 @@ async def agenerate_copy(
         # loop, backoff sleeps included. `asyncio.timeout` rather than `wait_for`
         # so a CancelledError from somewhere else still reads as a cancellation.
         async with asyncio.timeout(timeouts.per_lead_s) as budget:
-            result = await acall_with_retry(attempt, policy=retry, attempt_scope=call_scope)
+            result = await acall_with_retry(
+                attempt, policy=retry, attempt_scope=call_scope, gate=gate
+            )
             return result.text
     except LLMError as exc:
         raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
@@ -1499,7 +1503,7 @@ def _outcome_without_calling(item, client_error):
 
 
 async def _agenerate_for(
-    item, client, runtime, client_error=None, agent_plan=None, checkpoint=None
+    item, client, runtime, client_error=None, agent_plan=None, checkpoint=None, gate=None
 ):
     """Phase 3 for one lead: the provider call, and nothing else.
 
@@ -1531,6 +1535,7 @@ async def _agenerate_for(
             client=client,
             runtime=runtime,
             checkpoint=checkpoint,
+            gate=gate,
         )
         if agent_outcome.error is not None:
             # Carried across, not defaulted: phase 4 renders these into "gave up
@@ -1555,6 +1560,7 @@ async def _agenerate_for(
                 client=client,
                 retry=runtime.retry,
                 timeouts=runtime.timeouts,
+                gate=gate,
             )
         )
     except CopyGenerationGaveUp as exc:
@@ -1591,6 +1597,10 @@ async def _agenerate_all(
     a dead loop.
     """
     semaphore = asyncio.Semaphore(runtime.max_in_flight)
+    # One gate per run: rate limits are org-level, so any worker's Retry-After
+    # holds every sibling's next attempt instead of letting the fleet burn its
+    # retry budget into the same closed window (see services/llm/cooldown.py).
+    gate = CooldownGate(runtime.retry.max_backoff_s)
 
     async def bounded(item, lead_span):
         # Skip cases never take a slot — they have no provider call to make.
@@ -1606,6 +1616,7 @@ async def _agenerate_all(
                     client_error,
                     agent_plan=None if agent_plans is None else agent_plans.get(item.lead.id),
                     checkpoint=checkpoint,
+                    gate=gate,
                 )
 
     try:

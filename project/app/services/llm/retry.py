@@ -13,9 +13,12 @@ import random
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from .errors import LLMError
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; cooldown imports this module
+    from .cooldown import CooldownGate
 
 T = TypeVar("T")
 
@@ -87,6 +90,7 @@ async def acall_with_retry(
     rand: Callable[[float, float], float] = random.uniform,
     attempt_scope: Callable[[int], AbstractContextManager[Callable[[T], None] | None]]
     | None = None,
+    gate: "CooldownGate | None" = None,
 ) -> T:
     """Await ``operation()``, retrying retryable :class:`LLMError`s.
 
@@ -99,9 +103,17 @@ async def acall_with_retry(
     may yield a callable that receives a successful attempt's result before the
     scope closes; yield ``None`` (as ``nullcontext`` does) to opt out. The scope
     wraps only the provider call, never the backoff sleep.
+
+    ``gate`` is the run's shared :class:`~.cooldown.CooldownGate`, waited on
+    ahead of every attempt and told about every failure, so one worker's rate
+    limit holds its siblings out of the closed window. ``None`` opts out.
     """
     last_error: LLMError | None = None
     for attempt in range(policy.max_attempts):
+        if gate is not None:
+            # Outside the scope: a fleet-wide pause is not this attempt's
+            # provider latency.
+            await gate.wait()
         scope = attempt_scope(attempt) if attempt_scope is not None else nullcontext()
         try:
             with scope as record_result:
@@ -113,6 +125,10 @@ async def acall_with_retry(
                 return result
         except LLMError as exc:
             last_error = exc
+            if gate is not None:
+                # Reported even when this worker is about to give up: the
+                # information is for the others.
+                gate.observe(exc)
             if not exc.retryable:
                 # Auth failures, bad requests, malformed responses: the same
                 # call fails the same way, so surface it having slept zero.

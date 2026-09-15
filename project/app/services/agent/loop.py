@@ -42,6 +42,7 @@ from project.app.services.agent.tools import (
 )
 from project.app.services.llm.base import FINISH_TOOL_CALLS, LLMClient, LLMResult
 from project.app.services.llm.chat_types import Message, ToolCallRequest
+from project.app.services.llm.cooldown import CooldownGate
 from project.app.services.llm.errors import LLMError
 from project.app.services.llm.retry import acall_with_retry
 from project.app.services.llm.runtime import PlannerRuntime
@@ -131,9 +132,11 @@ async def run_agent_lead(
     client: LLMClient,
     runtime: PlannerRuntime,
     checkpoint: Checkpoint,
+    gate: CooldownGate | None = None,
 ) -> AgentOutcome:
     """Drive one lead's loop: claim, fold, call, execute tools, checkpoint.
 
+    ``gate`` is the run's shared cooldown gate, riding on every provider retry.
     ``LLMError``, ``TimeoutError`` and ``UnknownTool`` become
     ``AgentOutcome(error=...)`` with the run checkpointed ``failed``;
     ``AgentClaimLost`` does the same but writes nothing, since another worker
@@ -203,7 +206,7 @@ async def run_agent_lead(
                     )
 
                 result = await acall_with_retry(
-                    attempt, policy=runtime.retry, attempt_scope=call_scope
+                    attempt, policy=runtime.retry, attempt_scope=call_scope, gate=gate
                 )
                 steps_used += 1
                 seq += 1

@@ -11,7 +11,10 @@ import re
 WORD_MIN = 60
 WORD_MAX = 200
 
-_SUBJECT_RE = re.compile(r"^\s*subject\s*:\s*(.*)$", re.IGNORECASE)
+# Tolerates markdown decoration around the label ("**Subject:**", "## Subject:",
+# "**Subject**:"): models emit it, and a decorated subject is still a subject.
+# Trailing emphasis is stripped from the captured text ("**Subject: X**" -> "X").
+_SUBJECT_RE = re.compile(r"^[\s#*_]*subject\s*[*_]*\s*:\s*[*_]*\s*(.*?)[\s*_]*$", re.IGNORECASE)
 
 # Preamble the model was told not to emit; a clean email opens with the Subject line.
 _PREAMBLE_OPENERS = (
