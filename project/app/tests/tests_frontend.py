@@ -24,14 +24,6 @@ class FrontendTestCase(TestCase):
         self.assertContains(response, "<title>Leads · Locked In</title>", html=False)
         self.assertIn("csrftoken", response.cookies)
 
-    def test_settings_view_renders(self):
-        """Settings page loads, uses the SPA shell template, and sets the CSRF cookie."""
-        response = self.client.get("/settings/")
-        self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "app/settings.html")
-        self.assertContains(response, "Settings")
-        self.assertIn("csrftoken", response.cookies)
-
 
 class AuthShellTests(TestCase):
     """The three SPA shells (MUS-38): deliberately public, and each sets the csrftoken

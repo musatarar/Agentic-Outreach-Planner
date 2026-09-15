@@ -14,7 +14,7 @@ from django.test import SimpleTestCase, TestCase
 
 from project.app.models import Event, Lead
 from project.app.services import verify
-from project.app.services.llm import _REGISTRY, build_client
+from project.app.services.llm import _REGISTRY, _build_client, build_client, get_llm_client
 from project.app.services.llm.stub import (
     ALLOW_ENV_VAR,
     PROVIDER_NAME,
@@ -30,7 +30,14 @@ def _allowed():
 
 
 class StubIsUnreachableFromTheAppTests(TestCase):
-    """Three independent barriers, tested independently."""
+    """The opt-in is the barrier, and nothing in the app trips it."""
+
+    def setUp(self):
+        super().setUp()
+        # The factory caches per (provider, model, key); a client another test
+        # built for the same tuple would mask the refusal.
+        _build_client.cache_clear()
+        self.addCleanup(_build_client.cache_clear)
 
     def test_building_one_without_the_opt_in_is_refused(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -46,17 +53,20 @@ class StubIsUnreachableFromTheAppTests(TestCase):
                     with self.assertRaises(StubLLMNotAllowed):
                         StubClient()
 
-    def test_the_provider_catalog_never_offers_it(self):
-        """No catalog row means no configuration can point at the stub."""
-        from project.app.models import LLMProvider
+    def test_naming_it_as_the_configured_provider_is_still_refused(self):
+        """Selection is environment-only, so ``LLM_PROVIDER=stub`` is a thing an
+        operator can type. It buys a refusal, not a fake provider."""
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": PROVIDER_NAME}, clear=True):
+            with self.assertRaises(StubLLMNotAllowed) as caught:
+                get_llm_client()
 
-        call_command("seed_llm_catalog", verbosity=0)
+        self.assertIn(ALLOW_ENV_VAR, str(caught.exception))
 
-        self.assertFalse(LLMProvider.objects.filter(key=PROVIDER_NAME).exists())
-        self.assertEqual(
-            set(LLMProvider.objects.values_list("key", flat=True)),
-            {"claude", "chatgpt", "deepseek", "groq"},
-        )
+    def test_the_opt_in_alone_is_not_something_the_app_sets(self):
+        """With the opt-in present the same selection builds one -- which is why
+        the opt-in, not the spelling of LLM_PROVIDER, is the barrier that counts."""
+        with mock.patch.dict(os.environ, {"LLM_PROVIDER": PROVIDER_NAME, ALLOW_ENV_VAR: "1"}):
+            self.assertIsInstance(get_llm_client(), StubClient)
 
     def test_only_the_benchmark_sets_the_opt_in(self):
         # `grep` rather than a mock: this is a fact about the tree.

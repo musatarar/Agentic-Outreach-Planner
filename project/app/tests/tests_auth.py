@@ -659,10 +659,7 @@ class UnauthenticatedAccessTests(APITestCase):
     PREVIOUSLY_PUBLIC = [
         ("get", "/api/leads/"),
         ("get", "/api/outreach/"),
-        ("get", "/api/llm/catalog/"),
-        ("get", "/api/llm/config/"),
         ("post", "/api/outreach/run/"),
-        ("post", "/api/llm/config/test/"),
         # The review surface: the permission check runs before the view, so an
         # id that does not exist still answers 401 rather than 404.
         ("post", "/api/outreach/1/edit/"),
@@ -701,7 +698,7 @@ class UnauthenticatedAccessTests(APITestCase):
     def test_the_html_shells_stay_public(self):
         # The shells render an empty #root; @login_required would replace the
         # designed sign-in redirect with a Django 302.
-        for url in ("/leads/", "/inbox", "/signin", "/settings/"):
+        for url in ("/leads/", "/inbox", "/signin"):
             with self.subTest(url=url):
                 self.assertEqual(Client().get(url).status_code, 200)
 
@@ -760,6 +757,8 @@ class AuthenticatedAPITestCaseTests(AuthenticatedAPITestCase):
         self.assertFalse(self.user.has_usable_password())
 
     def test_json_format_requests_still_work(self):
-        # client_class is APIClient so existing format="json" call sites keep working.
-        resp = self.client.put("/api/llm/config/", {}, format="json")
-        self.assertEqual(resp.status_code, 400)
+        # client_class is APIClient so existing format="json" call sites keep
+        # working: a parse failure would answer 400, not the view's own 404.
+        resp = self.client.post("/api/outreach/1/edit/", {"copy": "x"}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.data["code"], "not_found")

@@ -31,14 +31,17 @@ GOOD_COPY = (
 #   2  open dedupe keys      (pending, read once)
 #   3  the leads
 #   4  their events          <- the prefetch; this line used to be 7 x N
-#   5-8 provider resolution  (LLMConfiguration x3 + LLMModel, inside get_llm_client)
-#   9  the transaction open  (SAVEPOINT under TestCase; BEGIN in production)
-#   10 supersede failed rows (MUS-26c)
-#   11 the transaction close (RELEASE SAVEPOINT / COMMIT)
+#   5  the transaction open  (SAVEPOINT under TestCase; BEGIN in production)
+#   6  supersede failed rows (MUS-26c)
+#   7  the transaction close (RELEASE SAVEPOINT / COMMIT)
+#
+# Provider resolution used to cost four more, reading the LLM catalog tables
+# inside get_llm_client; it reads LLM_PROVIDER/LLM_MODEL from the environment
+# now and touches no table at all.
 #
 # Plus the INSERTs, which are NOT flat -- see PLANNER_INSERT_FIELDS. Bumping
 # this constant is a decision: every increment is a query on the once-per-run path.
-PLANNER_QUERIES_WITHOUT_INSERTS = 11
+PLANNER_QUERIES_WITHOUT_INSERTS = 7
 
 # Columns `bulk_create` writes per row. SQLite caps a batch at 999 // len(fields);
 # Postgres does not cap, so the tests below compute the INSERT count from
