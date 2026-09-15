@@ -74,11 +74,6 @@ class OutreachAction(models.Model):  # what the planner decided/did
     # Stable identity of "this recommendation for this lead". See DismissedOutreachKey.
     dedupe_key = models.CharField(max_length=128, blank=True, default="", db_index=True)
 
-    # Planner run UUID, also on that run's trace as `outreach.run.id` (MUS-25).
-    # Known before the row exists, so a span can reference the row via
-    # (trace_run_id, lead_id). Blank on rows not written by a planner run.
-    trace_run_id = models.CharField(max_length=36, blank=True, default="", db_index=True)
-
     # Rule trace snapshot (schema v1) from services/outreach.py::explain().
     # Never recomputed: its relative figures are only true as of `trace.today`.
     rule_trace = models.JSONField(default=dict, blank=True)
@@ -113,15 +108,6 @@ class OutreachAction(models.Model):  # what the planner decided/did
         indexes = [
             models.Index(fields=["status", "priority", "lead"], name="oa_queue_order"),
             models.Index(fields=["status", "-status_changed_at"], name="oa_done_order"),
-        ]
-        constraints = [
-            # Traces promise (trace_run_id, lead_id) resolves to one row.
-            # Partial: rows written before MUS-25 have trace_run_id="".
-            models.UniqueConstraint(
-                fields=["trace_run_id", "lead"],
-                condition=~Q(trace_run_id=""),
-                name="oa_one_row_per_lead_per_run",
-            ),
         ]
 
     def __str__(self):
