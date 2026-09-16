@@ -5,6 +5,11 @@ from django.db import models
 
 class Lead(models.Model):
     id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
+    # Owning tenant, as an opaque identifier -- there is no Tenant table yet, and
+    # nothing filters on this column. Blank means "not assigned", which is every
+    # row today. Indexed here because it is created with the table; adding an
+    # index to `lead` later is the hot-table ALTER CLAUDE.md warns about.
+    tenant = models.CharField(max_length=64, blank=True, default="", db_index=True)
     agency_name = models.CharField(max_length=255)
     contact_name = models.CharField(max_length=255)
     contact_email = models.EmailField()

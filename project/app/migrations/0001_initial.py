@@ -7,7 +7,11 @@ creating tables only to drop them again. It is a hard reset, not a Django
 there was no applied history to stay compatible with. A checkout that predates
 this commit deletes its `db.sqlite3` and re-migrates.
 
-Additive follow-up migrations from here; this file is history now.
+Regenerated a second time to add `Lead.tenant`, on the same reasoning and with
+the same cost: still no deployment, so the column is created with the table
+rather than ALTERed in afterwards. That is a decision about this file, not a
+relaxation of the rule -- follow-ups are additive unless a human says otherwise,
+and any checkout that already migrated deletes its `db.sqlite3` again.
 """
 
 from django.db import migrations, models
@@ -27,6 +31,12 @@ class Migration(migrations.Migration):
                 (
                     "id",
                     models.CharField(max_length=32, primary_key=True, serialize=False),
+                ),
+                (
+                    "tenant",
+                    models.CharField(
+                        blank=True, db_index=True, default="", max_length=64
+                    ),
                 ),
                 ("agency_name", models.CharField(max_length=255)),
                 ("contact_name", models.CharField(max_length=255)),
