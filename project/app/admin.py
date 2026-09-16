@@ -11,6 +11,7 @@ from project.app.models import (
 class LeadAdmin(admin.ModelAdmin):
     list_display = (
         "id",
+        "tenant",
         "agency_name",
         "contact_name",
         "state",
@@ -22,7 +23,9 @@ class LeadAdmin(admin.ModelAdmin):
         "last_login_date",
         "last_contacted_date",
     )
-    list_filter = ("stage", "state")
+    # `tenant` here so the backfill (manage.py backfill_lead_tenant) is visible:
+    # filtering on "-" finds the leads that still belong to nobody.
+    list_filter = ("stage", "state", "tenant")
     search_fields = ("id", "agency_name", "contact_name", "contact_email")
 
 

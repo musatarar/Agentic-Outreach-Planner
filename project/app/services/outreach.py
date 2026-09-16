@@ -1091,13 +1091,18 @@ def _review(item, outcome, level, today):
     )
 
 
-def plan_outreach(lead_ids: Collection[str] | None = None):
+def plan_outreach(lead_ids: Collection[str] | None = None, tenant=None):
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority.
 
     ``lead_ids`` narrows the run to the named clients; ``None`` plans
     the whole book. A scoped run still *reads* every lead on purpose: the read is
     cheap and keeps the classification input identical either way.
+
+    ``tenant`` is the user whose book this run covers -- every API caller passes
+    one, so nobody's provider spend goes on another tenant's leads. ``None`` is
+    the unscoped run (management commands, the rules eval): the whole table.
+    Classification is per-lead, so narrowing the read changes no decision.
     """
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
@@ -1141,7 +1146,8 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
     # walked four times in a run (phases 2, 3's prompt, 4 and 5), so this is
     # two queries instead of 1 + 4N.
-    leads = list(Lead.objects.prefetch_related("events"))
+    lead_qs = Lead.objects.all() if tenant is None else Lead.objects.for_tenant(tenant)
+    leads = list(lead_qs.prefetch_related("events"))
 
     # The clients this run plans for: the set that gets classified, prompted
     # and written. An unknown id matches nothing.

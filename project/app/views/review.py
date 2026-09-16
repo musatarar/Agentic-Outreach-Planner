@@ -45,14 +45,22 @@ def body_of(request):
     return request.data if isinstance(request.data, dict) else {}
 
 
-def review_queryset():
-    """The base queryset for every review read."""
-    return OutreachAction.objects.select_related("lead").prefetch_related(
-        Prefetch("lead__events", queryset=Event.objects.order_by("-timestamp", "-id"))
+def review_queryset(user):
+    """The base queryset for every review read, scoped to ``user``'s leads.
+
+    Every read goes through here, so an action about another tenant's lead is
+    invisible to the list AND to the five lifecycle moves -- a 404, not a 403.
+    """
+    return (
+        OutreachAction.objects.for_tenant(user)
+        .select_related("lead")
+        .prefetch_related(
+            Prefetch("lead__events", queryset=Event.objects.order_by("-timestamp", "-id"))
+        )
     )
 
 
-def latest_action_ids():
+def latest_action_ids(user):
     """Ids of the most recent action per lead, in review order.
 
     One values-only query: the table is walked to pick the survivors, but
@@ -60,9 +68,11 @@ def latest_action_ids():
     """
     seen = set()
     ordered = []
-    for pk, lead_id, priority in OutreachAction.objects.order_by(
-        "lead_id", "-created_at", "-id"
-    ).values_list("id", "lead_id", "priority"):
+    for pk, lead_id, priority in (
+        OutreachAction.objects.for_tenant(user)
+        .order_by("lead_id", "-created_at", "-id")
+        .values_list("id", "lead_id", "priority")
+    ):
         if lead_id in seen:
             continue
         seen.add(lead_id)
@@ -84,8 +94,8 @@ class ReviewBaseView(APIView):
     def serialize(self, action):
         return ReviewItemSerializer(action).data
 
-    def get_action(self, pk):
-        return review_queryset().filter(pk=pk).first()
+    def get_action(self, request, pk):
+        return review_queryset(request.user).filter(pk=pk).first()
 
 
 class ReviewListView(ReviewBaseView):
@@ -98,8 +108,10 @@ class ReviewListView(ReviewBaseView):
 
     def get(self, request, *args, **kwargs):
         paginator = ReviewPagination()
-        page_ids = paginator.paginate_queryset(latest_action_ids(), request, view=self)
-        by_id = {action.id: action for action in review_queryset().filter(pk__in=page_ids)}
+        page_ids = paginator.paginate_queryset(latest_action_ids(request.user), request, view=self)
+        by_id = {
+            action.id: action for action in review_queryset(request.user).filter(pk__in=page_ids)
+        }
         items = [by_id[pk] for pk in page_ids if pk in by_id]
         return paginator.get_paginated_response(ReviewItemSerializer(items, many=True).data)
 
@@ -111,7 +123,7 @@ class ReviewMutationView(ReviewBaseView):
     """
 
     def post(self, request, pk, *args, **kwargs):
-        action = self.get_action(pk)
+        action = self.get_action(request, pk)
         if action is None:
             return not_found()
         return self.mutate(request, action)

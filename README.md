@@ -138,6 +138,23 @@ Registries — start here to find anything: `project/app/models/__init__.py`,
   so a re-run neither resurrects the recommendation nor pays for a call to rediscover it.
   Reopening a dismissal revokes the suppression in the same transaction.
 
+### Tenancy
+
+`Lead.tenant` is the user id that owns a lead: every read on the API side goes through
+`Lead.objects.for_tenant(user)` / `OutreachAction.objects.for_tenant(user)`, and another
+tenant's lead is a 404 rather than a 403. `plan_outreach(tenant=...)` narrows the same way,
+so no one's provider spend goes on a book that is not theirs.
+
+The column is nullable while a deployment is being backfilled, and an unassigned (`NULL`)
+lead stays visible to every signed-in reviewer. Assign a book with:
+
+```bash
+python manage.py backfill_lead_tenant --user <username> [--lead-id lead_001] [--dry-run]
+```
+
+Making the column non-nullable — and with it dropping the `NULL`-is-visible arm for hard
+isolation — is a separate, human-reviewed change.
+
 ## Stack
 
 Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres (Docker) ·

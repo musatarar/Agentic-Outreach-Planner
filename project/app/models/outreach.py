@@ -2,7 +2,13 @@
 
 from django.db import models
 
-from .lead import Lead
+from .lead import Lead, scope_to_tenant
+
+
+class OutreachActionQuerySet(models.QuerySet):
+    def for_tenant(self, user):
+        """Actions about leads this user may see. See :func:`scope_to_tenant`."""
+        return scope_to_tenant(self, user, field="lead__tenant")
 
 
 class OutreachAction(models.Model):  # what the planner decided/did
@@ -62,6 +68,8 @@ class OutreachAction(models.Model):  # what the planner decided/did
 
     # Editing is not a status transition, so it needs its own guard.
     EDITABLE_STATUSES = (STATUS_PENDING,)
+
+    objects = OutreachActionQuerySet.as_manager()
 
     def can_transition_to(self, new_status):
         """True when `new_status` is a legal next state from the current one."""

@@ -9,10 +9,10 @@ from project.app.serializers import LeadSerializer, OutreachActionSerializer
 
 
 class LeadListView(APIView):
-    """GET /api/leads/ — all leads."""
+    """GET /api/leads/ — the signed-in user's book of leads."""
 
     def get(self, request, *args, **kwargs):
-        leads = Lead.objects.all().order_by("id")
+        leads = Lead.objects.for_tenant(request.user).order_by("id")
         serializer = LeadSerializer(leads, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -23,16 +23,19 @@ class LeadComposeView(APIView):
     The same planner ``/api/outreach/run/`` calls, scoped to one lead. 200 with
     the new action, 404 for an unknown lead, 409 when the planner declines
     (already queued or permanently dismissed) — no provider call in either refusal.
+
+    Another tenant's lead is 404, not 403: the caller learns nothing about a
+    book that is not theirs.
     """
 
     def post(self, request, lead_id, *args, **kwargs):
         # Imported inside the method for the same reason OutreachRunView's is.
         from project.app.services.outreach import plan_outreach
 
-        if not Lead.objects.filter(pk=lead_id).exists():
+        if not Lead.objects.for_tenant(request.user).filter(pk=lead_id).exists():
             return Response({"error": "unknown_lead"}, status=status.HTTP_404_NOT_FOUND)
 
-        planned = plan_outreach(lead_ids=[lead_id])
+        planned = plan_outreach(lead_ids=[lead_id], tenant=request.user)
         if not planned:
             return Response({"error": "no_new_recommendation"}, status=status.HTTP_409_CONFLICT)
 
