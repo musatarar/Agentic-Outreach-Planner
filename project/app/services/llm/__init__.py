@@ -40,17 +40,18 @@ _REGISTRY = {
     "chatgpt": ChatGPTClient,
     "deepseek": DeepSeekClient,
     "groq": GroqClient,
-    # Benchmarking only; unreachable from the app (see stub.py). Registered so
+    # Benchmarking only; its constructor refuses without the explicit opt-in
+    # (see stub.py), so naming it as LLM_PROVIDER buys nothing. Registered so
     # `build_client("stub")` goes through the same factory as real adapters.
     "stub": StubClient,
 }
 
 
 @lru_cache(maxsize=None)
-def _build_client(provider, model, max_tokens, api_key):
-    """Construct and cache a client for this exact (provider, model,
-    max_tokens, api_key) tuple — keyed on the full tuple so a saved config
-    change builds a fresh client instead of reusing a stale one.
+def _build_client(provider, model, api_key):
+    """Construct and cache a client for this exact (provider, model, api_key)
+    tuple — keyed on the full tuple so an environment change builds a fresh
+    client instead of reusing a stale one.
     """
     try:
         client_cls = _REGISTRY[provider]
@@ -62,17 +63,12 @@ def _build_client(provider, model, max_tokens, api_key):
     kwargs = {"api_key": api_key}
     if model is not None:
         kwargs["model"] = model
-    if max_tokens is not None:
-        kwargs["default_max_tokens"] = max_tokens
     return client_cls(**kwargs)
 
 
 def _resolve_build_args(provider):
-    provider_cfg = config.get_provider_config(provider)
-    model = provider_cfg.get("model")
-    max_tokens = provider_cfg.get("max_tokens")
-    api_key, _key_source = config.resolve_active_key(provider)
-    return provider, model, max_tokens, api_key
+    model = config.get_provider_config(provider).get("model")
+    return provider, model, config.resolve_api_key(provider)
 
 
 def get_llm_client():

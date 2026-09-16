@@ -1,4 +1,4 @@
-"""The planner's runtime knobs (MUS-26a): defaults, overrides, rejections that
+"""The planner's runtime knobs: defaults, overrides, rejections that
 name the setting at ``manage.py check`` time, and Django-free imports."""
 
 import os
@@ -44,7 +44,8 @@ class PlannerRuntimeDefaultsTests(SimpleTestCase):
         self.assertEqual(settings.OUTREACH_PER_LEAD_TIMEOUT_S, runtime.DEFAULT_PER_LEAD_TIMEOUT_S)
 
     def test_a_missing_setting_falls_back_instead_of_exploding(self):
-        # A settings module predating MUS-26 must still boot. `self.settings()`
+        # A settings module without the planner knobs must still boot.
+        # `self.settings()`
         # restores the settings object on exit, so deleting inside it is safe.
         with self.settings():
             del settings.OUTREACH_MAX_IN_FLIGHT

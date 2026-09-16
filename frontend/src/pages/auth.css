@@ -1,9 +1,9 @@
-/* Sign-in and token-consumption surfaces (MUS-38).
+/* Sign-in and token-consumption surfaces.
 
    Tokens only — no hex literal appears below this line, so both screens theme
    dark for free off the same `data-theme` attribute the boot script sets.
 
-   Type discipline (CONTRACT §7.1): everything here is chrome, so --font-sans,
+   Type discipline: everything here is chrome, so --font-sans,
    except the dev sign-in URL and the countdown, which are machine output and
    are therefore --font-mono. Nothing on these screens is generated prose, so
    --font-serif does not appear at all.
@@ -32,7 +32,7 @@
 /* The mark sits inline with the name and inherits `color` via currentColor.
    Full-strength text here, not --color-text-muted: on the signed-out screens
    the lock-up is the only thing identifying the product, so it should not
-   read as secondary chrome the way it does beside a nav (MUS-44). */
+   read as secondary chrome the way it does beside a nav. */
 .auth-wordmark {
   display: inline-flex;
   align-items: center;

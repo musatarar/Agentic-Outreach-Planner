@@ -1,4 +1,4 @@
-"""Phase 3 of the planner, now concurrent (MUS-26b): a bounded and genuinely
+"""Phase 3 of the planner, now concurrent: a bounded and genuinely
 overlapping pool, per-lead result identity, repeat runs, and priority order."""
 
 import asyncio

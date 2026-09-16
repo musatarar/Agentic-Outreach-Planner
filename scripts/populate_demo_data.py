@@ -1,9 +1,8 @@
 """Bootstrap Django and rebuild the demo database from scratch.
 
 Single source of truth for demo state; run after `manage.py migrate`.
-Empties the database first (all rows, including users, sessions, and any
-saved LLM configuration), then reseeds leads/events, the LLM catalog, and
-the demo user's outreach rules catalog.
+Empties the database first (all rows, including users and sessions), then
+reseeds leads/events and the demo user's outreach rules catalog.
 """
 
 import os
@@ -26,7 +25,6 @@ from django.core.management import call_command  # noqa: E402
 def populate_insurance_agent_demo_data():
     call_command("flush", interactive=False)
     call_command("ingest_data")
-    call_command("seed_llm_catalog")
     call_command("seed_rules_catalog")
 
 

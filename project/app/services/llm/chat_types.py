@@ -1,4 +1,4 @@
-"""Provider-neutral chat/tool-calling data shapes (MUS-29).
+"""Provider-neutral chat/tool-calling data shapes.
 
 Pure stdlib on purpose: nothing here may import Django, a provider SDK, or
 anything above ``services/llm``, and nothing outside the adapters may depend on

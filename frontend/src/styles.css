@@ -1,21 +1,20 @@
 @import './styles/tokens.css';
 
-/* Merged from the three vanilla-JS templates this SPA replaces, then migrated
-   onto the design tokens in styles/tokens.css (MUS-36). No hex literal may
-   appear below this line — every colour, family, size, radius, shadow and
-   duration comes from a token, so these legacy pages theme dark for free.
+/* The app-wide shell: page chrome, shared states and the UI primitives, on the
+   design tokens in styles/tokens.css. No hex literal may appear below
+   this line — every colour, family, size, radius, shadow and duration comes
+   from a token, so every surface themes dark for free.
 
-   Type discipline (CONTRACT §7.1), applied here too:
-     --font-mono   machine output  -- .reason, .timestamp, .count, code
-     --font-serif  generated prose -- .suggested-copy, .copy-pre, .snippet
+   Type discipline, applied here too:
+     --font-mono   machine output  -- counts, timestamps, code
+     --font-serif  generated prose -- the draft
      --font-sans   everything else
 
    Colour discipline: red and amber belong to the priority ramp; green/red in
    the verification ramp are underline-only. Anything that used to be green or
-   teal for decoration (.copy-button, .free-tag, .tier-*, .next-action) is now
-   a neutral lightness ramp. The --color-danger/warning/success aliases appear
-   only on transient form feedback on these legacy pages; the new triage
-   surfaces must not use them. */
+   teal for decoration (.copy-button) is now a neutral lightness ramp. The
+   --color-danger/warning/success aliases appear only on transient form
+   feedback; the review surfaces must not use them. */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -35,7 +34,7 @@ header {
   box-shadow: var(--shadow-sm);
 }
 
-/* The brand row (MUS-44), above the nav. The mark inherits `color` through
+/* The brand row, above the nav. The mark inherits `color` through
    currentColor, so setting it on the lock-up themes the brackets; the square
    inside the mark holds --color-accent on its own. */
 .brand-bar {
@@ -110,44 +109,7 @@ button.secondary {
 
 button.secondary:hover:not(:disabled) { background: var(--color-surface-hover); }
 
-.loading-spinner {
-  display: inline-block;
-  width: 1.2rem;
-  height: 1.2rem;
-  border: 3px solid var(--color-border-subtle);
-  border-top: 3px solid var(--color-accent);
-  border-radius: var(--radius-full);
-  animation: spin 1s linear infinite;
-  vertical-align: middle;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
 .status { color: var(--color-text-muted); font-size: var(--text-sm); margin-left: var(--space-4); }
-
-.llm-status {
-  background: var(--color-surface-sunken);
-  color: var(--color-text-muted);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  margin-left: 0;
-}
-
-.llm-status-warning {
-  color: var(--color-warning);
-  background: var(--color-warning-bg);
-  border: var(--border-width-hair) solid var(--color-p2-border);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  margin-left: 0;
-}
-
-.llm-status-warning a { color: var(--color-warning); font-weight: var(--weight-semibold); }
 
 /* ---- Shared states ---- */
 
@@ -168,124 +130,10 @@ button.secondary:hover:not(:disabled) { background: var(--color-surface-hover); 
   color: var(--color-text-muted);
 }
 
-.no-results { text-align: center; padding: var(--space-7); color: var(--color-text-muted); }
-.no-results p { margin-bottom: var(--space-4); }
+/* ---- Copy to clipboard ---- */
+/* The only way approved copy leaves the app, so it lives with the shared
+   states rather than with any one page. */
 
-/* ---- Priority badges ----
-   The two badge classes disagreed before this commit: `.badge.p2` was orange
-   and `.priority-badge.p2` was yellow, for the same P2. Both now read the one
-   P2 ramp, so a priority renders identically wherever it appears. */
-
-.badge {
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  background: var(--color-p3-bg);
-  color: var(--color-p3-fg);
-  border: var(--border-width-hair) solid var(--color-p3-border);
-}
-
-.badge.p1 { background: var(--color-p1-bg); color: var(--color-p1-fg); border-color: var(--color-p1-border); }
-.badge.p2 { background: var(--color-p2-bg); color: var(--color-p2-fg); border-color: var(--color-p2-border); }
-.badge.p3 { background: var(--color-p3-bg); color: var(--color-p3-fg); border-color: var(--color-p3-border); }
-
-.priority-badge {
-  display: inline-block;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  border: var(--border-width-hair) solid var(--color-p3-border);
-}
-
-.priority-badge.p1 { background: var(--color-p1-bg); color: var(--color-p1-fg); border-color: var(--color-p1-border); }
-.priority-badge.p2 { background: var(--color-p2-bg); color: var(--color-p2-fg); border-color: var(--color-p2-border); }
-.priority-badge.p3 { background: var(--color-p3-bg); color: var(--color-p3-fg); border-color: var(--color-p3-border); }
-
-/* ---- Planner cards ---- */
-
-.cards {
-  display: grid;
-  gap: var(--space-5);
-  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-}
-
-.card {
-  background: var(--color-surface);
-  border-radius: var(--radius-lg);
-  padding: var(--space-5);
-  box-shadow: var(--shadow-md);
-  border-left: 4px solid var(--color-border);
-}
-
-.card.p1 { border-left-color: var(--color-p1-fg); background: var(--color-p1-bg); }
-.card.p2 { border-left-color: var(--color-p2-fg); background: var(--color-p2-bg); }
-.card.p3 { border-left-color: var(--color-p3-fg); background: var(--color-surface-sunken); }
-
-.card-header { margin-bottom: var(--space-4); }
-.who { font-weight: var(--weight-semibold); font-size: var(--text-md); margin-bottom: var(--space-1); }
-.contact-info { font-size: var(--text-sm); color: var(--color-text-muted); }
-
-.meta {
-  display: flex;
-  gap: var(--space-4);
-  align-items: center;
-  margin-top: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.action-label {
-  display: inline-block;
-  padding: var(--space-1) var(--space-3);
-  background: var(--color-surface-sunken);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  color: var(--color-text);
-}
-
-/* Machine output: the rule engine's explain() string. Mono, always. */
-.reason {
-  background: var(--color-surface-sunken);
-  color: var(--color-text);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  margin: var(--space-4) 0;
-  border-left: 3px solid var(--color-border-strong);
-}
-
-.reason-label,
-.suggested-copy-label {
-  font-family: var(--font-sans);
-  font-weight: var(--weight-semibold);
-  color: var(--color-text-muted);
-  display: block;
-  margin-bottom: var(--space-1);
-}
-
-.suggested-copy-section { margin: var(--space-4) 0; }
-.suggested-copy-label { margin-bottom: var(--space-2); }
-
-/* Generated prose: the draft body. Serif, always. */
-.suggested-copy {
-  background: var(--color-surface-sunken);
-  color: var(--color-text);
-  padding: var(--space-4);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-serif);
-  font-size: var(--text-base);
-  line-height: var(--leading-normal);
-  max-width: var(--prose-measure);
-  white-space: pre-wrap;
-  word-break: break-word;
-  border: var(--border-width-hair) solid var(--color-border);
-  margin-bottom: var(--space-3);
-}
-
-/* Neutral, not green: green belongs to the verification ramp alone. The
-   "copied" flash borrows the resolved-state chip instead of a new hue. */
 .copy-button {
   background: var(--color-surface-sunken);
   color: var(--color-text-muted);
@@ -297,229 +145,6 @@ button.secondary:hover:not(:disabled) { background: var(--color-surface-hover); 
 .copy-button:hover:not(:disabled) { background: var(--color-surface-hover); }
 .copy-button.copied { background: var(--color-text); color: var(--color-text-inverse); }
 
-.needs-human {
-  background: var(--color-warning-bg);
-  border: var(--border-width-hair) solid var(--color-p2-border);
-  padding: var(--space-4);
-  border-radius: var(--radius-sm);
-  margin-top: var(--space-4);
-}
-
-.needs-human-title {
-  font-weight: var(--weight-semibold);
-  color: var(--color-warning);
-  display: block;
-  margin-bottom: var(--space-2);
-}
-
-.needs-human-action { color: var(--color-warning); font-size: var(--text-sm); }
-
-/* Machine output: a timestamp. Mono, always. */
-.timestamp {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--color-text-subtle);
-  margin-top: var(--space-4);
-  border-top: var(--border-width-hair) solid var(--color-border-subtle);
-  padding-top: var(--space-3);
-}
-
-/* ---- Reports ---- */
-
-.lead-group {
-  background: var(--color-surface);
-  border-radius: var(--radius-lg);
-  margin-bottom: var(--space-5);
-  box-shadow: var(--shadow-md);
-  overflow: hidden;
-}
-
-.lead-header {
-  padding: var(--space-4) var(--space-5);
-  background: var(--color-surface-sunken);
-  border-bottom: var(--border-width-hair) solid var(--color-border-subtle);
-}
-
-.lead-header h2 { font-size: var(--text-md); }
-.lead-header .contact { color: var(--color-text-muted); font-size: var(--text-sm); }
-
-.entry {
-  padding: var(--space-5);
-  border-bottom: var(--border-width-hair) solid var(--color-border-subtle);
-}
-
-.entry:last-child { border-bottom: none; }
-
-.entry-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.entry .timestamp { border-top: none; margin-top: 0; padding-top: 0; color: var(--color-text-subtle); }
-
-.entry .action-label {
-  background: none;
-  padding: 0;
-  font-weight: var(--weight-semibold);
-  font-size: var(--text-sm);
-}
-
-.section-label {
-  font-size: var(--text-xs);
-  font-weight: var(--weight-bold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--color-text-subtle);
-  margin-top: var(--space-3);
-}
-
-details.copy-block { margin-top: var(--space-2); }
-
-details.copy-block summary {
-  cursor: pointer;
-  color: var(--color-accent);
-  font-size: var(--text-sm);
-}
-
-/* Generated prose again -- same content as .suggested-copy, same family. */
-.copy-pre {
-  white-space: pre-wrap;
-  font-family: var(--font-serif);
-  font-size: var(--text-sm);
-  color: var(--color-text);
-  background: var(--color-surface-sunken);
-  border: var(--border-width-hair) solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3);
-  margin-top: var(--space-2);
-  max-width: var(--prose-measure);
-}
-
-.bd-note {
-  background: var(--color-warning-bg);
-  border: var(--border-width-hair) solid var(--color-p2-border);
-  color: var(--color-warning);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  margin-top: var(--space-2);
-}
-
-/* Was green. Neutral now -- the verification ramp owns green. */
-.next-action {
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-  background: var(--color-surface-sunken);
-  border: var(--border-width-hair) solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  margin-top: var(--space-2);
-}
-
-/* ---- BD Dashboard ---- */
-
-.reviewer-bar {
-  background: var(--color-surface);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4) var(--space-5);
-  margin-bottom: var(--space-5);
-  box-shadow: var(--shadow-md);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.reviewer-bar label { font-weight: var(--weight-semibold); font-size: var(--text-sm); }
-
-.reviewer-bar input {
-  flex: 1;
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-surface);
-  color: var(--color-text);
-  border: var(--border-width-hair) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
-}
-
-section.bucket { margin-bottom: var(--space-6); }
-
-section.bucket > h2 {
-  font-size: var(--text-md);
-  margin-bottom: var(--space-3);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-/* Machine output: a count. Mono, always. */
-.count {
-  background: var(--color-surface-sunken);
-  color: var(--color-text);
-  border: var(--border-width-hair) solid var(--color-border);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  border-radius: var(--radius-full);
-  padding: 0 var(--space-2);
-}
-
-.bucket .card {
-  padding: var(--space-5);
-  margin-bottom: var(--space-4);
-  border-left: none;
-}
-
-.card-title { font-weight: var(--weight-semibold); }
-.card-title .badge { margin-left: var(--space-2); }
-.card-detail { font-size: var(--text-sm); color: var(--color-text-muted); margin-top: var(--space-1); }
-.card-detail .label { font-weight: var(--weight-semibold); color: var(--color-text); }
-
-/* An excerpt of the generated draft. Serif, always. */
-.snippet { font-family: var(--font-serif); font-style: italic; color: var(--color-text-muted); }
-
-.review-controls {
-  margin-top: var(--space-4);
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: center;
-}
-
-.review-controls select {
-  padding: var(--space-2) var(--space-2);
-  background: var(--color-surface);
-  color: var(--color-text);
-  border: var(--border-width-hair) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
-  flex: 1;
-  min-width: 180px;
-}
-
-.propose-form {
-  margin-top: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: var(--border-width-hair) dashed var(--color-border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.propose-form input {
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-surface);
-  color: var(--color-text);
-  border: var(--border-width-hair) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
-}
-
 .card-error {
   margin-top: var(--space-2);
   background: var(--color-danger-bg);
@@ -528,158 +153,6 @@ section.bucket > h2 {
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
 }
-
-.log-item {
-  background: var(--color-surface);
-  border-radius: var(--radius-lg);
-  padding: var(--space-3) var(--space-5);
-  box-shadow: var(--shadow-sm);
-  margin-bottom: var(--space-2);
-  font-size: var(--text-sm);
-}
-
-.log-item .label { font-weight: var(--weight-semibold); }
-.log-item .who { color: var(--color-text-muted); font-size: var(--text-xs); margin-top: var(--space-1); }
-
-/* ---- Settings page ---- */
-
-.settings-page { padding-top: var(--space-5); }
-
-.settings-section { margin-bottom: var(--space-6); }
-.settings-section h2 { font-size: var(--text-md); margin-bottom: var(--space-3); }
-
-.callout {
-  background: var(--color-surface-sunken);
-  border: var(--border-width-hair) solid var(--color-border);
-  border-left: var(--border-width-thick) solid var(--color-border-strong);
-  color: var(--color-text-muted);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-5);
-  font-size: var(--text-sm);
-}
-
-.callout a { color: var(--color-accent); font-weight: var(--weight-semibold); }
-
-.provider-grid,
-.model-grid {
-  display: grid;
-  gap: var(--space-3);
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-}
-
-.provider-card,
-.model-card {
-  background: var(--color-surface);
-  border: var(--border-width-thick) solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
-  text-align: left;
-  cursor: pointer;
-  color: var(--color-text);
-  font: inherit;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  transition: border-color var(--duration-fast) var(--ease-standard);
-}
-
-.provider-card:hover,
-.model-card:hover { border-color: var(--color-border-strong); background: var(--color-surface); }
-
-.provider-card.selected,
-.model-card.selected { border-color: var(--color-accent); background: var(--color-accent-subtle); }
-
-.provider-card { flex-direction: row; align-items: center; justify-content: space-between; }
-.provider-label { font-weight: var(--weight-semibold); }
-
-/* Was green. Neutral now -- the verification ramp owns green. */
-.free-tag {
-  background: var(--color-surface-sunken);
-  color: var(--color-text-muted);
-  border: var(--border-width-hair) solid var(--color-border);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-bold);
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-full);
-}
-
-.model-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.model-label { font-weight: var(--weight-semibold); }
-.model-summary { font-size: var(--text-sm); color: var(--color-text-muted); }
-.model-notes { font-size: var(--text-xs); color: var(--color-text-subtle); font-style: italic; }
-
-.tier-badge {
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-full);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-bold);
-  text-transform: capitalize;
-  background: var(--color-surface-sunken);
-  color: var(--color-text-muted);
-  border: var(--border-width-hair) solid var(--color-border);
-  white-space: nowrap;
-}
-
-/* Purple / blue / green before. A lightness ramp now, so the only coloured
-   pixels left on the page are priority. */
-.tier-flagship { background: var(--color-text); color: var(--color-text-inverse); border-color: var(--color-text); }
-.tier-balanced { background: var(--color-surface-sunken); color: var(--color-text); border-color: var(--color-border-strong); }
-.tier-fast { background: var(--color-surface-sunken); color: var(--color-text-subtle); border-color: var(--color-border-subtle); }
-
-.api-key-link { margin-bottom: var(--space-3); font-size: var(--text-sm); }
-
-.env-key-note {
-  background: var(--color-surface-sunken);
-  border: var(--border-width-hair) solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-3);
-}
-
-.env-key-note code {
-  font-family: var(--font-mono);
-  background: var(--color-surface-hover);
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-sm);
-}
-
-.key-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-
-.key-row input {
-  flex: 1;
-  min-width: 220px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-surface);
-  color: var(--color-text);
-  border: var(--border-width-hair) solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: var(--text-base);
-}
-
-/* Machine output: a masked key. Mono, always. */
-.key-masked { font-family: var(--font-mono); font-size: var(--text-base); }
-.key-clearing { color: var(--color-warning); font-size: var(--text-sm); }
-
-.settings-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  margin-top: var(--space-5);
-}
-
-.settings-actions .error-message { margin: 0; }
-.status.test-ok { color: var(--color-text); font-weight: var(--weight-semibold); }
 
 /* ---- Focus ----
    One visible focus ring for every interactive element, in the accent, so
@@ -691,7 +164,7 @@ section.bucket > h2 {
 }
 
 /* ======================================================================
-   UI primitives -- frontend/src/components/ui (CONTRACT §7.4)
+   UI primitives -- frontend/src/components/ui
    Every rule below is class-scoped so it outranks the unscoped `button`,
    `input` and `select` selectors above; the primitives must not fight the
    legacy element rules and single-class specificity is enough to win.
@@ -848,12 +321,6 @@ section.bucket > h2 {
   border-color: var(--color-status-approved-bg);
 }
 
-.ui-badge--snoozed {
-  background: var(--color-status-snoozed-bg);
-  color: var(--color-status-snoozed-fg);
-  border-color: var(--color-border-subtle);
-}
-
 .ui-badge--dismissed {
   background: var(--color-status-dismissed-bg);
   color: var(--color-status-dismissed-fg);
@@ -955,5 +422,5 @@ section.bucket > h2 {
 .ui-theme-toggle:hover { background: var(--color-surface-hover); color: var(--color-text); }
 .ui-theme-toggle__label { text-transform: capitalize; }
 
-/* The theme toggle moved onto the brand row in MUS-44, so the wrapper that
+/* The theme toggle moved onto the brand row, so the wrapper that
    used to pair it with the nav is gone; see .brand-bar above. */

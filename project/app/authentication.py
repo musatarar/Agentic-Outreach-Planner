@@ -1,4 +1,4 @@
-"""The project's one authentication class (MUS-37): the magic-link session
+"""The project's one authentication class: the magic-link session
 governs the whole API, including the stored provider API key."""
 
 from rest_framework.authentication import SessionAuthentication

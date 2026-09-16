@@ -1,10 +1,10 @@
-"""Magic-link auth (MUS-37)."""
+"""Magic-link auth."""
 
 from django.db import models
 
 
 class LoginToken(models.Model):
-    """A single-use, short-lived magic-link login token (MUS-37).
+    """A single-use, short-lived magic-link login token.
 
     Only ``sha256(token)`` is stored -- plain SHA-256 is fine for 256-bit
     CSPRNG output. Single-use is enforced by a conditional UPDATE

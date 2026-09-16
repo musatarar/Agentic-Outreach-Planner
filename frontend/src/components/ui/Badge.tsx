@@ -10,7 +10,6 @@ export type BadgeTone =
   | 'unverified'
   | 'pending'
   | 'approved'
-  | 'snoozed'
   | 'dismissed';
 
 export interface BadgeProps {

@@ -1,4 +1,4 @@
-"""The single error envelope every non-2xx response in this API uses (MUS-37).
+"""The single error envelope every non-2xx response in this API uses.
 
 Every failure is ``{"code": "machine_slug", "detail": "sentence"}``. Views
 raise :class:`ContractError` when they know the code; everything else is

@@ -1,14 +1,12 @@
-"""A fake provider, for benchmarking the planner without calling anyone (MUS-26e).
+"""A fake provider, for exercising the planner without calling anyone.
 
 Sleeps for a configurable, seeded duration and returns a canned, grounded email
-with plausible token counts, so a benchmark measures the pool rather than a free
-tier's throttle -- and passes the planner's shape and grounding gates instead of
-timing a failure path. It cannot be selected by accident: ``seed_llm_catalog``
-never creates a "stub" provider row for a configuration to point at, and
-``__init__`` raises unless ``OUTREACH_ALLOW_STUB_LLM=1`` (only
-``evals/bench_planner.py`` sets it, and it injects the client directly). It is
-registered in ``_REGISTRY`` anyway, so it cannot drift from the real adapters'
-interface.
+with plausible token counts, so it passes the planner's shape and grounding
+gates instead of timing a failure path. It cannot be selected by accident:
+``__init__`` raises unless ``OUTREACH_ALLOW_STUB_LLM=1``, which only the test
+suite sets, so even ``LLM_PROVIDER=stub`` gets a refusal rather than a fake
+provider. It is registered in ``_REGISTRY`` anyway, so it cannot drift from the
+real adapters' interface.
 """
 
 from __future__ import annotations
@@ -74,11 +72,9 @@ class StubClient(LLMClient):
     ):
         if os.environ.get(ALLOW_ENV_VAR) != "1":
             raise StubLLMNotAllowed(
-                f"The stub LLM provider is for benchmarking only. Set {ALLOW_ENV_VAR}=1 "
-                "to build one (evals/bench_planner.py does). If you are seeing this "
-                "from the app, something has selected provider 'stub' -- which should "
-                "not be reachable, since seed_llm_catalog never creates that provider "
-                "row."
+                f"The stub LLM provider is for tests and benchmarks only. Set "
+                f"{ALLOW_ENV_VAR}=1 to build one. If you are seeing this from the app, "
+                "something has selected provider 'stub' -- check LLM_PROVIDER."
             )
         super().__init__(model=model, default_max_tokens=default_max_tokens, api_key=api_key)
         self.latency_mean_s = latency_mean_s

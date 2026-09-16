@@ -1,4 +1,4 @@
-// Golden dataset for the rules regression eval (MUS-20).
+// Golden dataset for the rules regression eval.
 // One JSON object per line. Blank lines and lines starting with // are ignored.
 // Fields: id, expected_action, expected_priority (1..3), tags[], rationale, lead{}.
 // `expected_*` are GROUND TRUTH (the correct answer), not the classifier's output.

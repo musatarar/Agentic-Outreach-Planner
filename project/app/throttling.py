@@ -1,4 +1,4 @@
-"""Rate limits for the sign-in endpoints (MUS-37).
+"""Rate limits for the sign-in endpoints.
 
 Two independent caps: per IP (DRF's ``ScopedRateThrottle``, declared on the
 view) and per recipient email (this module). Both run before the view body,

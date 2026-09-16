@@ -1,4 +1,4 @@
-"""The planner's database cost, pinned (MUS-26d): the event prefetch, the
+"""The planner's database cost, pinned: the event prefetch, the
 phase-5 ``bulk_create``, and what that write does to primary keys and timestamps."""
 
 import math
@@ -28,22 +28,25 @@ GOOD_COPY = (
 # The non-INSERT cost of a run, fixed with respect to lead count. In order:
 #
 #   1  dismissed dedupe keys (the suppression ledger, read once)
-#   2  open dedupe keys      (pending/snoozed, read once)
+#   2  open dedupe keys      (pending, read once)
 #   3  the leads
 #   4  their events          <- the prefetch; this line used to be 7 x N
-#   5-8 provider resolution  (LLMConfiguration x3 + LLMModel, inside get_llm_client)
-#   9  the transaction open  (SAVEPOINT under TestCase; BEGIN in production)
-#   10 supersede failed rows (MUS-26c)
-#   11 the transaction close (RELEASE SAVEPOINT / COMMIT)
+#   5  the transaction open  (SAVEPOINT under TestCase; BEGIN in production)
+#   6  supersede failed rows
+#   7  the transaction close (RELEASE SAVEPOINT / COMMIT)
+#
+# Provider resolution used to cost four more, reading the LLM catalog tables
+# inside get_llm_client; it reads LLM_PROVIDER/LLM_MODEL from the environment
+# now and touches no table at all.
 #
 # Plus the INSERTs, which are NOT flat -- see PLANNER_INSERT_FIELDS. Bumping
 # this constant is a decision: every increment is a query on the once-per-run path.
-PLANNER_QUERIES_WITHOUT_INSERTS = 11
+PLANNER_QUERIES_WITHOUT_INSERTS = 7
 
 # Columns `bulk_create` writes per row. SQLite caps a batch at 999 // len(fields);
 # Postgres does not cap, so the tests below compute the INSERT count from
 # `connection.ops.bulk_batch_size` rather than hardcoding either answer.
-PLANNER_INSERT_FIELDS = 18
+PLANNER_INSERT_FIELDS = 13
 
 
 def _expected_inserts(rows):
@@ -119,7 +122,7 @@ class PlannerQueryCountTests(TestCase):
     def test_the_query_count_does_not_grow_with_the_number_of_leads(self):
         """Two runs of different sizes cost the same *non-INSERT* number.
 
-        The sizes straddle SQLite's 55-row batch boundary on purpose, so the
+        The sizes straddle SQLite's 76-row batch boundary on purpose, so the
         comparison is of read cost only, not of how the writes batch.
         """
         _make_leads(3)
@@ -130,16 +133,16 @@ class PlannerQueryCountTests(TestCase):
         # Clear the run so the second one has work to do: an open recommendation
         # suppresses a re-run.
         OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
-        _make_leads(57, offset=3)  # 60 leads -- past SQLite's 55-row batch
+        _make_leads(77, offset=3)  # 80 leads -- past SQLite's 76-row batch
 
         with _stub():
-            with self.assertNumQueries(planner_queries(60)):
+            with self.assertNumQueries(planner_queries(80)):
                 plan_outreach()
 
-        self.assertEqual(Lead.objects.count(), 60)
+        self.assertEqual(Lead.objects.count(), 80)
         self.assertEqual(
             planner_queries(3) - _expected_inserts(3),
-            planner_queries(60) - _expected_inserts(60),
+            planner_queries(80) - _expected_inserts(80),
         )
 
     def test_events_are_read_from_the_prefetch_cache_not_re_queried(self):
@@ -192,7 +195,6 @@ class BulkCreateTests(TestCase):
         self.assertEqual(stored.suggested_copy, GOOD_COPY)
         self.assertEqual(stored.action_type, "complete_onboarding")
         self.assertNotEqual(stored.dedupe_key, "")
-        self.assertNotEqual(stored.rule_trace, {})
         self.assertFalse(stored.needs_human)
 
     def test_the_returned_list_is_still_priority_sorted(self):
@@ -212,11 +214,11 @@ class BulkCreateTests(TestCase):
         self.assertGreater(len(set(priorities)), 1)  # a flat list sorts trivially
 
     def test_the_write_is_one_statement_per_batch(self):
-        """One statement per batch -- SQLite caps a batch at 55 rows for this
-        model's 18 insertable fields, Postgres does not cap at all."""
+        """One statement per batch -- SQLite caps a batch at 76 rows for this
+        model's 13 insertable fields, Postgres does not cap at all."""
         from django.test.utils import CaptureQueriesContext
 
-        rows = 60  # past SQLite's boundary, so the two backends genuinely differ
+        rows = 80  # past SQLite's boundary, so the two backends genuinely differ
         _make_leads(rows)
 
         with _stub():
@@ -235,12 +237,12 @@ class BulkCreateTests(TestCase):
 
     def test_primary_keys_survive_multiple_batches(self):
         # RETURNING is applied per batch, so pk population must hold across them.
-        _make_leads(60)
+        _make_leads(80)
 
         with _stub():
             planned = plan_outreach()
 
-        self.assertEqual(len({action.pk for action in planned}), 60)
+        self.assertEqual(len({action.pk for action in planned}), 80)
 
     def test_a_run_with_no_work_writes_nothing_and_still_succeeds(self):
         # `bulk_create([])` emits no INSERT, though the atomic wrapper and the

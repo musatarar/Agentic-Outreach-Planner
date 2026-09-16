@@ -1,4 +1,4 @@
-"""Lead listing and per-client composition (MUS-68)."""
+"""Lead listing and per-client composition."""
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -18,7 +18,7 @@ class LeadListView(APIView):
 
 
 class LeadComposeView(APIView):
-    """POST /api/leads/{lead_id}/compose/ — compose outreach for ONE client (MUS-68).
+    """POST /api/leads/{lead_id}/compose/ — compose outreach for ONE client.
 
     The same planner ``/api/outreach/run/`` calls, scoped to one lead. 200 with
     the new action, 404 for an unknown lead, 409 when the planner declines

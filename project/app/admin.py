@@ -4,9 +4,6 @@ from project.app.models import (
     ActionType,
     Event,
     Lead,
-    LLMConfiguration,
-    LLMModel,
-    LLMProvider,
     OutreachAction,
     OutreachRule,
 )
@@ -53,29 +50,6 @@ class OutreachActionAdmin(admin.ModelAdmin):
     search_fields = ("lead__id", "lead__agency_name", "reason")
 
 
-@admin.register(LLMProvider)
-class LLMProviderAdmin(admin.ModelAdmin):
-    list_display = ("key", "label", "sort_order", "enabled")
-    list_filter = ("enabled",)
-    search_fields = ("key", "label")
-
-
-@admin.register(LLMModel)
-class LLMModelAdmin(admin.ModelAdmin):
-    list_display = (
-        "model_id",
-        "provider",
-        "label",
-        "tier",
-        "context_window",
-        "input_price_per_mtok_usd",
-        "output_price_per_mtok_usd",
-        "enabled",
-    )
-    list_filter = ("provider", "tier", "enabled")
-    search_fields = ("model_id", "label")
-
-
 @admin.register(ActionType)
 class ActionTypeAdmin(admin.ModelAdmin):
     list_display = ("key", "label", "owner", "urgency", "enabled", "updated_at")
@@ -88,13 +62,3 @@ class OutreachRuleAdmin(admin.ModelAdmin):
     list_display = ("name", "owner", "kind", "action", "weight", "enabled", "updated_at")
     list_filter = ("kind", "weight", "enabled")
     search_fields = ("name", "action__key", "owner__username")
-
-
-@admin.register(LLMConfiguration)
-class LLMConfigurationAdmin(admin.ModelAdmin):
-    """The stored (or plaintext) API key must never render here."""
-
-    list_display = ("provider", "model", "max_tokens", "key_last_four", "updated_at")
-    # encrypted_api_key must never appear in any admin form or list.
-    exclude = ("encrypted_api_key",)
-    readonly_fields = ("key_last_four", "updated_at")

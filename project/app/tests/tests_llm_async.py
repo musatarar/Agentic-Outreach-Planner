@@ -1,4 +1,4 @@
-"""Tests for the native async provider paths (MUS-46). An async client cached
+"""Tests for the native async provider paths. An async client cached
 across two asyncio.run() calls is bound to a dead loop — the two-sequential-runs
 test is the regression lock, since a naive cache passes every single-run test."""
 

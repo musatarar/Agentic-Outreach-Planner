@@ -1,9 +1,10 @@
-"""Offline unit tests for the deterministic copy checks in ``evals/copy_checks.py`` —
-the structural checks the copy eval (MUS-21) applies before the LLM judge."""
+"""Offline unit tests for the deterministic copy checks in
+``project/app/services/copy_checks.py`` — the shape gate
+``services/outreach.py::validate_copy`` runs on every draft."""
 
 import unittest
 
-from evals import copy_checks
+from project.app.services import copy_checks
 
 # A well-formed email: Subject line, ~90-word body, exactly one CTA sentence.
 GOOD_EMAIL = """Subject: Quick idea on your volume pricing

@@ -1,4 +1,4 @@
-"""Deterministic grounding verifier for generated outreach copy (MUS-22).
+"""Deterministic grounding verifier for generated outreach copy.
 
 Pure regex/string logic, no LLM, duck-typed on lead attributes. Checks every
 concrete claim in the copy against the ``Lead`` record; ``plan_outreach`` fails
@@ -313,7 +313,7 @@ def _tokens(text: str) -> list[str]:
 
 
 def _jsonable(value: Any) -> Any:
-    """MUS-39 persists the report to a JSONField."""
+    """The report is persisted to a JSONField."""
     if isinstance(value, datetime.datetime):
         return value.isoformat()
     if isinstance(value, datetime.date):

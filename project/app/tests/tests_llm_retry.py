@@ -1,4 +1,4 @@
-"""Tests for the shared retry policy (MUS-46).
+"""Tests for the shared retry policy.
 
 ``sleep`` and ``rand`` are injected, with the rand stubs pinned to the bottom or top of
 each range, so the assertions are about the bounds the policy produces.
@@ -11,7 +11,7 @@ from project.app.services.llm import errors, retry
 
 
 class _RecordingScope:
-    """Stands in for a per-attempt telemetry span, recording enter, result and exit."""
+    """Stands in for a per-attempt caller scope, recording enter, result and exit."""
 
     def __init__(self, attempt, events):
         self.attempt = attempt

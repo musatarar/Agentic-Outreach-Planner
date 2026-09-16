@@ -1,85 +1,88 @@
-"""Resolve the active LLM provider/model/key configuration from the database.
+"""Resolve the active LLM provider/model/key from the environment.
 
-Key precedence per provider: a stored (encrypted) key on the active
-:class:`~project.app.models.LLMConfiguration` row (``"database"``), else the
-provider's env var (``"environment"``), else its catalog default model with no
-key (``"none"``).
+Three variables, nothing else:
+
+``LLM_PROVIDER``
+    Which adapter runs, e.g. ``groq`` (the default) or ``claude``. An
+    unsupported value fails loudly rather than silently falling back.
+``LLM_MODEL``
+    Optional model id for that provider. Blank means the adapter's own
+    ``DEFAULT_MODEL``, so the model is never restated in two places.
+the provider's key variable
+    ``GROQ_API_KEY``, ``ANTHROPIC_API_KEY``, ... per :data:`PROVIDER_ENV_VARS`.
+
+Blank counts as unset everywhere (that is what an untouched ``.env`` line and
+a docker-compose ``${VAR:-}`` passthrough produce). Django is deliberately not
+imported here: the package must stay importable without it.
 """
 
 import os
 
-from project.app.services.crypto import decrypt_key
+PROVIDER_VAR = "LLM_PROVIDER"
+MODEL_VAR = "LLM_MODEL"
 
-# Provider -> env var name(s) its adapter accepts, in priority order.
+# Provider -> env var name(s) its adapter accepts, in priority order. Also the
+# set of values LLM_PROVIDER accepts, so adding a provider means editing this
+# map and the client registry in __init__.py -- those two places, no more.
 # CLAUDE_API_KEY is a legacy alias handled here.
 PROVIDER_ENV_VARS = {
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
     "chatgpt": ("OPENAI_API_KEY",),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "groq": ("GROQ_API_KEY",),
+    # Benchmarking only, and keyless. Naming it here does NOT make it usable:
+    # the adapter still refuses to be built without the explicit opt-in its own
+    # module documents (see stub.py). Listing it keeps that refusal the barrier,
+    # rather than hiding the provider behind a confusing "unsupported value".
+    "stub": (),
 }
 
-# Used only when no LLMConfiguration row exists at all (fresh DB).
-_DEFAULT_PROVIDER = "groq"
-_DEFAULT_MAX_TOKENS = 500
+DEFAULT_PROVIDER = "groq"
 
 
-def _env_key_for(provider):
+def _env(name):
+    """``os.environ[name]`` with blank read as unset."""
+    return (os.environ.get(name) or "").strip() or None
+
+
+def _configured_provider():
+    return _env(PROVIDER_VAR) or DEFAULT_PROVIDER
+
+
+def get_provider():
+    """Name of the active provider, e.g. ``"claude"`` or ``"groq"``."""
+    name = _configured_provider()
+    if name not in PROVIDER_ENV_VARS:
+        raise ValueError(
+            f"{PROVIDER_VAR}={name!r} is not a supported LLM provider. "
+            f"Valid choices: {', '.join(sorted(PROVIDER_ENV_VARS))}."
+        )
+    return name
+
+
+def get_model():
+    """The configured model id, or ``None`` for the adapter's default."""
+    return _env(MODEL_VAR)
+
+
+def get_provider_config(name):
+    """Build overrides for provider ``name``.
+
+    ``{"model": ...}`` when ``LLM_MODEL`` names one *and* ``name`` is the
+    active provider, else ``{}`` -- a model id belongs to the provider it was
+    configured for, so it never leaks onto a different one.
+    """
+    model = get_model()
+    if model and name == _configured_provider():
+        return {"model": model}
+    return {}
+
+
+def resolve_api_key(provider=None):
+    """The API key for ``provider`` (default: the active one), or ``None``."""
+    provider = provider or get_provider()
     for env_var in PROVIDER_ENV_VARS.get(provider, ()):
         value = os.environ.get(env_var)
         if value:
             return value
     return None
-
-
-def _active_row():
-    from project.app.models import LLMConfiguration
-
-    return LLMConfiguration.objects.select_related("model").filter(pk=1).first()
-
-
-def get_provider():
-    """Name of the active provider, e.g. ``"claude"`` or ``"groq"``."""
-    row = _active_row()
-    return row.provider_id if row else _DEFAULT_PROVIDER
-
-
-def get_provider_config(name):
-    """Model/max_tokens for ``name`` (not necessarily the active provider).
-
-    The active configuration's values when ``name`` is active; otherwise
-    ``name``'s catalog default model (lowest ``sort_order`` among enabled
-    models), or ``{}`` when ``name`` has no catalog entries.
-    """
-    from project.app.models import LLMModel
-
-    row = _active_row()
-    if row and row.provider_id == name:
-        return {"model": row.model.model_id, "max_tokens": row.max_tokens}
-
-    model = (
-        LLMModel.objects.filter(provider_id=name, enabled=True)
-        .order_by("sort_order", "model_id")
-        .first()
-    )
-    if model is None:
-        return {}
-    return {"model": model.model_id, "max_tokens": model.default_max_tokens}
-
-
-def resolve_active_key(provider=None):
-    """Resolve ``(api_key, key_source)`` for ``provider`` (default: the
-    active provider).
-
-    ``api_key`` is the plaintext key or ``None``; ``key_source`` is one of
-    ``"database"``, ``"environment"``, ``"none"``.
-    """
-    provider = provider or get_provider()
-    row = _active_row()
-    if row and row.provider_id == provider and row.encrypted_api_key:
-        return decrypt_key(bytes(row.encrypted_api_key)), "database"
-
-    env_key = _env_key_for(provider)
-    if env_key:
-        return env_key, "environment"
-    return None, "none"

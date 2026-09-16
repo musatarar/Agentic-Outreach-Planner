@@ -6,7 +6,8 @@ set -e
 python manage.py migrate --noinput
 python scripts/populate_demo_data.py
 
-# --insecure: the image runs with DEBUG off, and `runserver` then serves no
-# static files -- so the committed React bundle 404s and every page renders
-# blank. There is no static file server in front of it to take the job over.
+# This is the Django dev server, not a production setup. --insecure makes it
+# serve the committed React bundle even with DEBUG off; compose interpolates
+# .env, so whether DEBUG is off is the operator's setting, and without the flag
+# every page would render blank whenever it is.
 exec python manage.py runserver 0.0.0.0:8000 --insecure
