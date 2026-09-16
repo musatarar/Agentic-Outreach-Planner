@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchAuthMe } from '../api/endpoints';
+import type { AuthMeTenant } from '../api/types';
 
 export type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 
@@ -11,6 +12,7 @@ export type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 export function useAuth() {
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [email, setEmail] = useState<string | null>(null);
+  const [tenant, setTenant] = useState<AuthMeTenant | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -18,6 +20,7 @@ export function useAuth() {
       .then((me) => {
         if (cancelled) return;
         setEmail(me.email);
+        setTenant(me.tenant ?? null);
         setStatus(me.authenticated ? 'authenticated' : 'anonymous');
       })
       .catch(() => {
@@ -30,5 +33,5 @@ export function useAuth() {
     };
   }, []);
 
-  return { status, email };
+  return { status, email, tenant };
 }

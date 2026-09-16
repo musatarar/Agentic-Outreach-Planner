@@ -53,6 +53,37 @@ docker compose up
 Starts Postgres, builds the image, migrates, seeds the demo pipeline and serves on
 **http://127.0.0.1:8000/**. It runs Django's development server, not a production stack.
 
+## Workspaces
+
+Leads and their events belong to a **workspace** (a tenant). A signed-in user sees exactly
+one workspace's book: the one their membership row names. A user with no membership can
+sign in, but every data endpoint answers `403 {"code": "no_tenant"}` — there is no
+unassigned book to fall back on.
+
+`scripts/populate_demo_data.py` seeds one workspace, `demo`, ingests the sample leads and
+events into it, and enrols every address in `LOGIN_ALLOWED_EMAILS`, so the quickstart above
+signs you in to a book you can see.
+
+Three commands manage this by hand:
+
+```bash
+python manage.py create_tenant acme --name "Acme Insurance"   # idempotent
+python manage.py add_tenant_member acme you@example.com       # creates the user if needed
+python manage.py ingest_data --tenant acme                    # --tenant is required
+```
+
+`backfill_tenant <slug>` exists for the upgrade path: it assigns leads and events written
+before workspaces existed (`tenant IS NULL`) to one workspace, and each event follows its
+own lead. It is idempotent.
+
+Two limits worth knowing, both deliberate and both in the follow-up list:
+
+- **One workspace per user.** Membership is a one-to-one row; switching workspaces needs a
+  selector in the UI and a per-request choice on the API.
+- **Lead ids are global.** The lead primary key is the CRM id (`lead_001`), so two
+  workspaces cannot both own that id. `ingest_data` refuses such a collision by name rather
+  than moving the lead.
+
 ## Configuration
 
 Everything is environment variables. `.env.example` is the full list in two sections;
@@ -106,8 +137,12 @@ lint, mypy, the migration check, the rules eval and the frontend build.
 
 ## Architecture
 
-- **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction`,
-  `DismissedOutreachKey`, `LoginToken`.
+- **Models** (`project/app/models/`): `Tenant`, `TenantMembership`, `Lead`, `Event`,
+  `OutreachAction`, `DismissedOutreachKey`, `LoginToken`.
+- **Tenancy** (`services/tenancy.py`, `permissions.py`): a caller's workspace is resolved
+  onto `request.tenant` by the `HasTenant` permission, and every lead, event and outreach
+  query filters on it. Outreach rows carry no tenant column — they are scoped through
+  `lead__tenant`.
 - **Rules + planner** (`services/outreach.py`): `determine_action` / `determine_priority`
   are pure functions over a lead and its events. `plan_outreach` runs in numbered phases —
   read, classify and build prompts, call the provider, run the two output gates, write.

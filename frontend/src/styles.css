@@ -64,6 +64,7 @@ nav { margin-bottom: var(--space-3); font-size: var(--text-sm); }
 nav a { color: var(--color-accent); text-decoration: none; }
 nav a:hover { text-decoration: underline; }
 nav .sep { color: var(--color-text-subtle); margin: 0 var(--space-2); }
+nav .workspace { color: var(--color-text-subtle); }
 
 h1 { font-size: var(--text-xl); margin-bottom: var(--space-2); }
 .subtitle { color: var(--color-text-muted); font-size: var(--text-sm); }

@@ -38,7 +38,9 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 ## Where things are
 
 services/outreach.py is the rules engine and the planner (numbered phases in comments);
-services/llm/ is the provider-agnostic layer; services/verify.py is the grounding verifier.
+services/llm/ is the provider-agnostic layer; services/verify.py is the grounding verifier;
+services/tenancy.py resolves a user to their workspace and owns membership writes, and
+permissions.py holds HasTenant, which puts that workspace on request.tenant.
 Registries, to find anything: project/app/models/__init__.py, views/__init__.py,
 serializers/__init__.py, frontend/src/api/endpoints.ts (every API call, one line each).
 Constraint and index names appear verbatim in the model and its migration — grep the name.
@@ -98,6 +100,10 @@ Constraint and index names appear verbatim in the model and its migration — gr
   config; treat any diff containing it as human-review-required.
 - Magic-link auth stores only hashed tokens, single-use via conditional UPDATE, with
   timing-equalized failure paths and REMOTE_ADDR-only IP trust. Human-gated.
+- Every lead, event and outreach query is scoped by `request.tenant` (the `HasTenant`
+  permission), and plan_outreach requires a tenant. Outreach rows scope through
+  `lead__tenant`. NEVER add an unscoped query on these tables, and never let a new data
+  endpoint ship without HasTenant — tests_tenancy.py walks the URL map to catch it.
 
 ## Settings & env
 

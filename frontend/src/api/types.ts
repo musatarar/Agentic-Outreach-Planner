@@ -65,9 +65,17 @@ export interface Paginated<T> {
 
 // ===== magic-link auth =============================================
 
+export interface AuthMeTenant {
+  slug: string;
+  name: string;
+}
+
 export interface AuthMe {
   authenticated: boolean;
   email: string | null;
+  // The caller's workspace, or null when their account is in none — in which
+  // case every data endpoint answers 403 `no_tenant`.
+  tenant: AuthMeTenant | null;
 }
 
 export interface AuthRequestLinkInput {
