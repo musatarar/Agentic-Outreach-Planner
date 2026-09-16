@@ -120,7 +120,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
                 "name": "Reward power users",
                 "kind": "deterministic",
                 "conditions": _conditions(),
-                "order": 10,
+                "weight": 3,
             },
             content_type="application/json",
         )
@@ -129,10 +129,10 @@ class OutreachRuleApiTests(RulesApiTestCase):
         self.assertEqual(OutreachRule.objects.get(pk=rule_id).owner, self.user)
 
         patched = self.client.patch(
-            f"{RULES_URL}{rule_id}/", {"order": 5}, content_type="application/json"
+            f"{RULES_URL}{rule_id}/", {"weight": 1}, content_type="application/json"
         )
         self.assertEqual(patched.status_code, 200)
-        self.assertEqual(patched.json()["order"], 5)
+        self.assertEqual(patched.json()["weight"], 1)
 
         deleted = self.client.delete(f"{RULES_URL}{rule_id}/")
         self.assertEqual(deleted.status_code, 204)
@@ -191,14 +191,30 @@ class OutreachRuleApiTests(RulesApiTestCase):
         self.assertEqual(self.client.get(f"{RULES_URL}{theirs.pk}/").status_code, 404)
         self.assertEqual(
             self.client.patch(
-                f"{RULES_URL}{theirs.pk}/", {"order": 1}, content_type="application/json"
+                f"{RULES_URL}{theirs.pk}/", {"weight": 1}, content_type="application/json"
             ).status_code,
             404,
         )
 
-    def test_the_rules_list_comes_back_in_evaluation_order(self):
+    def test_the_rules_list_comes_back_heaviest_first(self):
         action = self._action()
-        second = self._rule(action, name="second", order=20)
-        first = self._rule(action, name="first", order=10)
+        light = self._rule(action, name="modest momentum", weight=1)
+        heavy = self._rule(action, name="dormant account", weight=3)
         listed = self.client.get(RULES_URL).json()
-        self.assertEqual([row["id"] for row in listed], [first.pk, second.pk])
+        self.assertEqual([row["id"] for row in listed], [heavy.pk, light.pk])
+
+    def test_a_weight_outside_one_to_three_is_a_validation_error(self):
+        action = self._action()
+        response = self.client.post(
+            RULES_URL,
+            {
+                "action": action.pk,
+                "name": "Off the scale",
+                "kind": "deterministic",
+                "conditions": _conditions(),
+                "weight": 9,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "validation_error")

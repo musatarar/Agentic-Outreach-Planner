@@ -1,13 +1,11 @@
 """Rules-catalog API: CRUD over the signed-in user's actions and rules.
 
-Every queryset is scoped to ``request.user`` and ``owner`` is bound
-server-side — a row id belonging to someone else reads as 404, and an owner
-in the payload is ignored. Writes run ``full_clean()`` so the model's
-pairing/ownership/uniqueness validation backs every endpoint.
+HTTP only — reads, writes and their rules live in :mod:`services`. Every
+lookup is owner-scoped there, ``owner`` is bound from the session (an owner in
+the payload is ignored), and a row id belonging to someone else reads as 404.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import RestrictedError
 from django.urls import path
 from rest_framework import serializers, status
 from rest_framework.exceptions import NotFound
@@ -15,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from project.app.exceptions import ContractError
+from project.app.rules import services
 from project.app.rules.models import ActionType, OutreachRule
 
 
@@ -45,7 +44,7 @@ class OutreachRuleSerializer(serializers.ModelSerializer):
             "conditions",
             "inference_prompt",
             "enabled",
-            "order",
+            "weight",
             "created_at",
             "updated_at",
         ]
@@ -57,80 +56,75 @@ class OutreachRuleSerializer(serializers.ModelSerializer):
         fields = super().get_fields()
         request = self.context.get("request")
         if request is not None:
-            fields["action"].queryset = ActionType.objects.filter(owner=request.user)
+            fields["action"].queryset = services.actions_for(request.user)
         return fields
 
 
-def _validated_save(instance, validated):
-    """Apply the validated fields and save through ``full_clean()``."""
-    for field, value in validated.items():
-        setattr(instance, field, value)
-    try:
-        instance.full_clean()
-    except DjangoValidationError as exc:
-        raise serializers.ValidationError(exc.message_dict)
-    instance.save()
-    return instance
-
-
-class _OwnedCatalogView(APIView):
-    """Owner scoping shared by the four endpoints below."""
+class _CatalogView(APIView):
+    """The read/write plumbing the four endpoints share."""
 
     throttle_scope = "rules_catalog"
-    model = None
     serializer_class = None
 
-    def _queryset(self, request):
-        return self.model.objects.filter(owner=request.user)
+    def _payload(self, request, instance=None):
+        """Validated fields from the request body, serializer first then the
+        model — a DRF-shaped error either way."""
+        serializer = self.serializer_class(
+            instance, data=request.data, partial=instance is not None, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data
 
-    def _get_owned(self, request, pk):
-        instance = self._queryset(request).filter(pk=pk).first()
+    def _write(self, write, *args):
+        try:
+            return write(*args)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict)
+
+    def _render(self, instance, http_status=status.HTTP_200_OK):
+        return Response(self.serializer_class(instance).data, status=http_status)
+
+    def _found(self, instance, what):
         if instance is None:
-            raise NotFound(f"No {self.model._meta.verbose_name} with this id.")
+            raise NotFound(f"No {what} with this id.")
         return instance
 
 
-class ActionTypeListCreateView(_OwnedCatalogView):
+class ActionTypeListCreateView(_CatalogView):
     """GET/POST /api/rules/actions/ — the signed-in user's action catalog."""
 
-    model = ActionType
     serializer_class = ActionTypeSerializer
 
     def get(self, request, *args, **kwargs):
-        serializer = self.serializer_class(self._queryset(request), many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        actions = services.actions_for(request.user)
+        return Response(self.serializer_class(actions, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
-        instance = _validated_save(self.model(owner=request.user), serializer.validated_data)
-        return Response(self.serializer_class(instance).data, status=status.HTTP_201_CREATED)
+        fields = self._payload(request)
+        action = self._write(services.create_action, request.user, fields)
+        return self._render(action, status.HTTP_201_CREATED)
 
 
-class ActionTypeDetailView(_OwnedCatalogView):
+class ActionTypeDetailView(_CatalogView):
     """GET/PATCH/DELETE /api/rules/actions/{id}/ — one owned action."""
 
-    model = ActionType
     serializer_class = ActionTypeSerializer
 
+    def _action(self, request, pk):
+        return self._found(services.action_for(request.user, pk), "action type")
+
     def get(self, request, pk, *args, **kwargs):
-        instance = self._get_owned(request, pk)
-        return Response(self.serializer_class(instance).data, status=status.HTTP_200_OK)
+        return self._render(self._action(request, pk))
 
     def patch(self, request, pk, *args, **kwargs):
-        instance = self._get_owned(request, pk)
-        serializer = self.serializer_class(
-            instance, data=request.data, partial=True, context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        instance = _validated_save(instance, serializer.validated_data)
-        return Response(self.serializer_class(instance).data, status=status.HTTP_200_OK)
+        action = self._action(request, pk)
+        fields = self._payload(request, action)
+        return self._render(self._write(services.update_action, action, fields))
 
     def delete(self, request, pk, *args, **kwargs):
-        instance = self._get_owned(request, pk)
         try:
-            instance.delete()
-        except RestrictedError:
+            services.delete_action(self._action(request, pk))
+        except services.ActionInUse:
             raise ContractError(
                 "action_in_use",
                 "Rules still select this action; delete or repoint them first.",
@@ -139,44 +133,39 @@ class ActionTypeDetailView(_OwnedCatalogView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class OutreachRuleListCreateView(_OwnedCatalogView):
-    """GET/POST /api/rules/ — the signed-in user's rules in evaluation order."""
+class OutreachRuleListCreateView(_CatalogView):
+    """GET/POST /api/rules/ — the signed-in user's rules, heaviest first."""
 
-    model = OutreachRule
     serializer_class = OutreachRuleSerializer
 
     def get(self, request, *args, **kwargs):
-        serializer = self.serializer_class(self._queryset(request), many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        rules = services.rules_for(request.user)
+        return Response(self.serializer_class(rules, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
-        instance = _validated_save(self.model(owner=request.user), serializer.validated_data)
-        return Response(self.serializer_class(instance).data, status=status.HTTP_201_CREATED)
+        fields = self._payload(request)
+        rule = self._write(services.create_rule, request.user, fields)
+        return self._render(rule, status.HTTP_201_CREATED)
 
 
-class OutreachRuleDetailView(_OwnedCatalogView):
+class OutreachRuleDetailView(_CatalogView):
     """GET/PATCH/DELETE /api/rules/{id}/ — one owned rule."""
 
-    model = OutreachRule
     serializer_class = OutreachRuleSerializer
 
+    def _rule(self, request, pk):
+        return self._found(services.rule_for(request.user, pk), "rule")
+
     def get(self, request, pk, *args, **kwargs):
-        instance = self._get_owned(request, pk)
-        return Response(self.serializer_class(instance).data, status=status.HTTP_200_OK)
+        return self._render(self._rule(request, pk))
 
     def patch(self, request, pk, *args, **kwargs):
-        instance = self._get_owned(request, pk)
-        serializer = self.serializer_class(
-            instance, data=request.data, partial=True, context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        instance = _validated_save(instance, serializer.validated_data)
-        return Response(self.serializer_class(instance).data, status=status.HTTP_200_OK)
+        rule = self._rule(request, pk)
+        fields = self._payload(request, rule)
+        return self._render(self._write(services.update_rule, rule, fields))
 
     def delete(self, request, pk, *args, **kwargs):
-        self._get_owned(request, pk).delete()
+        services.delete_rule(self._rule(request, pk))
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

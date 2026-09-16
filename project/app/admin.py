@@ -85,8 +85,8 @@ class ActionTypeAdmin(admin.ModelAdmin):
 
 @admin.register(OutreachRule)
 class OutreachRuleAdmin(admin.ModelAdmin):
-    list_display = ("name", "owner", "kind", "action", "order", "enabled", "updated_at")
-    list_filter = ("kind", "enabled")
+    list_display = ("name", "owner", "kind", "action", "weight", "enabled", "updated_at")
+    list_filter = ("kind", "weight", "enabled")
     search_fields = ("name", "action__key", "owner__username")
 
 

@@ -82,8 +82,11 @@ class OutreachRule(models.Model):
       ("hubspot notes show they need help with something") the LLM seam
       evaluates against the lead's sanitized, fenced data.
 
-    Rules are checked in ``(order, id)`` and the first match wins; no user
-    rule matching still falls through to the needs-human UNKNOWN path.
+    Rules are not first-match: every one is evaluated, each rule that fires
+    adds its ``weight`` to its action's tally, and the heaviest tally is the
+    action proposed (``services.select_action``). Several rules may select the
+    same action, so a strong signal and a weak one can agree and outweigh a
+    lone rival. No rule firing at all falls through to the needs-human path.
     """
 
     KIND_DETERMINISTIC = "deterministic"
@@ -91,6 +94,15 @@ class OutreachRule(models.Model):
     KIND_CHOICES = [
         (KIND_DETERMINISTIC, "Deterministic"),
         (KIND_INFERENCE, "AI inference"),
+    ]
+
+    WEIGHT_LOW = 1
+    WEIGHT_MEDIUM = 2
+    WEIGHT_HIGH = 3
+    WEIGHT_CHOICES = [
+        (WEIGHT_LOW, "Low"),
+        (WEIGHT_MEDIUM, "Medium"),
+        (WEIGHT_HIGH, "High"),
     ]
 
     # ``conditions`` payload schema, version-pinned like the rule-trace
@@ -132,24 +144,25 @@ class OutreachRule(models.Model):
         blank=True, default="", validators=[MaxLengthValidator(INFERENCE_PROMPT_MAX_CHARS)]
     )
     enabled = models.BooleanField(default=True)
-    # Evaluation position, first match wins; ties break on id so two rules can
-    # never evaluate in different orders on different backends.
-    order = models.IntegerField(default=0)
+    # How much this rule's firing argues for its action, 1 (weak) to 3 (strong).
+    weight = models.PositiveSmallIntegerField(choices=WEIGHT_CHOICES, default=WEIGHT_MEDIUM)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["order", "id"]
+        # Heaviest first for the editing surfaces; evaluation reads them all.
+        ordering = ["-weight", "id"]
         indexes = [
-            # The planner's fetch: one user's enabled rules in evaluation order.
-            models.Index(fields=["owner", "enabled", "order"], name="orule_eval_order"),
+            # The planner's fetch: one user's enabled rules.
+            models.Index(fields=["owner", "enabled"], name="orule_owner_enabled"),
         ]
         constraints = [
-            # Literal kind strings: Meta cannot see the enclosing class namespace.
+            # Literal values: Meta cannot see the enclosing class namespace.
             models.CheckConstraint(
                 check=Q(kind__in=("deterministic", "inference")),
                 name="orule_kind_known",
             ),
+            models.CheckConstraint(check=Q(weight__in=(1, 2, 3)), name="orule_weight_1_to_3"),
         ]
 
     def build_inference_prompt(self):

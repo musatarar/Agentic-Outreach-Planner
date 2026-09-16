@@ -1,9 +1,9 @@
 """User-defined outreach catalog: ``ActionType`` and ``OutreachRule``.
 
 Pins the rules-catalog schema (migration 0010_user_rules_catalog): per-owner
-action keys, the deterministic/inference kind <-> payload pairing, first-match
-evaluation order, and the delete story (RESTRICT on the action FK, clean sweep
-on owner delete).
+action keys, the deterministic/inference kind <-> payload pairing, per-rule
+weights, and the delete story (RESTRICT on the action FK, clean sweep on owner
+delete).
 """
 
 from django.contrib.auth import get_user_model
@@ -115,11 +115,31 @@ class OutreachRuleTests(TestCase):
         with self.assertRaises(ValueError):
             self._rule().build_inference_prompt()
 
-    def test_rules_evaluate_in_order_then_id(self):
-        second = self._rule(name="second", order=5)
-        first = self._rule(name="first", order=0)
-        first_tie_break = self._rule(name="also order five, created later", order=5)
-        self.assertEqual(list(OutreachRule.objects.all()), [first, second, first_tie_break])
+    def test_rules_list_heaviest_first_then_by_id(self):
+        light = self._rule(name="modest momentum", weight=OutreachRule.WEIGHT_LOW)
+        heavy = self._rule(name="dormant account", weight=OutreachRule.WEIGHT_HIGH)
+        heavy_tie_break = self._rule(name="also heavy, created later", weight=3)
+        self.assertEqual(list(OutreachRule.objects.all()), [heavy, heavy_tie_break, light])
+
+    def test_a_rule_weighs_medium_unless_the_author_says_otherwise(self):
+        self.assertEqual(self._rule().weight, OutreachRule.WEIGHT_MEDIUM)
+
+    def test_a_weight_outside_one_to_three_is_rejected_by_the_db(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._rule(name="off the scale", weight=4)
+
+    def test_a_weight_outside_one_to_three_fails_validation(self):
+        rule = OutreachRule(
+            owner=self.user,
+            action=self.action,
+            name="off the scale",
+            kind=OutreachRule.KIND_DETERMINISTIC,
+            conditions=_deterministic_conditions(),
+            weight=0,
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            rule.full_clean()
+        self.assertIn("weight", ctx.exception.message_dict)
 
     def test_a_deterministic_rule_needs_conditions_and_no_inference_prompt(self):
         empty = OutreachRule(
