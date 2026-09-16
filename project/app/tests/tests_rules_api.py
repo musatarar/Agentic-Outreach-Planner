@@ -1,8 +1,8 @@
 """The rules-catalog API: CRUD over the signed-in user's actions and rules.
 
 Pins owner scoping (foreign rows read as 404, owner bound server-side),
-model-backed validation surfacing as 400s, and the 409 on deleting an action
-that rules still select.
+model-backed validation surfacing as 400s, paginated lists, and the 409 on
+deleting an action that rules still select.
 """
 
 from django.contrib.auth import get_user_model
@@ -22,6 +22,14 @@ def _conditions():
         "conditions": [
             {"field": "deals_closed", "operator": ">", "threshold": 20, "source": "lead"}
         ],
+    }
+
+
+def _gate():
+    return {
+        "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
+        "operator": "all_of",
+        "conditions": [{"field": "signed_up_date", "operator": "exists", "source": "lead"}],
     }
 
 
@@ -69,7 +77,7 @@ class ActionTypeApiTests(RulesApiTestCase):
         self.assertEqual(created["key"], "set_up_appointment")
         self.assertEqual(ActionType.objects.get(pk=created["id"]).owner, self.user)
         listed = self.client.get(ACTIONS_URL).json()
-        self.assertEqual([row["key"] for row in listed], ["set_up_appointment"])
+        self.assertEqual([row["key"] for row in listed["results"]], ["set_up_appointment"])
 
     def test_a_non_snake_case_key_is_a_validation_error(self):
         response = self.client.post(
@@ -138,21 +146,81 @@ class OutreachRuleApiTests(RulesApiTestCase):
         self.assertEqual(deleted.status_code, 204)
         self.assertFalse(OutreachRule.objects.filter(pk=rule_id).exists())
 
-    def test_an_inference_rule_carrying_conditions_is_a_validation_error(self):
+    def test_an_inference_rule_needs_a_structured_gate(self):
         action = self._action()
+        body = {
+            "action": action.pk,
+            "name": "Needs help",
+            "kind": "inference",
+            "inference_prompt": "the notes say they need help",
+        }
+        ungated = self.client.post(RULES_URL, body, content_type="application/json")
+        self.assertEqual(ungated.status_code, 400)
+        self.assertEqual(ungated.json()["code"], "validation_error")
+
+        gated = self.client.post(
+            RULES_URL, dict(body, conditions=_gate()), content_type="application/json"
+        )
+        self.assertEqual(gated.status_code, 201)
+
+    def test_a_rule_that_could_fire_on_crm_text_alone_is_rejected(self):
+        action = self._action()
+        notes_only = dict(_conditions())
+        notes_only["conditions"] = [
+            {
+                "field": "hubspot_notes",
+                "operator": "contains",
+                "threshold": "HOLD_PHRASES",
+                "source": "notes",
+            }
+        ]
         response = self.client.post(
             RULES_URL,
             {
                 "action": action.pk,
-                "name": "Needs help",
-                "kind": "inference",
-                "inference_prompt": "the notes say they need help",
-                "conditions": _conditions(),
+                "name": "CRM text alone",
+                "kind": "deterministic",
+                "conditions": notes_only,
             },
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], "validation_error")
+
+    def test_an_unevaluable_conditions_payload_is_rejected(self):
+        action = self._action()
+        for payload in (
+            "yes",
+            [1, 2, 3],
+            42,
+            {"lol": 1},
+            {"version": 99, "operator": "xor", "conditions": []},
+            {
+                "version": 1,
+                "operator": "all_of",
+                "conditions": [
+                    {
+                        "field": "favourite_colour",
+                        "operator": "==",
+                        "threshold": "blue",
+                        "source": "lead",
+                    }
+                ],
+            },
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    RULES_URL,
+                    {
+                        "action": action.pk,
+                        "name": "Nonsense",
+                        "kind": "deterministic",
+                        "conditions": payload,
+                    },
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(OutreachRule.objects.count(), 0)
 
     def test_someone_elses_action_id_reads_as_nonexistent_on_create(self):
         theirs = self._action(owner=self.other)
@@ -187,7 +255,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
 
     def test_someone_elses_rule_is_invisible_to_list_and_detail(self):
         theirs = self._rule(self._action(owner=self.other))
-        self.assertEqual(self.client.get(RULES_URL).json(), [])
+        self.assertEqual(self.client.get(RULES_URL).json()["results"], [])
         self.assertEqual(self.client.get(f"{RULES_URL}{theirs.pk}/").status_code, 404)
         self.assertEqual(
             self.client.patch(
@@ -201,7 +269,18 @@ class OutreachRuleApiTests(RulesApiTestCase):
         light = self._rule(action, name="modest momentum", weight=1)
         heavy = self._rule(action, name="dormant account", weight=3)
         listed = self.client.get(RULES_URL).json()
-        self.assertEqual([row["id"] for row in listed], [heavy.pk, light.pk])
+        self.assertEqual([row["id"] for row in listed["results"]], [heavy.pk, light.pk])
+
+    def test_the_rules_list_is_paginated(self):
+        action = self._action()
+        for index in range(3):
+            self._rule(action, name=f"rule {index}")
+        first = self.client.get(f"{RULES_URL}?page_size=2").json()
+        self.assertEqual(first["count"], 3)
+        self.assertEqual(len(first["results"]), 2)
+        self.assertIsNotNone(first["next"])
+        second = self.client.get(f"{RULES_URL}?page_size=2&page=2").json()
+        self.assertEqual(len(second["results"]), 1)
 
     def test_a_weight_outside_one_to_three_is_a_validation_error(self):
         action = self._action()

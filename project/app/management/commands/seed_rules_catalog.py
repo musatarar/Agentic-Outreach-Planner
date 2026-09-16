@@ -1,11 +1,14 @@
-"""Seed the demo user's outreach rules catalog (idempotent, safe to re-run).
+"""Seed the demo user's outreach rules catalog.
 
 The seeded set reproduces the planner's compiled behavior as editable data,
 weighted: strong, unambiguous signals carry 3, softer ones 2 or 1. Several
 rules select the same action on purpose — three separate signals argue for a
 usage nudge, and a dormant account argues harder than modest momentum — so
-the tally decides rather than evaluation position. Re-running resets the
-owner's rules to this set.
+the tally decides rather than evaluation position.
+
+Re-running RESETS the owner's catalog to this set: rules they authored
+themselves are deleted, and the seeded actions' label and urgency are
+restored. Safe to re-run, but not a merge.
 """
 
 from django.conf import settings
@@ -108,8 +111,8 @@ RULES = [
         "conditions": _all_of(
             _cond("days_since_last_login", "<=", 21, source="derived"),
             _cond("deals_closed", ">", 0),
-            _cond("milestone_from_notes", "exists", source="derived"),
-            _cond("deals_below_milestone", "==", True, source="derived"),
+            _cond("milestone_from_notes", "exists", source="notes"),
+            _cond("deals_below_milestone", "==", True, source="notes"),
         ),
     },
     {
@@ -123,9 +126,13 @@ RULES = [
         ),
     },
     {
+        # The conditions are the gate: only a lead who actually signed up is
+        # worth an appointment, and the notes are read only once that holds —
+        # no rule fires on CRM text alone.
         "name": "They need help with something — set up an appointment",
         "action": "set_up_appointment",
         "weight": OutreachRule.WEIGHT_HIGH,
+        "conditions": _all_of(_cond("signed_up_date", "exists")),
         "inference": "the hubspot notes say they need help with something",
     },
 ]

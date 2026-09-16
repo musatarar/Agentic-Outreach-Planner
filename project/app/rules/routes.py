@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 from project.app.exceptions import ContractError
 from project.app.rules import services
 from project.app.rules.models import ActionType, OutreachRule
+from project.app.views.review import ReviewPagination
 
 
 class ActionTypeSerializer(serializers.ModelSerializer):
@@ -79,7 +80,19 @@ class _CatalogView(APIView):
         try:
             return write(*args)
         except DjangoValidationError as exc:
-            raise serializers.ValidationError(exc.message_dict)
+            problems = dict(exc.message_dict)
+            # `full_clean` files model-wide problems (a unique constraint among
+            # them) under `__all__`; DRF's envelope names that key differently.
+            if "__all__" in problems:
+                problems["non_field_errors"] = problems.pop("__all__")
+            raise serializers.ValidationError(problems)
+
+    def _paginated(self, request, queryset):
+        """List responses are paginated: a catalog is per-user and small today,
+        but nothing caps how many rules a user writes."""
+        paginator = ReviewPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        return paginator.get_paginated_response(self.serializer_class(page, many=True).data)
 
     def _render(self, instance, http_status=status.HTTP_200_OK):
         return Response(self.serializer_class(instance).data, status=http_status)
@@ -96,8 +109,7 @@ class ActionTypeListCreateView(_CatalogView):
     serializer_class = ActionTypeSerializer
 
     def get(self, request, *args, **kwargs):
-        actions = services.actions_for(request.user)
-        return Response(self.serializer_class(actions, many=True).data, status=status.HTTP_200_OK)
+        return self._paginated(request, services.actions_for(request.user))
 
     def post(self, request, *args, **kwargs):
         fields = self._payload(request)
@@ -139,8 +151,7 @@ class OutreachRuleListCreateView(_CatalogView):
     serializer_class = OutreachRuleSerializer
 
     def get(self, request, *args, **kwargs):
-        rules = services.rules_for(request.user)
-        return Response(self.serializer_class(rules, many=True).data, status=status.HTTP_200_OK)
+        return self._paginated(request, services.rules_for(request.user))
 
     def post(self, request, *args, **kwargs):
         fields = self._payload(request)

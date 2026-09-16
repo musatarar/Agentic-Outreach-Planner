@@ -11,6 +11,8 @@ exceptions.
 
 from dataclasses import dataclass
 
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.db.models import RestrictedError
 
 from project.app.rules.models import ActionType, OutreachRule
@@ -72,7 +74,16 @@ def _save(instance, fields):
     for field, value in fields.items():
         setattr(instance, field, value)
     instance.full_clean()
-    instance.save()
+    try:
+        instance.save()
+    except IntegrityError as exc:
+        # full_clean checks uniqueness and the check constraints with SELECTs,
+        # so a concurrent writer can still win the race and leave the database
+        # to refuse this INSERT. That refusal is an answer about the data, not
+        # a server fault, so it reads as one.
+        raise ValidationError(
+            "That change collided with a concurrent write; re-read the catalog and retry."
+        ) from exc
     return instance
 
 

@@ -13,6 +13,8 @@ from django.core.validators import MaxLengthValidator, RegexValidator
 from django.db import models
 from django.db.models import Q
 
+from project.app.rules import utils
+
 
 class ActionType(models.Model):
     """One kind of outreach a user's rules can select (their action catalog).
@@ -73,14 +75,13 @@ class OutreachRule(models.Model):
     """A user-authored rule: when its predicate holds for a lead, propose
     ``action``.
 
-    ``kind`` picks the predicate's engine, and exactly one payload field is
-    populated (``clean()`` enforces the pairing):
-
-    - ``deterministic`` -> ``conditions``: a structured, versioned payload
-      evaluated in-process against lead/event fields.
-    - ``inference`` -> ``inference_prompt``: a natural-language predicate
-      ("hubspot notes show they need help with something") the LLM seam
-      evaluates against the lead's sanitized, fenced data.
+    Every rule carries ``conditions``: a structured, versioned payload
+    (:mod:`project.app.rules.utils`) evaluated in-process. An ``inference``
+    rule adds ``inference_prompt``, a natural-language predicate the LLM seam
+    evaluates against the lead's sanitized, fenced data — and its conditions
+    are the gate that must hold before the model is asked at all, so no rule
+    can fire on CRM text alone and no provider call is spent on a lead the
+    structured part already ruled out.
 
     Rules are not first-match: every one is evaluated, each rule that fires
     adds its ``weight`` to its action's tally, and the heaviest tally is the
@@ -106,25 +107,10 @@ class OutreachRule(models.Model):
         (WEIGHT_HIGH, "High"),
     ]
 
-    # ``conditions`` payload schema, version-pinned like the rule-trace
-    # envelope and sharing its vocabulary so a stored rule and its recorded
-    # evaluation read alike:
-    #
-    #   {
-    #     "version": 1,
-    #     "operator": "all_of" | "any_of",
-    #     "conditions": [
-    #       {"field": "deals_closed", "operator": ">", "threshold": 20,
-    #        "source": "lead"},
-    #       {"operator": "any_of", "conditions": [...]},  # one nested level max
-    #     ],
-    #   }
-    #
-    # Condition operators are the rules engine's evaluation set
-    # (==, !=, >, >=, <, <=, in, exists, absent, contains); ``source`` is
-    # lead | events | notes | derived. Fields reference the Lead/Event shape
-    # for now — user-defined data shapes are deliberately deferred.
-    CONDITIONS_SCHEMA_VERSION = 1
+    # The ``conditions`` schema, its vocabulary and its validator all live in
+    # utils; fields reference the Lead/Event shape for now, since user-defined
+    # data shapes are deliberately deferred.
+    CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
 
     # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the
     # cap bounds per-rule provider spend.
@@ -138,7 +124,8 @@ class OutreachRule(models.Model):
     action = models.ForeignKey(ActionType, on_delete=models.RESTRICT, related_name="rules")
     name = models.CharField(max_length=255)  # "Reward power users"
     kind = models.CharField(max_length=16, choices=KIND_CHOICES)
-    # Deterministic payload (schema above); {} on inference rules.
+    # Structured predicate, required on every rule; on an inference rule it
+    # is the gate in front of the model.
     conditions = models.JSONField(default=dict, blank=True)
     # Inference predicate; "" on deterministic rules.
     inference_prompt = models.TextField(
@@ -166,16 +153,18 @@ class OutreachRule(models.Model):
             models.CheckConstraint(check=Q(weight__in=(1, 2, 3)), name="orule_weight_1_to_3"),
         ]
 
-    def build_inference_prompt(self):
-        """One line of the evaluation prompt: ``<predicate> ? "<action id>"``.
+    def build_inference_prompt(self, label):
+        """One line of the evaluation prompt: ``<predicate> ? "<label>"``.
 
-        The planner embeds these lines in a larger prompt and the model
-        answers with the quoted action id of the rule that applies.
+        ``label`` is assigned by the caller for one prompt and mapped back
+        server-side. Database ids never enter the prompt, so the model can only
+        ever answer with a slot the caller put in front of it — a predicate
+        that names some other id names nothing. ``clean()`` has already refused
+        the characters that could forge a second line or answer slot.
         """
         if self.kind != self.KIND_INFERENCE:
             raise ValueError("Only inference rules build an inference prompt.")
-        predicate = (self.inference_prompt or "").strip()[: self.INFERENCE_PROMPT_MAX_CHARS]
-        return f'{predicate} ? "{self.action_id}"'
+        return f'{(self.inference_prompt or "").strip()} ? "{label}"'
 
     def clean(self):
         """Enforce the kind <-> payload pairing and same-owner action selection.
@@ -186,10 +175,20 @@ class OutreachRule(models.Model):
         problems = {}
         if self.action_id is not None and self.action.owner_id != self.owner_id:
             problems["action"] = "A rule can only select one of its owner's own action types."
+
+        if not self.conditions:
+            problems["conditions"] = (
+                "Every rule needs a conditions payload; on an inference rule it is "
+                "the structured gate in front of the model."
+            )
+        else:
+            try:
+                utils.validate_conditions(self.conditions)
+            except ValidationError as exc:
+                problems["conditions"] = exc.messages
+
         prompt = (self.inference_prompt or "").strip()
         if self.kind == self.KIND_DETERMINISTIC:
-            if not self.conditions:
-                problems["conditions"] = "A deterministic rule needs a conditions payload."
             if prompt:
                 problems["inference_prompt"] = (
                     "A deterministic rule must not carry an inference prompt."
@@ -199,8 +198,11 @@ class OutreachRule(models.Model):
                 problems["inference_prompt"] = (
                     "An inference rule needs its natural-language predicate."
                 )
-            if self.conditions:
-                problems["conditions"] = "An inference rule must not carry structured conditions."
+            else:
+                try:
+                    utils.validate_inference_predicate(prompt)
+                except ValidationError as exc:
+                    problems["inference_prompt"] = exc.messages
         if problems:
             raise ValidationError(problems)
 

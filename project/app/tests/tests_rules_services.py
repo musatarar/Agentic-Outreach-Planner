@@ -1,8 +1,11 @@
 """Rules-entity business logic: owner-scoped reads, validated writes, and the
 weight tally that turns matched rules into the action to propose."""
 
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.test import TestCase
 
 from project.app.models import ActionType, OutreachRule
@@ -155,6 +158,17 @@ class ValidatedWriteTests(RulesServiceTestCase):
         self.assertEqual(services.update_rule(rule, {"weight": 3}).weight, 3)
         with self.assertRaises(ValidationError):
             services.update_rule(rule, {"weight": 7})
+
+    def test_a_uniqueness_race_reads_as_a_validation_error_not_a_500(self):
+        services.create_action(self.user, {"key": "nudge_usage", "label": "first"})
+        # full_clean checks uniqueness with a SELECT, so a concurrent writer can
+        # land between that and the INSERT. Stubbing it out reproduces exactly
+        # that window; the database refuses, and the caller must still see the
+        # same ValidationError rather than an IntegrityError escaping as a 500.
+        with mock.patch.object(ActionType, "full_clean", lambda self, *a, **k: None):
+            with self.assertRaises(ValidationError), transaction.atomic():
+                services.create_action(self.user, {"key": "nudge_usage", "label": "second"})
+        self.assertEqual(ActionType.objects.filter(key="nudge_usage").count(), 1)
 
     def test_deleting_an_action_is_refused_while_a_rule_selects_it(self):
         rule = self._rule(self._action("nudge_usage"), "Nudge them", 2)
