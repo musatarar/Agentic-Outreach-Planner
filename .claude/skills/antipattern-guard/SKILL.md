@@ -70,11 +70,15 @@ your plan, say which entry it is.
 
 ### Fixture data in production code
 Looks like: literal lead names, emails, dates, or event payloads inside a service, view, or
-model; a function whose body is `return [...]` of sample rows; a "demo mode" branch.
+model; a function whose body is `return [...]` of sample rows; a "demo mode" branch. The subtle
+form: a query that only works because of how one dataset is shaped, such as
+`filter(id__startswith="lead_")` to mean "the demo leads". That is fixture knowledge in
+disguise, and it breaks the day someone loads different data.
 Why: the module now has two jobs, and the second one silently becomes production behaviour.
 Callers cannot tell the data is fake, tests pass against it, and the real path is untested.
-Instead: the function takes its inputs as arguments or queries the ORM. Sample data goes in a
-test factory helper or `raw_data/`.
+Instead: the function takes its inputs as arguments (a stage, a set of ids, a date window) or
+queries the ORM on real fields. Sample data goes in a test factory helper or `raw_data/`, and
+"which rows are the demo" stays a caller's decision.
 
 ### Test-only branches in production paths
 Looks like: `if settings.TESTING`, `if "test" in sys.argv`, `if settings.DEBUG`, an env var
