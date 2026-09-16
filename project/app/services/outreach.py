@@ -1091,14 +1091,24 @@ def _review(item, outcome, level, today):
     )
 
 
-def plan_outreach(lead_ids: Collection[str] | None = None):
+def plan_outreach(tenant, lead_ids: Collection[str] | None = None):
     """Plan outreach for every lead: decide priority + action, generate copy,
     persist OutreachAction rows, and return them sorted by priority.
 
+    ``tenant`` is required and scopes the whole run: the leads read, the two
+    skip ledgers and the phase-5 supersede delete all filter on it, so one
+    workspace can neither see nor suppress another's recommendations. It is a
+    required positional rather than a default so a caller cannot plan the whole
+    installation by omission.
+
     ``lead_ids`` narrows the run to the named clients; ``None`` plans
-    the whole book. A scoped run still *reads* every lead on purpose: the read is
-    cheap and keeps the classification input identical either way.
+    the whole book. A scoped run still *reads* every lead in the tenant on
+    purpose: the read is cheap and keeps the classification input identical
+    either way.
     """
+    if tenant is None:
+        raise ValueError("plan_outreach requires a tenant")
+
     # Imported here so this module stays importable without Django configured.
     from django.conf import settings
     from django.db import transaction
@@ -1119,13 +1129,16 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     # KNOWN GAP: rule 2 is a read-then-write with no lock, so two overlapping
     # runs can both plan the same lead. `dedupe_key` is indexed but not unique;
     # closing this needs a partial unique constraint or a ledger lock.
+    #
+    # Both are scoped through `lead__tenant`: neither table carries a tenant
+    # column, and a join costs no extra query.
     suppressed = set(
-        DismissedOutreachKey.objects.filter(revoked_at__isnull=True).values_list(
-            "dedupe_key", flat=True
-        )
+        DismissedOutreachKey.objects.filter(
+            revoked_at__isnull=True, lead__tenant=tenant
+        ).values_list("dedupe_key", flat=True)
     )
     open_keys = set(
-        OutreachAction.objects.filter(status=OutreachAction.STATUS_PENDING)
+        OutreachAction.objects.filter(status=OutreachAction.STATUS_PENDING, lead__tenant=tenant)
         .exclude(dedupe_key="")
         # A failed-generation row is not a recommendation, so it must not hold
         # the dedupe slot; phase 5 supersedes it.
@@ -1141,7 +1154,7 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
     # walked four times in a run (phases 2, 3's prompt, 4 and 5), so this is
     # two queries instead of 1 + 4N.
-    leads = list(Lead.objects.prefetch_related("events"))
+    leads = list(Lead.objects.filter(tenant=tenant).prefetch_related("events"))
 
     # The clients this run plans for: the set that gets classified, prompted
     # and written. An unknown id matches nothing.
@@ -1201,6 +1214,7 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
         OutreachAction.objects.filter(
             dedupe_key__in=[item.dedupe_key for item in work],
             status=OutreachAction.STATUS_PENDING,
+            lead__tenant=tenant,
         ).filter(failed_generation_filter()).delete()
 
         # `bulk_create` skips `save()` and its signals (unused here) and must

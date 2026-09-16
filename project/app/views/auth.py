@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Any
 
 from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.contrib.auth import login as django_login
 from django.contrib.auth import logout as django_logout
 from rest_framework import status
@@ -23,7 +22,7 @@ from rest_framework.views import APIView
 
 from project.app.exceptions import ContractError
 from project.app.serializers.auth import ConsumeTokenSerializer, RequestLinkSerializer
-from project.app.services import login_links
+from project.app.services import login_links, tenancy
 from project.app.services.login_links import ConsumeOutcome
 from project.app.throttling import LoginEmailRateThrottle
 
@@ -120,7 +119,9 @@ class AuthConsumeView(APIView):
             # Re-checked at redeem: the allowlist can shrink after issue.
             raise ContractError("invalid_token", INVALID_TOKEN_DETAIL)
 
-        user = self._user_for(email)
+        # Fetch-or-create lives in services/tenancy.py so the membership
+        # commands create users exactly the way sign-in does.
+        user = tenancy.user_for_email(email)
         # login() rotates the CSRF token -- the client must re-read the
         # `csrftoken` cookie after this response.
         django_login(request, user)
@@ -133,22 +134,6 @@ class AuthConsumeView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
-    @staticmethod
-    def _user_for(email: str):
-        """Fetch or create the Django user for an allowlisted address.
-
-        Created on first sign-in so the allowlist stays the single source of
-        truth; the password is unusable because there is no password login path.
-        """
-        user_model = get_user_model()
-        user = user_model.objects.filter(username=email).first()
-        if user is not None:
-            return user
-        user = user_model(username=email, email=email)
-        user.set_unusable_password()
-        user.save()
-        return user
 
 
 class AuthLogoutView(APIView):
@@ -177,7 +162,16 @@ class AuthMeView(APIView):
                 NOT_AUTHENTICATED_DETAIL,
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        tenant = tenancy.tenant_for_user(request.user)
         return Response(
-            {"authenticated": True, "email": request.user.email or request.user.get_username()},
+            {
+                "authenticated": True,
+                "email": request.user.email or request.user.get_username(),
+                # `null` for a user with no membership: the SPA shows them as
+                # signed in, and every data endpoint answers 403 `no_tenant`.
+                "tenant": (
+                    {"slug": tenant.slug, "name": tenant.name} if tenant is not None else None
+                ),
+            },
             status=status.HTTP_200_OK,
         )

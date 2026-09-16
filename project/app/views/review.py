@@ -10,10 +10,12 @@ from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from project.app.models import DismissedOutreachKey, Event, OutreachAction
+from project.app.permissions import HasTenant
 from project.app.serializers import ReviewItemSerializer
 from project.app.services import dedupe, queue_copy
 
@@ -45,14 +47,22 @@ def body_of(request):
     return request.data if isinstance(request.data, dict) else {}
 
 
-def review_queryset():
-    """The base queryset for every review read."""
-    return OutreachAction.objects.select_related("lead").prefetch_related(
-        Prefetch("lead__events", queryset=Event.objects.order_by("-timestamp", "-id"))
+def review_queryset(tenant):
+    """The base queryset for every review read, scoped to one workspace.
+
+    ``OutreachAction`` carries no tenant column: it is scoped through its lead,
+    which is the row that owns the tenancy.
+    """
+    return (
+        OutreachAction.objects.filter(lead__tenant=tenant)
+        .select_related("lead")
+        .prefetch_related(
+            Prefetch("lead__events", queryset=Event.objects.order_by("-timestamp", "-id"))
+        )
     )
 
 
-def latest_action_ids():
+def latest_action_ids(tenant):
     """Ids of the most recent action per lead, in review order.
 
     One values-only query: the table is walked to pick the survivors, but
@@ -60,9 +70,11 @@ def latest_action_ids():
     """
     seen = set()
     ordered = []
-    for pk, lead_id, priority in OutreachAction.objects.order_by(
-        "lead_id", "-created_at", "-id"
-    ).values_list("id", "lead_id", "priority"):
+    for pk, lead_id, priority in (
+        OutreachAction.objects.filter(lead__tenant=tenant)
+        .order_by("lead_id", "-created_at", "-id")
+        .values_list("id", "lead_id", "priority")
+    ):
         if lead_id in seen:
             continue
         seen.add(lead_id)
@@ -79,13 +91,21 @@ class ReviewPagination(PageNumberPagination):
 
 
 class ReviewBaseView(APIView):
-    """Authenticated by default (settings.REST_FRAMEWORK)."""
+    """Authenticated by default (settings.REST_FRAMEWORK), and tenant-scoped.
+
+    Every review view inherits from this one, so a new lifecycle move cannot
+    forget either half. ``get_action`` reads through the scoped queryset: an
+    action belonging to another workspace is simply not there, which makes
+    every cross-tenant mutation the existing 404.
+    """
+
+    permission_classes = [IsAuthenticated, HasTenant]
 
     def serialize(self, action):
         return ReviewItemSerializer(action).data
 
-    def get_action(self, pk):
-        return review_queryset().filter(pk=pk).first()
+    def get_action(self, request, pk):
+        return review_queryset(request.tenant).filter(pk=pk).first()
 
 
 class ReviewListView(ReviewBaseView):
@@ -98,8 +118,12 @@ class ReviewListView(ReviewBaseView):
 
     def get(self, request, *args, **kwargs):
         paginator = ReviewPagination()
-        page_ids = paginator.paginate_queryset(latest_action_ids(), request, view=self)
-        by_id = {action.id: action for action in review_queryset().filter(pk__in=page_ids)}
+        page_ids = paginator.paginate_queryset(
+            latest_action_ids(request.tenant), request, view=self
+        )
+        by_id = {
+            action.id: action for action in review_queryset(request.tenant).filter(pk__in=page_ids)
+        }
         items = [by_id[pk] for pk in page_ids if pk in by_id]
         return paginator.get_paginated_response(ReviewItemSerializer(items, many=True).data)
 
@@ -111,7 +135,7 @@ class ReviewMutationView(ReviewBaseView):
     """
 
     def post(self, request, pk, *args, **kwargs):
-        action = self.get_action(pk)
+        action = self.get_action(request, pk)
         if action is None:
             return not_found()
         return self.mutate(request, action)

@@ -1,21 +1,28 @@
 """Planner-facing endpoints: run the planner over the whole book."""
 
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from project.app.permissions import HasTenant
 from project.app.serializers import OutreachActionSerializer
 
 
 class OutreachRunView(APIView):
-    """POST /api/outreach/run/ — run the planner and return created actions."""
+    """POST /api/outreach/run/ — run the planner and return created actions.
+
+    "The whole book" means the caller's workspace's book, never anyone else's.
+    """
+
+    permission_classes = [IsAuthenticated, HasTenant]
 
     def post(self, request, *args, **kwargs):
         # Imported inside the method so this module loads independently of the
         # service module.
         from project.app.services.outreach import plan_outreach
 
-        actions = plan_outreach()
+        actions = plan_outreach(request.tenant)
         actions = sorted(actions, key=lambda a: (a.priority, a.lead_id))
         serializer = OutreachActionSerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
