@@ -86,7 +86,8 @@ class OutreachRule(models.Model):
     adds its ``weight`` to its action's tally, and the heaviest tally is the
     action proposed (``services.select_action``). Several rules may select the
     same action, so a strong signal and a weak one can agree and outweigh a
-    lone rival. No rule firing at all falls through to the needs-human path.
+    lone rival. A tally of 1 — one weight-1 rule alone — proposes nothing, as
+    does no rule firing at all: both route the lead to a human.
     """
 
     KIND_DETERMINISTIC = "deterministic"

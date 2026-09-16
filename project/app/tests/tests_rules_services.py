@@ -31,11 +31,36 @@ class SelectActionTests(RulesServiceTestCase):
         self.assertIsNone(services.select_action([]))
 
     def test_a_single_firing_rule_selects_its_own_action(self):
-        rule = self._rule(self._action("nudge_usage"), "modest momentum", 1)
+        rule = self._rule(self._action("nudge_usage"), "created quotes, never submitted", 2)
         selected = services.select_action([rule])
         self.assertEqual(selected.action.key, "nudge_usage")
-        self.assertEqual(selected.weight, 1)
-        self.assertEqual(selected.reasons, ["modest momentum"])
+        self.assertEqual(selected.weight, 2)
+        self.assertEqual(selected.reasons, ["created quotes, never submitted"])
+
+    def test_one_weak_rule_on_its_own_proposes_nothing(self):
+        rule = self._rule(self._action("nudge_usage"), "modest momentum", 1)
+        self.assertIsNone(services.select_action([rule]))
+        # The tally is still reported — it just does not clear the floor.
+        [score] = services.score_actions([rule])
+        self.assertEqual(score.weight, 1)
+        self.assertFalse(score.actionable)
+
+    def test_two_weak_rules_agreeing_clear_the_floor(self):
+        nudge = self._action("nudge_usage")
+        selected = services.select_action(
+            [
+                self._rule(nudge, "modest momentum", 1),
+                self._rule(nudge, "no deal closed in a few days", 1),
+            ]
+        )
+        self.assertEqual(selected.action.key, "nudge_usage")
+        self.assertEqual(selected.weight, 2)
+
+    def test_a_weak_rule_cannot_win_by_being_the_only_one_that_fired(self):
+        weak = self._rule(self._action("nudge_usage"), "modest momentum", 1)
+        strong = self._rule(self._action("reengage_dormant"), "dormant for weeks", 3)
+        self.assertIsNone(services.select_action([weak]))
+        self.assertEqual(services.select_action([weak, strong]).action.key, "reengage_dormant")
 
     def test_the_heavier_rule_wins_when_two_actions_compete(self):
         dormant = self._rule(self._action("reengage_dormant"), "dormant for weeks", 3)

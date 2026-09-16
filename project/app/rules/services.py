@@ -20,6 +20,12 @@ class ActionInUse(Exception):
     """An action cannot be deleted while rules still select it."""
 
 
+# A tally below this proposes nothing: one weak rule firing is a hint, not a
+# case for spending a provider call and a reviewer's attention on outreach.
+# Two weak rules agreeing do clear it.
+MIN_ACTIONABLE_WEIGHT = 2
+
+
 # --------------------------------------------------------------------------
 # reads — every queryset is scoped to one owner
 # --------------------------------------------------------------------------
@@ -112,6 +118,11 @@ class ActionScore:
     rules: tuple
 
     @property
+    def actionable(self):
+        """Whether this case is strong enough to propose on its own."""
+        return self.weight >= MIN_ACTIONABLE_WEIGHT
+
+    @property
     def reasons(self):
         """The firing rules' names, heaviest first — what a reviewer reads."""
         return [rule.name for rule in self.rules]
@@ -140,7 +151,11 @@ def score_actions(matched_rules):
 
 
 def select_action(matched_rules):
-    """The single action to propose, or ``None`` when no rule fired (the
-    caller's cue to route the lead to a human)."""
+    """The single action to propose, or ``None`` when nothing argues hard
+    enough — no rule fired, or the best tally is under
+    :data:`MIN_ACTIONABLE_WEIGHT`. Either way the caller routes the lead to a
+    human rather than proposing outreach."""
     scores = score_actions(matched_rules)
-    return scores[0] if scores else None
+    if not scores or scores[0].weight < MIN_ACTIONABLE_WEIGHT:
+        return None
+    return scores[0]
