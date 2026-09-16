@@ -7,8 +7,9 @@ naming anything else would be stored happily and then never fire.
 
 Sources split by who controls the value. ``lead`` and ``derived`` are the
 agency's own record and figures computed from it; ``notes`` and ``events``
-carry free text a lead can write. A rule may read the untrusted ones, but
-never fire on them alone — see :data:`CORROBORATING_SOURCES`.
+carry free text a lead can write. A conditions payload may read the untrusted
+ones, but is never satisfiable by them alone — see
+:data:`CORROBORATING_SOURCES`.
 """
 
 import datetime
@@ -23,7 +24,8 @@ SOURCE_NOTES = "notes"
 SOURCE_EVENTS = "events"
 
 # Sources whose values the lead cannot author, so a condition reading one is
-# enough to corroborate a branch that also reads CRM text.
+# enough to corroborate a branch that also reads CRM text. (An inference
+# rule's predicate is judged separately, and may stand alone.)
 CORROBORATING_SOURCES = frozenset({SOURCE_LEAD, SOURCE_DERIVED})
 
 NUMBER = "number"
@@ -129,8 +131,8 @@ def validate_conditions(payload):
 
     if not _branch_corroborated({"operator": operator, "conditions": children}):
         raise ValidationError(
-            "A rule cannot fire on lead-controlled text alone: every branch that "
-            "can satisfy it needs at least one 'lead' or 'derived' condition."
+            "These conditions can be satisfied by lead-controlled text alone: "
+            "every branch needs at least one 'lead' or 'derived' condition."
         )
 
 

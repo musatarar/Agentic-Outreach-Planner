@@ -146,7 +146,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
         self.assertEqual(deleted.status_code, 204)
         self.assertFalse(OutreachRule.objects.filter(pk=rule_id).exists())
 
-    def test_an_inference_rule_needs_a_structured_gate(self):
+    def test_an_inference_rule_may_stand_on_its_predicate_alone(self):
         action = self._action()
         body = {
             "action": action.pk,
@@ -155,15 +155,27 @@ class OutreachRuleApiTests(RulesApiTestCase):
             "inference_prompt": "the notes say they need help",
         }
         ungated = self.client.post(RULES_URL, body, content_type="application/json")
-        self.assertEqual(ungated.status_code, 400)
-        self.assertEqual(ungated.json()["code"], "validation_error")
+        self.assertEqual(ungated.status_code, 201)
+        self.assertEqual(OutreachRule.objects.get(pk=ungated.json()["id"]).conditions, {})
 
         gated = self.client.post(
-            RULES_URL, dict(body, conditions=_gate()), content_type="application/json"
+            RULES_URL,
+            dict(body, name="Needs help, gated", conditions=_gate()),
+            content_type="application/json",
         )
         self.assertEqual(gated.status_code, 201)
 
-    def test_a_rule_that_could_fire_on_crm_text_alone_is_rejected(self):
+    def test_a_deterministic_rule_still_needs_its_conditions(self):
+        action = self._action()
+        response = self.client.post(
+            RULES_URL,
+            {"action": action.pk, "name": "No predicate at all", "kind": "deterministic"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "validation_error")
+
+    def test_a_conditions_payload_satisfiable_by_crm_text_alone_is_rejected(self):
         action = self._action()
         notes_only = dict(_conditions())
         notes_only["conditions"] = [

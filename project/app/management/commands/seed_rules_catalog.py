@@ -126,13 +126,12 @@ RULES = [
         ),
     },
     {
-        # The conditions are the gate: only a lead who actually signed up is
-        # worth an appointment, and the notes are read only once that holds —
-        # no rule fires on CRM text alone.
+        # No conditions: the predicate stands alone, as in the brief. Adding
+        # conditions here would gate the model behind them, which is how a
+        # rule avoids spending a provider call on every lead.
         "name": "They need help with something — set up an appointment",
         "action": "set_up_appointment",
         "weight": OutreachRule.WEIGHT_HIGH,
-        "conditions": _all_of(_cond("signed_up_date", "exists")),
         "inference": "the hubspot notes say they need help with something",
     },
 ]

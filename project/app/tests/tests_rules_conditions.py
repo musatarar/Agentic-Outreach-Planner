@@ -45,17 +45,21 @@ class ValidPayloadTests(SimpleTestCase):
 
 
 class CorroboratorTests(SimpleTestCase):
-    """A rule must not be satisfiable by CRM text on its own."""
+    """A conditions payload must not be satisfiable by CRM text on its own.
+
+    An inference rule's predicate is judged separately and may stand alone;
+    this is about the structured part.
+    """
 
     def _refused(self, payload):
         with self.assertRaises(ValidationError) as ctx:
             utils.validate_conditions(payload)
         self.assertIn("lead-controlled text alone", str(ctx.exception))
 
-    def test_a_notes_only_rule_is_refused(self):
+    def test_a_notes_only_payload_is_refused(self):
         self._refused(_payload(NOTES))
 
-    def test_an_events_only_rule_is_refused(self):
+    def test_an_events_only_payload_is_refused(self):
         self._refused(_payload(EVENTS))
 
     def test_an_any_of_branch_that_notes_alone_could_satisfy_is_refused(self):
@@ -71,7 +75,7 @@ class CorroboratorTests(SimpleTestCase):
         utils.validate_conditions(_payload(corroborated, corroborated, operator="any_of"))
 
     def test_hubspot_notes_cannot_be_read_as_a_lead_field(self):
-        # Otherwise notes-only rules would launder through a trusted source.
+        # Otherwise a notes-only payload would launder through a trusted source.
         with self.assertRaises(ValidationError):
             utils.validate_conditions(
                 _payload(utils._cond("hubspot_notes", "contains", "budget", source="lead"))

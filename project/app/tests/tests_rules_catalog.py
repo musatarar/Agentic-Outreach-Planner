@@ -36,7 +36,7 @@ def _deterministic_conditions(field="deals_closed", operator=">", threshold=20):
 
 
 def _gate():
-    """The structured gate an inference rule needs before the model is asked."""
+    """The optional structured gate an inference rule can put before the model."""
     return {
         "version": OutreachRule.CONDITIONS_SCHEMA_VERSION,
         "operator": "all_of",
@@ -83,7 +83,7 @@ class OutreachRuleTests(TestCase):
     def _inference_rule(self, **kwargs):
         kwargs.setdefault("name", "Offer help when they ask for it")
         kwargs.setdefault("kind", OutreachRule.KIND_INFERENCE)
-        kwargs.setdefault("conditions", _gate())
+        kwargs.setdefault("conditions", {})
         kwargs.setdefault(
             "inference_prompt", "the hubspot notes show they need help with something"
         )
@@ -214,7 +214,7 @@ class OutreachRuleTests(TestCase):
             blank.full_clean()
         self.assertIn("inference_prompt", ctx.exception.message_dict)
 
-    def test_an_inference_rule_without_its_structured_gate_is_refused(self):
+    def test_an_inference_rule_may_stand_on_its_predicate_alone(self):
         ungated = OutreachRule(
             owner=self.user,
             action=self.action,
@@ -223,11 +223,24 @@ class OutreachRuleTests(TestCase):
             conditions={},
             inference_prompt="the notes say they need help",
         )
-        with self.assertRaises(ValidationError) as ctx:
-            ungated.full_clean()
-        self.assertIn("conditions", ctx.exception.message_dict)
+        ungated.full_clean()
 
-    def test_a_rule_reading_only_the_notes_is_refused(self):
+    def test_conditions_on_an_inference_rule_are_still_validated(self):
+        gated = OutreachRule(
+            owner=self.user,
+            action=self.action,
+            name="gated on nonsense",
+            kind=OutreachRule.KIND_INFERENCE,
+            conditions={"version": 1, "operator": "all_of", "conditions": [{"lol": 1}]},
+            inference_prompt="the notes say they need help",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            gated.full_clean()
+        self.assertIn("conditions", ctx.exception.message_dict)
+        gated.conditions = _gate()
+        gated.full_clean()
+
+    def test_a_deterministic_rule_reading_only_the_notes_is_refused(self):
         notes_only = OutreachRule(
             owner=self.user,
             action=self.action,

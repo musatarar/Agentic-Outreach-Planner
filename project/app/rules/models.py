@@ -75,13 +75,13 @@ class OutreachRule(models.Model):
     """A user-authored rule: when its predicate holds for a lead, propose
     ``action``.
 
-    Every rule carries ``conditions``: a structured, versioned payload
-    (:mod:`project.app.rules.utils`) evaluated in-process. An ``inference``
-    rule adds ``inference_prompt``, a natural-language predicate the LLM seam
-    evaluates against the lead's sanitized, fenced data — and its conditions
-    are the gate that must hold before the model is asked at all, so no rule
-    can fire on CRM text alone and no provider call is spent on a lead the
-    structured part already ruled out.
+    A ``deterministic`` rule is its ``conditions``: a structured, versioned
+    payload (:mod:`project.app.rules.utils`) evaluated in-process. An
+    ``inference`` rule adds ``inference_prompt``, a natural-language predicate
+    the LLM seam evaluates against the lead's sanitized, fenced data, and may
+    stand on that predicate alone. Conditions on an inference rule are
+    optional and act as a gate: the model is asked only once they hold, so a
+    lead the structured part already ruled out costs no provider call.
 
     Rules are not first-match: every one is evaluated, each rule that fires
     adds its ``weight`` to its action's tally, and the heaviest tally is the
@@ -124,8 +124,8 @@ class OutreachRule(models.Model):
     action = models.ForeignKey(ActionType, on_delete=models.RESTRICT, related_name="rules")
     name = models.CharField(max_length=255)  # "Reward power users"
     kind = models.CharField(max_length=16, choices=KIND_CHOICES)
-    # Structured predicate, required on every rule; on an inference rule it
-    # is the gate in front of the model.
+    # Structured predicate. Required on a deterministic rule, since it is the
+    # whole predicate; optional on an inference rule, where it gates the model.
     conditions = models.JSONField(default=dict, blank=True)
     # Inference predicate; "" on deterministic rules.
     inference_prompt = models.TextField(
@@ -176,12 +176,7 @@ class OutreachRule(models.Model):
         if self.action_id is not None and self.action.owner_id != self.owner_id:
             problems["action"] = "A rule can only select one of its owner's own action types."
 
-        if not self.conditions:
-            problems["conditions"] = (
-                "Every rule needs a conditions payload; on an inference rule it is "
-                "the structured gate in front of the model."
-            )
-        else:
+        if self.conditions:
             try:
                 utils.validate_conditions(self.conditions)
             except ValidationError as exc:
@@ -189,6 +184,8 @@ class OutreachRule(models.Model):
 
         prompt = (self.inference_prompt or "").strip()
         if self.kind == self.KIND_DETERMINISTIC:
+            if not self.conditions:
+                problems["conditions"] = "A deterministic rule needs a conditions payload."
             if prompt:
                 problems["inference_prompt"] = (
                     "A deterministic rule must not carry an inference prompt."
