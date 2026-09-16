@@ -5,6 +5,8 @@ from django.db import models
 
 class Lead(models.Model):
     id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
+    # Owning tenant -- opaque id, blank on every row today; nothing filters on it yet.
+    tenant = models.CharField(max_length=64, blank=True, default="", db_index=True)
     agency_name = models.CharField(max_length=255)
     contact_name = models.CharField(max_length=255)
     contact_email = models.EmailField()
