@@ -2,9 +2,18 @@
 
 from django.db import models
 
+from .tenancy import Tenant
+
 
 class Lead(models.Model):
     id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
+    # The workspace that owns this lead. Nullable while deployments backfill
+    # (see the backfill_tenant command); application code always sets it, and a
+    # NULL row matches no tenant filter, so it is invisible to the API.
+    # PROTECT: deleting a workspace that still owns leads is an explicit decision.
+    tenant = models.ForeignKey(
+        Tenant, null=True, blank=True, on_delete=models.PROTECT, related_name="leads"
+    )
     agency_name = models.CharField(max_length=255)
     contact_name = models.CharField(max_length=255)
     contact_email = models.EmailField()
@@ -28,6 +37,14 @@ class Lead(models.Model):
 
 class Event(models.Model):
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="events")
+    # Denormalized from ``lead.tenant`` so an event query can be scoped without
+    # a join (the admin and any future direct event ingestion need it).
+    # INVARIANT, service-level: ``event.tenant == event.lead.tenant``. A CHECK
+    # constraint cannot reference another table, so every writer -- ingest, the
+    # backfill command, the test factories -- maintains it.
+    tenant = models.ForeignKey(
+        Tenant, null=True, blank=True, on_delete=models.PROTECT, related_name="events"
+    )
     type = models.CharField(max_length=32)  # login, quote_created, quote_submitted,
     # deal_closed, call_logged, email_sent,
     # demo_completed, onboarding_call

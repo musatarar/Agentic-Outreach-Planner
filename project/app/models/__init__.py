@@ -6,6 +6,7 @@ from .outreach import (
     DismissedOutreachKey,
     OutreachAction,
 )
+from .tenancy import Tenant, TenantMembership
 
 __all__ = [
     "DismissedOutreachKey",
@@ -13,4 +14,6 @@ __all__ = [
     "Lead",
     "LoginToken",
     "OutreachAction",
+    "Tenant",
+    "TenantMembership",
 ]
