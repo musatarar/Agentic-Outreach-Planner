@@ -19,7 +19,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements-dev.txt
 python scripts/setup_env.py     # writes .env with a generated DJANGO_SECRET_KEY
 python manage.py migrate
-python scripts/populate_demo_data.py
+python scripts/populate_demo_data.py         # seeds demo data (--reset empties first)
 python manage.py runserver      # http://127.0.0.1:8000
 ```
 

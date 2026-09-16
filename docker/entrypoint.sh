@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # Container startup: apply migrations, seed the demo pipeline, then serve.
-# Both steps are idempotent, so restarting the container is safe.
+# Both steps are idempotent, so restarting the container is safe. Never add
+# --reset here: it empties every table, and this runs on every restart.
 set -e
 
 python manage.py migrate --noinput

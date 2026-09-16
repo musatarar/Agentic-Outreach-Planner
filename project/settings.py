@@ -225,6 +225,8 @@ REST_FRAMEWORK = {
         "copy_verify": "120/min",
         # The review inbox list.
         "outreach_list": "120/min",
+        # The rules-catalog CRUD surface.
+        "rules_catalog": "120/min",
     },
     # No list endpoint serializes an unbounded table: pagination is the
     # default, and the review list narrows it further with `?page_size=`.

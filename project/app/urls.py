@@ -1,5 +1,6 @@
 from django.urls import path
 
+from project.app.rules import routes as rules_routes
 from project.app.views.auth import (
     AuthConsumeView,
     AuthLogoutView,
@@ -37,4 +38,6 @@ urlpatterns = [
     path("outreach/<int:pk>/approve/", ReviewApproveView.as_view(), name="outreach-approve"),
     path("outreach/<int:pk>/dismiss/", ReviewDismissView.as_view(), name="outreach-dismiss"),
     path("outreach/<int:pk>/reopen/", ReviewReopenView.as_view(), name="outreach-reopen"),
+    # --- user-defined rules catalog ---
+    *rules_routes.urlpatterns,
 ]

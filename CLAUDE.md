@@ -13,6 +13,8 @@ draft, and approved copy leaves via the reviewer's clipboard — the app sends n
 # setup: venv + `pip install -r requirements-dev.txt`, then
 python scripts/setup_env.py    # .env with a generated key; never overwrites an existing one
 python manage.py migrate && python scripts/populate_demo_data.py && python manage.py runserver
+# populate_demo_data seeds leads/events and the demo user's rules catalog; it is
+# idempotent. `--reset` empties every table first (users and login tokens too).
 
 # tests — Django's unittest runner. There is NO pytest, no conftest. Modules are
 # tests_<subject>.py and test names are behavioral sentences: grep the behavior in English.

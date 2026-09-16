@@ -1,9 +1,11 @@
 from django.contrib import admin
 
 from project.app.models import (
+    ActionType,
     Event,
     Lead,
     OutreachAction,
+    OutreachRule,
 )
 
 
@@ -46,3 +48,17 @@ class OutreachActionAdmin(admin.ModelAdmin):
     )
     list_filter = ("priority", "action_type", "needs_human")
     search_fields = ("lead__id", "lead__agency_name", "reason")
+
+
+@admin.register(ActionType)
+class ActionTypeAdmin(admin.ModelAdmin):
+    list_display = ("key", "label", "owner", "urgency", "enabled", "updated_at")
+    list_filter = ("urgency", "enabled")
+    search_fields = ("key", "label", "owner__username")
+
+
+@admin.register(OutreachRule)
+class OutreachRuleAdmin(admin.ModelAdmin):
+    list_display = ("name", "owner", "kind", "action", "weight", "enabled", "updated_at")
+    list_filter = ("kind", "weight", "enabled")
+    search_fields = ("name", "action__key", "owner__username")
