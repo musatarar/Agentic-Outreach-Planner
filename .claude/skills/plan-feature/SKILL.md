@@ -24,8 +24,11 @@ Write two things down first:
   ("a reviewer in workspace A cannot list workspace B's leads"), not an artefact ("a
   Tenant model exists").
 
-If "done when" cannot be written without guessing, ask the user one question now, before
-investigating. A plan built on a guess is wrong in proportion to its thoroughness.
+Every done-when comes from the ask. If a third check appears that the user never mentioned
+("only pending drafts can be snoozed"), it is an extra wearing a done-when's clothes: move it
+to section 4. If "done when" cannot be written without guessing, ask the user one question
+now, before investigating. A plan built on a guess is wrong in proportion to its
+thoroughness.
 
 ## 2. Find the narrowest seam
 
@@ -39,9 +42,10 @@ Noticed things go to section 4. They never go to section 3, however good they ar
 
 ## 3. The minimal change
 
-For each "done when", the fewest edits that make it true. One line per edit:
-`path` — what changes — which done-when it serves. An edit that serves no done-when is
-not minimal; move it to section 4.
+For each "done when", the fewest edits that make it true. One line per edit, and one
+line means one line: `path` — what changes — which done-when it serves. The reasoning
+behind an edit goes in your chat message, not in the plan. An edit that serves no
+done-when is not minimal; move it to section 4.
 
 Write code in the plan only where the shape *is* the decision (a field type, a constraint
 name, a throttle rate). Full class bodies and migration tables belong in the PR, not the
@@ -73,8 +77,11 @@ a column "for later"; the NOT NULL follow-up; a UI affordance for a backend chan
 renaming while you're there; the refactor the change "reveals"; extra validation; docs
 that never mentioned the changed thing; a nicer error; a second endpoint "for symmetry".
 
-Present these as a list for the user to pick from. Until the user says so, an extra is in
-neither the plan, nor the issue, nor the estimate.
+List the extras a reasonable engineer would actually have added, roughly six at most.
+The user has to read and decide on each one, so an item you would never have built
+("seed a snoozed row in the demo data") is noise, not diligence. Present the list for
+the user to pick from. Until the user says so, an extra is in neither the plan, nor the
+issue, nor the estimate.
 
 ## 5. Human-review flags
 
@@ -109,8 +116,10 @@ Only after confirmation:
 - Reply with the issue URL. Do not also write a plan file into the repo: the issue is the
   record, and a plan document is itself a piece of scope.
 
-The issue should fit on one screen. If it does not, the plan is too big: split it by
-done-when into separate issues and say which one goes first.
+The issue is a checklist for whoever implements it, not an essay for whoever reviews the
+plan. Budget: about forty lines. A plan that runs past that is usually explaining itself;
+cut the explanations first (they were already in chat), and if it is still long, the
+change is too big: split it by done-when into separate issues and say which goes first.
 
 ## Issue template
 
