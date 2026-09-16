@@ -3,9 +3,9 @@
 SDK exceptions are translated into the taxonomy in :mod:`.errors` before they
 leave this module. The async client is built with ``max_retries=0`` because
 ``llm/retry.py`` owns that path's retry budget; the sync client keeps the SDK's
-default retries because nothing else wraps that path (the asymmetry goes away
-when MUS-26 moves the planner async). Both clients get an explicit ``timeout``
-— the SDK default is 600s — and a per-call ``timeout=`` rides on the request.
+default retries because nothing else wraps that path. Both clients get an
+explicit ``timeout`` — the SDK default is 600s — and a per-call ``timeout=``
+rides on the request.
 """
 
 import time
@@ -104,7 +104,7 @@ class ClaudeClient(LLMClient):
         Assistant turns become content blocks; a ``tool_result`` turn is a
         *user* message carrying a ``tool_result`` block. Consecutive tool
         results fold into ONE user message — Anthropic's parallel-tool-use
-        shape; splitting them degrades silently, so a test checks it (MUS-66).
+        shape; splitting them degrades silently, so a test checks it.
         """
         wire: list[dict[str, object]] = []
         for m in messages:
@@ -180,8 +180,7 @@ class ClaudeClient(LLMClient):
 
     async def _acall(self, kwargs) -> LLMResult:
         """Send one already-built request on the loop-bound async client;
-        credential check, latency clock and error mapping live here once
-        (MUS-66)."""
+        credential check, latency clock and error mapping live here once."""
         client = self._async_client.get()
         self._check_credentials(client)
 
@@ -220,7 +219,7 @@ class ClaudeClient(LLMClient):
         """
         # Join text blocks; collect tool_use blocks (skip other types). A
         # tool_use block is either read or raised on — dropping one silently
-        # under-executes the model's calls (a bug until MUS-66). An absent
+        # under-executes the model's calls. An absent
         # ``input`` is a zero-argument call and reads as {}; a non-Mapping one
         # is unreadable.
         parts = []

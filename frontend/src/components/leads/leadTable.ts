@@ -1,5 +1,5 @@
 /**
- * Ordering and queue-flagging for the leads table.
+ * Ordering and review-flagging for the leads table.
  *
  * Kept apart from the JSX because both are decisions rather than presentation,
  * and a decision inside a render function is one nothing can test. See
@@ -61,13 +61,19 @@ export function sortLeads(
 }
 
 /**
- * Lead ids that already have an open item in the triage queue. Composing for
- * these answers 409, so the table flags them rather than spending a call to
- * find out.
+ * Lead ids whose latest recommendation is still awaiting a decision. Composing
+ * for these answers 409, so the table flags them rather than spending a call to
+ * find out. A decided item does not flag its lead: the planner will happily
+ * recommend again once the last one is approved.
  *
- * Typed structurally rather than against `QueueItem` because the id is the only
- * field involved, and a narrower dependency is a cheaper one to satisfy.
+ * Typed structurally rather than against `ReviewItem` because the status and
+ * the id are the only fields involved, and a narrower dependency is a cheaper
+ * one to satisfy.
  */
-export function queuedLeadIds(items: readonly { lead: { id: string } }[]): Set<string> {
-  return new Set(items.map((item) => item.lead.id));
+export function openLeadIds(
+  items: readonly { status: string; lead: { id: string } }[],
+): Set<string> {
+  return new Set(
+    items.filter((item) => item.status === 'pending').map((item) => item.lead.id),
+  );
 }

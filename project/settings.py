@@ -18,19 +18,21 @@ if _env_file.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-# LLM provider/model/key selection lives in the database (LLMConfiguration),
-# managed via /api/llm/*. These env vars are the fallback when no key is
-# stored (see project/app/services/llm/config.py):
+# LLM provider/model/key selection is environment-only and is read in
+# project/app/services/llm/config.py, not here -- nothing under services/llm/
+# may read Django settings. LLM_PROVIDER picks the adapter (default groq),
+# LLM_MODEL optionally overrides its default model, and the key comes from the
+# provider's own variable:
 #   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, aliased in config.py)
 #   chatgpt  -> OPENAI_API_KEY
 #   deepseek -> DEEPSEEK_API_KEY
 #   groq     -> GROQ_API_KEY
 
-# Grounding verifier strictness for generated outreach copy (MUS-22):
+# Grounding verifier strictness for generated outreach copy:
 #   off | standard (default) | strict. See project/app/services/verify.py.
 COPY_VERIFY_LEVEL = os.environ.get("COPY_VERIFY_LEVEL", "standard")
 
-# --- Planner concurrency, retries and timeouts (MUS-26) -----------------------
+# --- Planner concurrency, retries and timeouts --------------------------------
 # Read here and handed to services/llm/runtime.py as frozen dataclasses --
 # nothing under services/llm/ reads Django settings, so those modules stay
 # importable without Django configured. The retry defaults are deliberately
@@ -74,40 +76,15 @@ OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
 OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
 OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
 
-# --- Agentic copy step (MUS-29) ------------------------------------------------
-# Gates the tool-calling agent path in plan_outreach(); off means the
-# single-shot copy call runs. The three budgets bound one lead's loop:
-# provider calls, tool executions, wall-clock seconds.
-OUTREACH_AGENT_ENABLED = (os.environ.get("OUTREACH_AGENT_ENABLED") or "").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-OUTREACH_AGENT_MAX_STEPS = _env_int("OUTREACH_AGENT_MAX_STEPS", 6)
-OUTREACH_AGENT_MAX_TOOL_CALLS = _env_int("OUTREACH_AGENT_MAX_TOOL_CALLS", 8)
-OUTREACH_AGENT_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_AGENT_PER_LEAD_TIMEOUT_S", 300.0)
-
-# --- Provider call content capture (MUS-72) ------------------------------------
-# Off means ProviderTrace rows stay skeletons. On, each row also stores the bytes
-# actually sent and the answer returned -- lead PII plus third-party CRM text at
-# rest, so it is an operator decision, never a default.
-OUTREACH_TRACE_CONTENT_ENABLED = (
-    os.environ.get("OUTREACH_TRACE_CONTENT_ENABLED") or ""
-).strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # The key formerly hardcoded here is committed to git and must never be reused.
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     raise ImproperlyConfigured(
-        "DJANGO_SECRET_KEY is not set. Copy .env.example to .env (it ships a "
-        "freshly generated key for local/demo use) or set your own via the "
-        "environment for production."
+        "DJANGO_SECRET_KEY is not set. Run `python scripts/setup_env.py` to "
+        "write .env with a freshly generated key, or set the variable in the "
+        "environment yourself."
     )
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -180,7 +157,7 @@ DATABASES = {
 
 
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
+# https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -199,7 +176,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 
 # Internationalization
-# https://docs.djangoproject.com/en/5.2/topics/i18n/
+# https://docs.djangoproject.com/en/4.2/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
 
@@ -211,26 +188,26 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
+# https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = "static/"
 
 # Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+# https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-# --- Magic-link auth (MUS-37) -------------------------------------------------
+# --- Magic-link auth ----------------------------------------------------------
 LOGIN_ALLOWED_EMAILS = {
     e.strip().lower() for e in os.environ.get("LOGIN_ALLOWED_EMAILS", "").split(",") if e.strip()
 }
 LOGIN_LINK_DELIVERY = os.environ.get("LOGIN_LINK_DELIVERY", "console")  # console | email
-LOGIN_TOKEN_TTL_SECONDS = int(os.environ.get("LOGIN_TOKEN_TTL_SECONDS", "900"))
+LOGIN_TOKEN_TTL_SECONDS = _env_int("LOGIN_TOKEN_TTL_SECONDS", 900)
 LOGIN_LINK_BASE_URL = os.environ.get("LOGIN_LINK_BASE_URL", "http://127.0.0.1:8000")
 LOGIN_RATE_LIMIT_EMAIL = os.environ.get("LOGIN_RATE_LIMIT_EMAIL", "5/hour")
 LOGIN_RATE_LIMIT_IP = os.environ.get("LOGIN_RATE_LIMIT_IP", "20/hour")
-LOGIN_RESEND_COOLDOWN_SECONDS = int(os.environ.get("LOGIN_RESEND_COOLDOWN_SECONDS", "30"))
+LOGIN_RESEND_COOLDOWN_SECONDS = _env_int("LOGIN_RESEND_COOLDOWN_SECONDS", 30)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -244,8 +221,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth_request_ip": LOGIN_RATE_LIMIT_IP,
         "auth_consume_ip": "60/hour",
-        "queue_verify": "120/min",
+        # The live grounding check, hit once per debounced keystroke.
+        "copy_verify": "120/min",
+        # The review inbox list.
+        "outreach_list": "120/min",
     },
+    # No list endpoint serializes an unbounded table: pagination is the
+    # default, and the review list narrows it further with `?page_size=`.
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 25,
 }
 
 # Explicit `project.app` handler: Django's default only attaches one to the
@@ -261,10 +245,3 @@ LOGGING = {
         },
     },
 }
-
-# --- Triage queue (MUS-39) ----------------------------------------------------
-TRIAGE_UNDO_WINDOW_SECONDS = int(os.environ.get("TRIAGE_UNDO_WINDOW_SECONDS", "300"))
-TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS = int(
-    os.environ.get("TRIAGE_SNOOZE_ON_ACTIVITY_BACKSTOP_DAYS", "14")
-)
-TRIAGE_TIMEZONE = os.environ.get("TRIAGE_TIMEZONE", "UTC")

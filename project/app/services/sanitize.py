@@ -1,4 +1,4 @@
-"""Isolation + neutralization of untrusted third-party CRM free-text (MUS-23).
+"""Isolation + neutralization of untrusted third-party CRM free-text.
 
 Defense against OWASP LLM01 (indirect prompt injection): length cap,
 neutralization of instruction-shaped patterns, and delimiter stripping, then

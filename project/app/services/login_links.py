@@ -1,4 +1,4 @@
-"""Issue and consume magic-link login tokens (MUS-37).
+"""Issue and consume magic-link login tokens.
 
 Only ``sha256(token)`` is stored — a database read must not hand out a working
 credential (plain SHA-256 is fine: no dictionary attacks 256 random bits).
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 #: Bytes of entropy handed to ``secrets.token_urlsafe``. 32 bytes = 256 bits.
 TOKEN_BYTES = 32
 
-#: Path of the React route that redeems a token (see MUS-38's ConsumePage).
+#: Path of the React route that redeems a token (see ConsumePage).
 CONSUME_PATH = "/auth/consume"
 
 DELIVERY_CONSOLE = "console"

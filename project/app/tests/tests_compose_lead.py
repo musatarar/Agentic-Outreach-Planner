@@ -1,4 +1,4 @@
-"""Composing outreach for ONE client, on demand (MUS-68).
+"""Composing outreach for ONE client, on demand.
 
 Pins that the scope is real (exactly one lead reaches the provider, asserted on the
 stub's call count) and that the unscoped whole-book run is unchanged. The provider seam

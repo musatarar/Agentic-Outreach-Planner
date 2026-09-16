@@ -1,4 +1,4 @@
-"""Retries, and what the review queue says when they run out (MUS-26c).
+"""Retries, and what the review queue says when they run out.
 
 Every test drives the real `agenerate_copy`; the stub is a fake `LLMClient` one
 layer below, since patching `agenerate_copy` would skip the retry loop itself.
@@ -140,7 +140,7 @@ class RateLimitIsRetriedTests(TestCase):
     """The ticket's acceptance criterion, in one test."""
 
     def test_rate_limit_is_retried_not_escalated(self):
-        """MUS-26's acceptance criterion: rate limits are retried, not reported
+        """The acceptance criterion: rate limits are retried, not reported
         as needing human review. Two 429s then a success, attempt count pinned."""
         _lead()
         client = _ScriptedClient(rate_limit(), rate_limit(), then=GOOD_COPY)

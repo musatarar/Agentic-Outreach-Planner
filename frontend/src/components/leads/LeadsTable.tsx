@@ -1,4 +1,4 @@
-import { Badge } from '../ui';
+import { Badge, Button } from '../ui';
 import type { LeadRecord } from '../../api/types';
 import { formatDateOnly, formatStage, formatUsdCompact } from '../../util/labels';
 import type { SortDirection, SortKey, SortState } from './leadTable';
@@ -28,16 +28,19 @@ interface Props {
   leads: LeadRecord[];
   sort: SortState;
   onSort: (key: SortKey) => void;
-  /** Lead ids with an open item in the triage queue — see `queuedLeadIds`. */
-  queued: Set<string>;
+  /** Lead ids with an item still awaiting review — see `openLeadIds`. */
+  open: Set<string>;
+  /** The lead a draft is being generated for, if any. */
+  composing: string | null;
+  onCompose: (leadId: string) => void;
 }
 
 /**
  * The book, as a table. Presentational only: ordering is decided by
- * `sortLeads` and the queue flags arrive already resolved, so this file holds
+ * `sortLeads` and the review flags arrive already resolved, so this file holds
  * no logic worth testing and the logic that matters is tested without a DOM.
  */
-export function LeadsTable({ leads, sort, onSort, queued }: Props) {
+export function LeadsTable({ leads, sort, onSort, open, composing, onCompose }: Props) {
   return (
     <div className="leads-table-wrap">
       <table className="leads-table">
@@ -71,6 +74,7 @@ export function LeadsTable({ leads, sort, onSort, queued }: Props) {
               );
             })}
             <th scope="col">Status</th>
+            <th scope="col">Draft</th>
           </tr>
         </thead>
         <tbody>
@@ -92,11 +96,21 @@ export function LeadsTable({ leads, sort, onSort, queued }: Props) {
               </td>
               <td className="leads-table__num">{formatDateOnly(lead.last_contacted_date)}</td>
               <td>
-                {queued.has(lead.id) ? (
-                  <Badge tone="pending">In queue</Badge>
+                {open.has(lead.id) ? (
+                  <Badge tone="pending">Awaiting review</Badge>
                 ) : (
                   <span className="leads-table__idle">—</span>
                 )}
+              </td>
+              <td>
+                <Button
+                  size="sm"
+                  loading={composing === lead.id}
+                  disabled={composing !== null || open.has(lead.id)}
+                  onClick={() => onCompose(lead.id)}
+                >
+                  Generate
+                </Button>
               </td>
             </tr>
           ))}

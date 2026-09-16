@@ -1,4 +1,4 @@
-"""Unit tests for the input-isolation layer and shape validation (MUS-23).
+"""Unit tests for the input-isolation layer and shape validation.
 End-to-end adversarial coverage lives in ``tests_redteam.py``."""
 
 import unittest

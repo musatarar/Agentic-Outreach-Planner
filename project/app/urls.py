@@ -7,60 +7,34 @@ from project.app.views.auth import (
     AuthRequestLinkView,
 )
 from project.app.views.leads import LeadComposeView, LeadListView
-from project.app.views.llm import LLMCatalogView, LLMConfigTestView, LLMConfigView
-from project.app.views.outreach import (
-    OutreachListView,
-    OutreachReportView,
-    OutreachRunView,
-    ReviewDecisionListCreateView,
-    ReviewQueueView,
+from project.app.views.outreach import OutreachRunView
+from project.app.views.review import (
+    ReviewApproveView,
+    ReviewDismissView,
+    ReviewEditView,
+    ReviewListView,
+    ReviewReopenView,
+    ReviewVerifyView,
 )
-from project.app.views.queue import (
-    QueueApproveView,
-    QueueDetailView,
-    QueueDismissView,
-    QueueDoneView,
-    QueueEditView,
-    QueueListView,
-    QueueSnoozeView,
-    QueueUndoView,
-    QueueVerifyView,
-)
-from project.app.views.trace import OutreachTraceView
 
 # Included at the `api/` prefix by project/urls.py.
 urlpatterns = [
-    # --- auth (MUS-37) ---
+    # --- auth ---
     path("auth/request-link/", AuthRequestLinkView.as_view(), name="auth-request-link"),
     path("auth/consume/", AuthConsumeView.as_view(), name="auth-consume"),
     path("auth/logout/", AuthLogoutView.as_view(), name="auth-logout"),
     path("auth/me/", AuthMeView.as_view(), name="auth-me"),
-    # --- triage queue (MUS-39) ---
-    # `queue/done/` must precede `queue/<int:pk>/`.
-    path("queue/", QueueListView.as_view(), name="queue-list"),
-    path("queue/done/", QueueDoneView.as_view(), name="queue-done"),
-    path("queue/<int:pk>/", QueueDetailView.as_view(), name="queue-detail"),
-    path("queue/<int:pk>/edit/", QueueEditView.as_view(), name="queue-edit"),
-    path("queue/<int:pk>/verify/", QueueVerifyView.as_view(), name="queue-verify"),
-    path("queue/<int:pk>/approve/", QueueApproveView.as_view(), name="queue-approve"),
-    path("queue/<int:pk>/snooze/", QueueSnoozeView.as_view(), name="queue-snooze"),
-    path("queue/<int:pk>/dismiss/", QueueDismissView.as_view(), name="queue-dismiss"),
-    path("queue/<int:pk>/undo/", QueueUndoView.as_view(), name="queue-undo"),
-    # --- existing ---
-    path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
-    path("outreach/<int:pk>/trace/", OutreachTraceView.as_view(), name="outreach-trace"),
-    path("outreach/", OutreachListView.as_view(), name="outreach-list"),
+    # --- leads ---
     path("leads/", LeadListView.as_view(), name="lead-list"),
-    # --- per-client composition (MUS-68) ---
+    # --- per-client composition ---
     path("leads/<str:lead_id>/compose/", LeadComposeView.as_view(), name="lead-compose"),
-    path("reports/", OutreachReportView.as_view(), name="outreach-reports"),
-    path("review-queue/", ReviewQueueView.as_view(), name="review-queue"),
-    path(
-        "review-decisions/",
-        ReviewDecisionListCreateView.as_view(),
-        name="review-decisions",
-    ),
-    path("llm/catalog/", LLMCatalogView.as_view(), name="llm-catalog"),
-    path("llm/config/", LLMConfigView.as_view(), name="llm-config"),
-    path("llm/config/test/", LLMConfigTestView.as_view(), name="llm-config-test"),
+    # --- outreach: plan, then review ---
+    # `outreach/run/` must precede `outreach/<int:pk>/...`.
+    path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
+    path("outreach/", ReviewListView.as_view(), name="outreach-list"),
+    path("outreach/<int:pk>/edit/", ReviewEditView.as_view(), name="outreach-edit"),
+    path("outreach/<int:pk>/verify/", ReviewVerifyView.as_view(), name="outreach-verify"),
+    path("outreach/<int:pk>/approve/", ReviewApproveView.as_view(), name="outreach-approve"),
+    path("outreach/<int:pk>/dismiss/", ReviewDismissView.as_view(), name="outreach-dismiss"),
+    path("outreach/<int:pk>/reopen/", ReviewReopenView.as_view(), name="outreach-reopen"),
 ]

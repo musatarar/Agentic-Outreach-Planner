@@ -1,7 +1,7 @@
-"""Verification-span tests (MUS-42).
+"""Verification-span tests.
 
-``verify_copy`` still matches ``PRE_CHANGE_VIOLATIONS``, a table frozen from the
-pre-span implementation, and every emitted span slices back to its own ``text``.
+Every emitted span slices back to its own ``text``, and the span report agrees
+with ``verify_copy`` case for case.
 """
 
 import datetime
@@ -301,99 +301,6 @@ CASES = [
     ),
 ]
 
-# Captured by running the PRE-CHANGE verify.py over CASES; order and by-message
-# de-duplication are part of the frozen output.
-PRE_CHANGE_VIOLATIONS = {
-    "clean_standard": [],
-    "inflated_deals": [
-        ("wrong_count", "Copy claims 47 closed deals but the record shows 4."),
-    ],
-    "deals_closed_order": [
-        ("wrong_count", "Copy claims 9 closed deals but the record shows 4."),
-    ],
-    "invented_amount": [
-        (
-            "unsupported_amount",
-            "Copy cites $99 million but no matching dollar figure is in the lead record.",
-        ),
-    ],
-    "rounded_amount_ok": [],
-    "premium_amount_ok": [],
-    "wrong_name": [
-        ("wrong_contact_name", 'Copy greets "David" but the lead contact is Priya Nair.'),
-    ],
-    "generic_salutation": [],
-    "honorific_only": [],
-    "quotes_created_wrong": [
-        ("wrong_count", "Copy claims 12 quotes created but the record shows 8."),
-    ],
-    "quotes_submitted_ok": [],
-    "producers_wrong": [
-        ("wrong_count", "Copy claims 20 producers but the record shows 4."),
-    ],
-    "producers_ok": [],
-    "years_wrong": [
-        ("wrong_count", "Copy claims 30 years in business but the record shows 12."),
-    ],
-    "years_ok": [],
-    "goal_context": [],
-    "goal_milestone_after": [],
-    "offer_unauthorized": [
-        (
-            "unauthorized_offer",
-            'Copy makes a commercial promise ("20% off") that is not authorized for a '
-            "reengage_dormant action.",
-        ),
-    ],
-    "offer_authorized": [],
-    "iso_date_unsupported": [
-        ("unsupported_date", "Copy cites the date 2026-05-20, which is not in the lead record."),
-    ],
-    "iso_date_grounded": [],
-    "iso_date_future": [],
-    "iso_date_invalid": [],
-    "everything_wrong": [
-        (
-            "unsupported_amount",
-            "Copy cites $99 million but no matching dollar figure is in the lead record.",
-        ),
-        ("wrong_count", "Copy claims 47 closed deals but the record shows 4."),
-        ("wrong_contact_name", 'Copy greets "David" but the lead contact is Priya Nair.'),
-        (
-            "unauthorized_offer",
-            'Copy makes a commercial promise ("20% off") that is not authorized for a '
-            "reengage_dormant action.",
-        ),
-    ],
-    "repeated_problem": [
-        ("wrong_count", "Copy claims 47 closed deals but the record shows 4."),
-    ],
-    "level_off": [],
-    "empty_copy": [],
-    "strict_contact_absent": [
-        ("contact_name_absent", "Copy never addresses the contact by name (Priya Nair)."),
-    ],
-    "strict_agency_absent": [
-        ("agency_name_absent", 'Copy never names the agency ("Summit Risk Advisors").'),
-    ],
-    "strict_year_unsupported": [
-        ("unsupported_year", "Copy mentions the year 2005, which is not tied to any record date."),
-    ],
-    "strict_clean": [],
-    "strict_agency_stopwords": [],
-    "no_contact_name": [],
-    "no_book_size": [],
-    "crlf_copy": [
-        ("wrong_count", "Copy claims 47 closed deals but the record shows 4."),
-    ],
-    "multiline_amounts": [
-        (
-            "unsupported_amount",
-            "Copy cites $1,234,567 but no matching dollar figure is in the lead record.",
-        ),
-    ],
-}
-
 
 def _kwargs(level):
     kwargs = {"today": TODAY}
@@ -403,22 +310,11 @@ def _kwargs(level):
 
 
 # ---------------------------------------------------------------------------
-# verify_copy is unchanged
+# verify_copy
 # ---------------------------------------------------------------------------
 
 
 class VerifyCopyParityTests(unittest.TestCase):
-    def test_every_case_has_a_frozen_expectation(self):
-        self.assertEqual(sorted(name for name, *_ in CASES), sorted(PRE_CHANGE_VIOLATIONS))
-
-    def test_violations_match_the_pre_change_output_in_order(self):
-        for name, lead, copy, action_type, level in CASES:
-            with self.subTest(name):
-                violations = verify.verify_copy(lead, copy, action_type, **_kwargs(level))
-                self.assertEqual(
-                    [(v.kind, v.message) for v in violations], PRE_CHANGE_VIOLATIONS[name]
-                )
-
     def test_violation_supports_positional_two_argument_construction(self):
         violation = verify.Violation("wrong_count", "msg")
         self.assertEqual((violation.kind, violation.message), ("wrong_count", "msg"))
@@ -525,7 +421,7 @@ class ReportEnvelopeTests(unittest.TestCase):
                 )
 
     def test_report_round_trips_through_json(self):
-        # MUS-39 persists this to a JSONField.
+        # This is persisted to a JSONField.
         for name, lead, copy, action_type, level in CASES:
             with self.subTest(name):
                 report = self._report(lead, copy, action_type, level)

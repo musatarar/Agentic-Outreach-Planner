@@ -45,7 +45,8 @@ export default defineConfig({
       // Dev-only. Under `npm run dev` the HTML shell is served by Vite, so
       // Django's @ensure_csrf_cookie view never runs and no csrftoken cookie
       // exists for the first POST. api/client.ts GETs this path to mint one.
-      '/__csrf': { target: DJANGO, rewrite: () => '/' },
+      // It points at a shell rather than at `/`, which only redirects.
+      '/__csrf': { target: DJANGO, rewrite: () => '/leads/' },
     },
   },
 });

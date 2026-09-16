@@ -96,7 +96,7 @@ class LLMResult:
     excluded — and defaults to ``None``, never ``0.0``. Cache fields follow
     each provider's own accounting: Anthropic counts cache reads/writes
     *alongside* ``input_tokens``, OpenAI-compatible providers *within*
-    ``prompt_tokens``. ``tool_calls`` (MUS-29) is appended last with a default
+    ``prompt_tokens``. ``tool_calls`` is appended last with a default
     so existing construction stays valid.
     """
 
@@ -160,7 +160,7 @@ class LLMClient(ABC):
         max_tokens: int | None = None,
         timeout: float | None = None,
     ) -> LLMResult:
-        """Async multi-turn chat with optional tool offers (MUS-29).
+        """Async multi-turn chat with optional tool offers.
 
         The agent loop's seam; the result may carry :attr:`LLMResult.tool_calls`
         instead of — or alongside — text. Async-only by design: the sync Claude

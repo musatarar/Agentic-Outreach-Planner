@@ -1,5 +1,5 @@
-"""Deployment-shaped settings: the host and CSRF-origin allowlists read from
-the environment (see `.env.example`)."""
+"""The host and CSRF-origin allowlists, read from the environment (see
+`.env.example`)."""
 
 import os
 from unittest import mock
@@ -9,7 +9,7 @@ from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from project import settings as project_settings
 
-TUNNEL_ORIGIN = "https://demo.example.test"
+CROSS_SCHEME_ORIGIN = "https://demo.example.test"
 
 
 class EnvListTests(SimpleTestCase):
@@ -31,9 +31,9 @@ class EnvListTests(SimpleTestCase):
 
 
 class CsrfTrustedOriginTests(TestCase):
-    """TLS terminating in front of the app (tunnel, reverse proxy) makes the
-    browser send an https `Origin` while Django sees http: every authenticated
-    POST is a 403 until that origin is trusted."""
+    """TLS terminating in front of the app makes the browser send an https
+    `Origin` while Django sees http: every authenticated POST is a 403 until
+    that origin is trusted."""
 
     @classmethod
     def setUpTestData(cls):
@@ -42,11 +42,11 @@ class CsrfTrustedOriginTests(TestCase):
     def _post_logout(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.user)
-        client.get("/")  # mints the csrftoken cookie
+        client.get("/leads/")  # mints the csrftoken cookie
         token = client.cookies["csrftoken"].value
         return client.post(
             "/api/auth/logout/",
-            HTTP_ORIGIN=TUNNEL_ORIGIN,
+            HTTP_ORIGIN=CROSS_SCHEME_ORIGIN,
             HTTP_X_CSRFTOKEN=token,
         )
 
@@ -55,7 +55,7 @@ class CsrfTrustedOriginTests(TestCase):
             self.assertEqual(self._post_logout().status_code, 403)
 
     def test_trusting_the_origin_lets_the_post_through(self):
-        with override_settings(CSRF_TRUSTED_ORIGINS=[TUNNEL_ORIGIN]):
+        with override_settings(CSRF_TRUSTED_ORIGINS=[CROSS_SCHEME_ORIGIN]):
             self.assertEqual(self._post_logout().status_code, 204)
 
     def test_the_setting_is_read_from_the_environment(self):

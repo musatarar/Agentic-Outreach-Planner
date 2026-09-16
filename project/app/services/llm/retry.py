@@ -1,4 +1,4 @@
-"""Shared retry policy for provider calls (MUS-46).
+"""Shared retry policy for provider calls.
 
 One async-only helper decides how a failed LLM call is retried, whichever
 provider is configured. Only errors the :mod:`.errors` taxonomy marks retryable

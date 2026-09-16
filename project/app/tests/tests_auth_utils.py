@@ -1,4 +1,4 @@
-"""Shared test base class for authenticated API tests (MUS-37).
+"""Shared test base class for authenticated API tests.
 
 The name and API of :class:`AuthenticatedAPITestCase` are frozen by contract.
 """

@@ -62,6 +62,6 @@ test('a hostile value already in storage is refused on read', () => {
 });
 
 test('no token or credential is written to storage', () => {
-  rememberDestination('/done');
+  rememberDestination('/inbox');
   assert.deepEqual([...store.keys()], ['auth:destination']);
 });

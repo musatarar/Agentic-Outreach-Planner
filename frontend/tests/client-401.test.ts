@@ -12,7 +12,7 @@
  * headers, JSON body — is produced by an actual HTTP exchange.
  *
  * The one thing stubbed is *URL base resolution*: `client.ts` calls
- * `fetch('/api/queue/')` because in a browser the origin is implied, and Node's
+ * `fetch('/api/outreach/')` because in a browser the origin is implied, and Node's
  * fetch rejects relative URLs. `withServer` therefore resolves the path against
  * the test server's origin and delegates to the real fetch. That is the
  * browser's job, not the client's, and it leaves the response untouched.
@@ -86,7 +86,7 @@ test('a real 401 from a non-auth endpoint calls the unauthorized handler', async
       },
     },
     async () => {
-      const error = await getJson('/api/queue/').then(
+      const error = await getJson('/api/outreach/').then(
         () => null,
         (caught: unknown) => caught,
       );
@@ -132,7 +132,7 @@ test('a real 403 does NOT call the handler', async () => {
   await withServer(
     { status: 403, body: { code: 'csrf_failed', detail: 'CSRF Failed' } },
     async () => {
-      const error = await getJson('/api/queue/').then(
+      const error = await getJson('/api/outreach/').then(
         () => null,
         (caught: unknown) => caught,
       );
@@ -153,7 +153,7 @@ test('a real 401 on a POST calls the handler too', async () => {
   await withServer(
     { status: 401, body: { code: 'not_authenticated', detail: 'nope' } },
     async () => {
-      await postJson('/api/queue/1/approve/', {}).catch(() => undefined);
+      await postJson('/api/outreach/1/approve/', {}).catch(() => undefined);
     },
   );
 

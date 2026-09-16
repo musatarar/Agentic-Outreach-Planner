@@ -62,7 +62,7 @@ def _verify(lead, copy, action_type=actions.NUDGE_USAGE, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# The four MUS-22 acceptance cases (all fire at the default `standard` level)
+# The four acceptance cases (all fire at the default `standard` level)
 # ---------------------------------------------------------------------------
 
 

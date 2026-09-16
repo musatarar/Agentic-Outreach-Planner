@@ -1,10 +1,10 @@
 /**
- * Ordering and queue-flagging for the leads table.
+ * Ordering and review-flagging for the leads table.
  *
  * These are pure functions on purpose. The table's two jobs before you have
  * selected anything — put the leads worth chasing at the top, and mark the ones
- * already sitting in the triage queue — are both decisions, and a decision
- * buried in JSX is a decision nobody can test.
+ * already awaiting review — are both decisions, and a decision buried in JSX is
+ * a decision nobody can test.
  *
  * The failure modes here are quiet rather than loud. A book-size column sorted
  * as text puts $900k above $2M and still looks like a sorted column. A sort
@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { DEFAULT_SORT, queuedLeadIds, sortLeads } from '../src/components/leads/leadTable.ts';
+import { DEFAULT_SORT, openLeadIds, sortLeads } from '../src/components/leads/leadTable.ts';
 import type { LeadRecord } from '../src/api/types.ts';
 
 /** A lead with every field defaulted, so each test states only what it varies. */
@@ -131,15 +131,27 @@ test('the default sort is stalest-contact-first', () => {
   assert.deepEqual(DEFAULT_SORT, { key: 'last_contacted_date', direction: 'asc' });
 });
 
-test('queued lead ids are collected from the queue items', () => {
-  const queued = queuedLeadIds([
-    { lead: { id: 'lead_002' } },
-    { lead: { id: 'lead_005' } },
+test('lead ids awaiting review are collected from the inbox items', () => {
+  const open = openLeadIds([
+    { status: 'pending', lead: { id: 'lead_002' } },
+    { status: 'pending', lead: { id: 'lead_005' } },
   ]);
 
-  assert.deepEqual([...queued].sort(), ['lead_002', 'lead_005']);
+  assert.deepEqual([...open].sort(), ['lead_002', 'lead_005']);
 });
 
-test('an empty queue flags nothing', () => {
-  assert.equal(queuedLeadIds([]).size, 0);
+// A decided lead is generable again, so flagging it would disable the one
+// button that does anything for it.
+test('a decided item does not flag its lead', () => {
+  const open = openLeadIds([
+    { status: 'approved', lead: { id: 'lead_002' } },
+    { status: 'dismissed', lead: { id: 'lead_003' } },
+    { status: 'pending', lead: { id: 'lead_004' } },
+  ]);
+
+  assert.deepEqual([...open], ['lead_004']);
+});
+
+test('an empty inbox flags nothing', () => {
+  assert.equal(openLeadIds([]).size, 0);
 });
