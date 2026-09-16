@@ -23,6 +23,7 @@ from project.app.services.llm import (
 )
 from project.app.services.llm.runtime import RetryPolicy, Timeouts
 from project.app.services.outreach import plan_outreach
+from project.app.tests.tenancy_utils import default_tenant
 
 GOOD_COPY = (
     "Subject: A quick idea for your team\n\n"
@@ -97,6 +98,7 @@ def _lead(lead_id="lead_001", **overrides):
     # demo_completed with no signup date -> complete_onboarding, the one
     # classification that is date-independent.
     defaults = dict(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name="Summit Risk Advisors",
         contact_name="Priya Nair",
@@ -115,6 +117,7 @@ def _lead(lead_id="lead_001", **overrides):
 
 def _unmatched_lead(lead_id="lead_unknown"):
     return Lead.objects.create(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name="Nowhere Insurance",
         contact_name="Pat Quinn",
@@ -146,7 +149,7 @@ class RateLimitIsRetriedTests(TestCase):
         client = _ScriptedClient(rate_limit(), rate_limit(), then=GOOD_COPY)
 
         with _with_client(client):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 1)
         action = OutreachAction.objects.get()
@@ -162,7 +165,7 @@ class RateLimitIsRetriedTests(TestCase):
         )
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertFalse(OutreachAction.objects.get().needs_human)
         self.assertEqual(client.attempts, 2)
@@ -174,7 +177,7 @@ class RateLimitIsRetriedTests(TestCase):
         client = _ScriptedClient(rate_limit(retry_after=300.0))
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertFalse(OutreachAction.objects.get().needs_human)
         self.assertEqual(client.attempts, 2)
@@ -190,7 +193,7 @@ class ExhaustedRetriesTests(TestCase):
         client = _ScriptedClient(rate_limit(), rate_limit(), then=rate_limit())
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         action = OutreachAction.objects.get()
         self.assertEqual(client.attempts, 3)
@@ -219,7 +222,7 @@ class ExhaustedRetriesTests(TestCase):
         client = _ScriptedClient(rate_limit(), then=rate_limit())
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         further = OutreachAction.objects.get().further_action
         self.assertIn("not a problem with this lead", further)
@@ -235,7 +238,7 @@ class ExhaustedRetriesTests(TestCase):
         client = _ScriptedClient(*[rate_limit()] * 3, then=rate_limit())
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(client.attempts, 4)
         self.assertIn(
@@ -263,7 +266,7 @@ class NonRetryableFailureTests(TestCase):
         )
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         # Exactly one attempt: retrying a bad key earns a longer lockout.
         self.assertEqual(client.attempts, 1)
@@ -280,7 +283,7 @@ class NonRetryableFailureTests(TestCase):
         )
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(client.attempts, 1)
         self.assertIn(
@@ -308,7 +311,7 @@ class PerLeadBudgetTests(TestCase):
         client = _HangingClient()
 
         with _with_client(client):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         # The run finished at all: without the outer deadline it would hang.
         self.assertEqual(len(planned), 1)
@@ -346,7 +349,7 @@ class PerLeadBudgetTests(TestCase):
         Lead.objects.filter(id="lead_fine").update(agency_name="Cascade Underwriters")
 
         with _with_client(_Router()):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 2)
         self.assertNotEqual(OutreachAction.objects.get(lead_id="lead_fine").suggested_copy, "")
@@ -362,7 +365,7 @@ class MessagesStayDistinctTests(TestCase):
         the failure messages -- it is the one describing a real decision."""
         lead = _unmatched_lead()
 
-        planned = plan_outreach()
+        planned = plan_outreach(default_tenant())
 
         self.assertEqual(
             planned[0].further_action,
@@ -379,7 +382,7 @@ class MessagesStayDistinctTests(TestCase):
         client = _ScriptedClient(*[rate_limit()] * 3, then=rate_limit())
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         throttled = OutreachAction.objects.get(lead_id="lead_throttled").further_action
         unmatched = OutreachAction.objects.get(lead_id="lead_nothing_matched").further_action
@@ -401,7 +404,7 @@ class MessagesStayDistinctTests(TestCase):
             "project.app.services.outreach._build_copy_prompt",
             side_effect=ValueError("unrenderable lead"),
         ):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(
             OutreachAction.objects.get().further_action,
@@ -526,7 +529,7 @@ class ReRunActuallyWorksTests(TestCase):
         throttled = _ScriptedClient(*[rate_limit()] * 3, then=rate_limit())
 
         with _with_client(throttled):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         failed = OutreachAction.objects.get()
         self.assertTrue(failed.needs_human)
@@ -536,7 +539,7 @@ class ReRunActuallyWorksTests(TestCase):
         # Now do exactly what the message says, and nothing else.
         healthy = _ScriptedClient()
         with _with_client(healthy):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 1)
         self.assertEqual(planned[0].suggested_copy, GOOD_COPY)
@@ -546,9 +549,9 @@ class ReRunActuallyWorksTests(TestCase):
         # Otherwise the queue shows the real draft and the stale failure side by side.
         _lead()
         with _with_client(_ScriptedClient(*[rate_limit()] * 3, then=rate_limit())):
-            plan_outreach()
+            plan_outreach(default_tenant())
         with _with_client(_ScriptedClient()):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(OutreachAction.objects.count(), 1)
         self.assertEqual(OutreachAction.objects.get().suggested_copy, GOOD_COPY)
@@ -558,8 +561,8 @@ class ReRunActuallyWorksTests(TestCase):
         "no copy because we failed" from "no copy was ever to be written"."""
         _unmatched_lead()
 
-        first = plan_outreach()
-        second = plan_outreach()
+        first = plan_outreach(default_tenant())
+        second = plan_outreach(default_tenant())
 
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
@@ -570,14 +573,14 @@ class ReRunActuallyWorksTests(TestCase):
         # is not a "failed generation" and must go on holding the slot.
         _lead()
         with _with_client(_ScriptedClient(then="Subject: too short\n\nHi.")):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         flagged = OutreachAction.objects.get()
         self.assertTrue(flagged.needs_human)
         self.assertNotEqual(flagged.suggested_copy, "")
 
         with _with_client(_ScriptedClient()):
-            self.assertEqual(plan_outreach(), [])
+            self.assertEqual(plan_outreach(default_tenant()), [])
 
 
 @override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
@@ -600,7 +603,7 @@ class BudgetExpiryReportsTheRealCauseTests(TestCase):
 
         with override_settings(OUTREACH_INITIAL_BACKOFF_S=0.02, OUTREACH_MAX_BACKOFF_S=0.02):
             with _with_client(client):
-                plan_outreach()
+                plan_outreach(default_tenant())
 
         further = OutreachAction.objects.get().further_action
         self.assertIn(outreach.FAILURE_KINDS[LLMRateLimitError], further)
@@ -613,7 +616,7 @@ class BudgetExpiryReportsTheRealCauseTests(TestCase):
         _lead()
 
         with _with_client(_HangingClient()):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         further = OutreachAction.objects.get().further_action
         self.assertIn(outreach.FAILURE_KINDS[LLMTimeoutError], further)
@@ -632,7 +635,7 @@ class ForeignTimeoutTests(TestCase):
         client = _ScriptedClient(TimeoutError("[Errno 60] Operation timed out"))
 
         with _with_client(client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         further = OutreachAction.objects.get().further_action
         self.assertIn("Operation timed out", further)

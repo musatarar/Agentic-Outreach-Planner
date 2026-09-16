@@ -17,6 +17,7 @@ from project.app.services.llm.stub import (
     canned_email,
 )
 from project.app.services.outreach import _build_copy_prompt, validate_copy
+from project.app.tests.tenancy_utils import default_tenant
 
 
 def _allowed():
@@ -80,6 +81,7 @@ class CannedEmailPassesTheRealGatesTests(TestCase):
     def setUp(self):
         super().setUp()
         self.lead = Lead.objects.create(
+            tenant=default_tenant(),
             id="synth_0001",
             agency_name="Summit Risk Advisors",
             contact_name="Priya Nair",

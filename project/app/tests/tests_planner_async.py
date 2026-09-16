@@ -15,6 +15,7 @@ from project.app.models import Lead, OutreachAction
 from project.app.services import outreach
 from project.app.services.llm import LLMClient, LLMResult
 from project.app.services.outreach import plan_outreach
+from project.app.tests.tenancy_utils import default_tenant
 
 # Phase 3 is handed no lead object, so the prompt is the only channel a stub
 # has for identifying which lead it was called for.
@@ -54,6 +55,7 @@ def _make_leads(count):
     """
     return [
         Lead.objects.create(
+            tenant=default_tenant(),
             id=f"lead_{index:03d}",
             agency_name=f"SYNTH-{index:03d}",
             contact_name=f"Contact {index:03d}",
@@ -73,6 +75,7 @@ def _make_leads(count):
 def _unmatched_lead(lead_id="lead_unknown"):
     """No stage, no dates, no usage -- falls through every rule to UNKNOWN."""
     return Lead.objects.create(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name="SYNTH-999",
         contact_name="Pat Quinn",
@@ -128,7 +131,7 @@ class BoundedPoolTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(probe.calls, 12)
         self.assertLessEqual(probe.peak, 3)
@@ -142,7 +145,7 @@ class BoundedPoolTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(probe.peak, 3)
 
@@ -152,7 +155,7 @@ class BoundedPoolTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(probe.peak, 4)  # bounded by the work, not by the setting
 
@@ -162,7 +165,7 @@ class BoundedPoolTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(probe.peak, 1)
         self.assertEqual(probe.calls, 5)
@@ -172,7 +175,7 @@ class BoundedPoolTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(probe.calls, 0)
         self.assertEqual(len(planned), 1)
@@ -203,7 +206,7 @@ class BoundedPoolTests(TestCase):
             return _copy_for(agency)
 
         with patch.object(outreach, "_outcome_without_calling", spy), _stub(slow_matched):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 4)
         # Behind the semaphore, this marker would land mid-list instead of last.
@@ -236,7 +239,7 @@ class OutOfOrderCompletionTests(TestCase):
             return _copy_for(agency)
 
         with _stub(reversed_latency):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(OutreachAction.objects.count(), len(leads))
         for lead in leads:
@@ -258,7 +261,7 @@ class OutOfOrderCompletionTests(TestCase):
             return _copy_for(agency)
 
         with _stub(fail_one):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         # `return_exceptions=True` on the gather: one dead lead, not a dead run.
         self.assertEqual(len(planned), 6)
@@ -279,11 +282,11 @@ class RepeatedRunTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            first = plan_outreach()
+            first = plan_outreach(default_tenant())
             # An open recommendation suppresses a re-run, so the second run
             # would otherwise find nothing to do.
             OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
-            second = plan_outreach()
+            second = plan_outreach(default_tenant())
 
         self.assertEqual(len(first), 3)
         self.assertEqual(len(second), 3)
@@ -300,7 +303,7 @@ class RepeatedRunTests(TestCase):
         probe = _ConcurrencyProbe()
 
         with _stub(probe):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         priorities = [action.priority for action in planned]
         self.assertEqual(priorities, sorted(priorities))
@@ -408,7 +411,7 @@ class EndToEndProviderPathTests(TestCase):
         client = _FakeClient(text=_copy_for("SYNTH-000"))
 
         with patch("project.app.services.outreach.get_llm_client", return_value=client):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 3)
         self.assertEqual(len(client.async_calls), 3)
@@ -422,7 +425,7 @@ class EndToEndProviderPathTests(TestCase):
         client = _FakeClient(text=_copy_for("SYNTH-000"))
 
         with patch("project.app.services.outreach.get_llm_client", return_value=client):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(client.closed, 1)
 
@@ -432,7 +435,7 @@ class EndToEndProviderPathTests(TestCase):
         _unmatched_lead()
 
         with patch("project.app.services.outreach.get_llm_client") as get_client:
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         get_client.assert_not_called()
 
@@ -446,7 +449,7 @@ class EndToEndProviderPathTests(TestCase):
         client.aclose = explode
 
         with patch("project.app.services.outreach.get_llm_client", return_value=client):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 2)
 
@@ -472,8 +475,12 @@ class RunningLoopGuardTests(TestCase):
     def test_plan_outreach_from_a_coroutine_dies_at_the_orm_first(self):
         from django.core.exceptions import SynchronousOnlyOperation
 
+        # Resolved on this thread: the point of the test is the planner's own
+        # phase-1 read, not a tenant lookup at the call site.
+        tenant = default_tenant()
+
         async def call_it():
-            plan_outreach()
+            plan_outreach(tenant)
 
         # DJANGO_ALLOW_ASYNC_UNSAFE would suppress Django's guard and let the
         # run reach `_run_coroutine` instead; cleared for the duration.

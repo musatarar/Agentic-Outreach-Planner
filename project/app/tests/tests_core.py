@@ -9,6 +9,7 @@ from django.utils.timezone import is_aware
 
 from project.app.models import Event, Lead, OutreachAction
 from project.app.services.outreach import plan_outreach
+from project.app.tests.tenancy_utils import default_tenant
 
 
 def _raw_json(name):
@@ -26,7 +27,7 @@ class IngestDataCommandTests(TestCase):
     """Ingestion command loads the real JSON fixtures correctly."""
 
     def test_loads_all_leads_and_their_events(self):
-        call_command("ingest_data")
+        call_command("ingest_data", tenant=default_tenant().slug)
 
         self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
         self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
@@ -51,7 +52,7 @@ class IngestDataCommandTests(TestCase):
         self.assertIn("premium", deal.meta)
 
     def test_handles_null_date_fields(self):
-        call_command("ingest_data")
+        call_command("ingest_data", tenant=default_tenant().slug)
         # lead_003 (demo_completed) has null signed_up_date / last_login_date.
         lead = Lead.objects.get(id="lead_003")
         self.assertIsNone(lead.signed_up_date)
@@ -59,8 +60,8 @@ class IngestDataCommandTests(TestCase):
         self.assertEqual(lead.events.count(), 2)
 
     def test_idempotent_no_duplicates(self):
-        call_command("ingest_data")
-        call_command("ingest_data")
+        call_command("ingest_data", tenant=default_tenant().slug)
+        call_command("ingest_data", tenant=default_tenant().slug)
 
         self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
         self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
@@ -70,6 +71,7 @@ class IngestDataCommandTests(TestCase):
 class ModelBasicsTests(TestCase):
     def test_lead_str(self):
         lead = Lead.objects.create(
+            tenant=default_tenant(),
             id="lead_999",
             agency_name="Test Agency",
             contact_name="Jane Doe",
@@ -90,6 +92,7 @@ class ModelBasicsTests(TestCase):
         from django.utils import timezone
 
         lead = Lead.objects.create(
+            tenant=default_tenant(),
             id="lead_998",
             agency_name="A",
             contact_name="B",
@@ -101,11 +104,14 @@ class ModelBasicsTests(TestCase):
             estimated_book_size_usd=1,
             stage="active_trial",
         )
-        event = Event.objects.create(lead=lead, type="login", timestamp=timezone.now())
+        event = Event.objects.create(
+            lead=lead, tenant=lead.tenant, type="login", timestamp=timezone.now()
+        )
         self.assertEqual(event.meta, {})
 
     def test_outreach_action_defaults_and_str(self):
         lead = Lead.objects.create(
+            tenant=default_tenant(),
             id="lead_997",
             agency_name="Acme",
             contact_name="C",
@@ -136,6 +142,7 @@ class PlanOutreachGroundingTests(TestCase):
         # demo_completed + no signup -> complete_onboarding (date-independent),
         # so classification stays deterministic regardless of the wall clock.
         defaults = dict(
+            tenant=default_tenant(),
             id="lead_ground",
             agency_name="Summit Risk Advisors",
             contact_name="Priya Nair",
@@ -156,7 +163,7 @@ class PlanOutreachGroundingTests(TestCase):
         self._make_lead(deals_closed=4)
         bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Locked In team"
         with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 1)
         action = OutreachAction.objects.get()
@@ -181,7 +188,7 @@ class PlanOutreachGroundingTests(TestCase):
             "Best,\nThe Locked In team"
         )
         with patch("project.app.services.outreach.agenerate_copy", return_value=good_copy):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         action = OutreachAction.objects.get()
         self.assertFalse(action.needs_human)
@@ -206,7 +213,7 @@ class PlanOutreachGroundingTests(TestCase):
             "Best,\nThe Locked In team"
         )
         with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         action = OutreachAction.objects.get()
         self.assertFalse(action.needs_human)
@@ -220,6 +227,7 @@ class PlanOutreachFailurePathTests(TestCase):
     def _unclassifiable_lead(self):
         # No stage, no dates, no usage -> falls through every rule to UNKNOWN.
         return Lead.objects.create(
+            tenant=default_tenant(),
             id="lead_unknown",
             agency_name="Nowhere Insurance",
             contact_name="Pat Quinn",
@@ -236,6 +244,7 @@ class PlanOutreachFailurePathTests(TestCase):
     def _classifiable_lead(self):
         # demo_completed + no signup -> complete_onboarding, date-independent.
         return Lead.objects.create(
+            tenant=default_tenant(),
             id="lead_fails",
             agency_name="Summit Risk Advisors",
             contact_name="Priya Nair",
@@ -252,7 +261,7 @@ class PlanOutreachFailurePathTests(TestCase):
     def test_unclassified_lead_skips_generation_and_asks_for_bd_review(self):
         self._unclassifiable_lead()
         with patch("project.app.services.outreach.agenerate_copy") as generate:
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         generate.assert_not_called()
         action = planned[0]
@@ -268,7 +277,7 @@ class PlanOutreachFailurePathTests(TestCase):
             "project.app.services.outreach.agenerate_copy",
             side_effect=RuntimeError("provider exploded"),
         ):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 2)
         failed = OutreachAction.objects.get(lead_id="lead_fails")
@@ -289,7 +298,7 @@ class PlanOutreachFailurePathTests(TestCase):
             "project.app.services.outreach._build_copy_prompt",
             side_effect=ValueError("unrenderable lead"),
         ):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 2)
         failed = OutreachAction.objects.get(lead_id="lead_fails")
@@ -305,7 +314,7 @@ class PlanOutreachFailurePathTests(TestCase):
             "project.app.services.outreach.get_llm_client",
             side_effect=ValueError("Unknown LLM provider 'bogus'."),
         ):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 2)
         failed = OutreachAction.objects.get(lead_id="lead_fails")
@@ -321,5 +330,5 @@ class PlanOutreachFailurePathTests(TestCase):
     def test_a_run_with_nothing_to_generate_never_resolves_a_provider(self):
         self._unclassifiable_lead()
         with patch("project.app.services.outreach.get_llm_client") as get_client:
-            plan_outreach()
+            plan_outreach(default_tenant())
         get_client.assert_not_called()

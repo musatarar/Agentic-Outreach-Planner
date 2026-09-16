@@ -19,6 +19,7 @@ from rest_framework.throttling import SimpleRateThrottle
 from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import dedupe
 from project.app.services.outreach import plan_outreach
+from project.app.tests.tenancy_utils import default_tenant
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.views.review import ReviewListView, ReviewVerifyView
 
@@ -43,6 +44,7 @@ def make_lead(lead_id="lead_001", **overrides):
     """A power user: deals >= 5 and submissions >= 10, so the classification is
     date-independent (rule R2) and ``GROUNDED_COPY`` is fully grounded."""
     defaults = dict(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name="Summit Risk Advisors",
         contact_name="Priya Nair",
@@ -442,12 +444,12 @@ class SuppressionAndThePlannerTests(ReviewAPITestCase):
         super().setUp()
         self.lead = make_lead()
         with patch("project.app.services.outreach.agenerate_copy", return_value=GROUNDED_COPY):
-            plan_outreach()
+            plan_outreach(default_tenant())
         self.action = OutreachAction.objects.get()
 
     def _run_planner(self):
         with patch("project.app.services.outreach.agenerate_copy", return_value=GROUNDED_COPY):
-            return plan_outreach()
+            return plan_outreach(default_tenant())
 
     def test_a_dismissed_recommendation_is_not_offered_again(self):
         self.client.post(url("outreach-dismiss", self.action), {"reason": "not_a_fit"})

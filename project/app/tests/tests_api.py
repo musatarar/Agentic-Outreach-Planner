@@ -8,11 +8,13 @@ from project.app.models import (
     Lead,
     OutreachAction,
 )
+from project.app.tests.tenancy_utils import default_tenant
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
 def make_lead(lead_id, **overrides):
     defaults = dict(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name=f"Agency {lead_id}",
         contact_name=f"Contact {lead_id}",

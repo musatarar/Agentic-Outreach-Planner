@@ -11,6 +11,7 @@ from django.utils import timezone
 from project.app import checks
 from project.app.models import Event, Lead, OutreachAction
 from project.app.services.outreach import plan_outreach
+from project.app.tests.tenancy_utils import default_tenant
 
 GOOD_COPY = (
     "Subject: A quick idea for your team\n\n"
@@ -64,8 +65,10 @@ def planner_queries(rows):
 
 def _make_leads(count, events_each=3, offset=0):
     leads = []
+    tenant = default_tenant()
     for index in range(offset, offset + count):
         lead = Lead.objects.create(
+            tenant=tenant,
             id=f"lead_{index:03d}",
             agency_name=f"Agency {index:03d}",
             contact_name=f"Contact {index:03d}",
@@ -83,6 +86,7 @@ def _make_leads(count, events_each=3, offset=0):
         for event_index in range(events_each):
             Event.objects.create(
                 lead=lead,
+                tenant=lead.tenant,
                 type="login" if event_index % 2 else "email_sent",
                 timestamp=timezone.now(),
                 meta={"notes": f"note {event_index} for {lead.id}"},
@@ -102,10 +106,13 @@ class PlannerQueryCountTests(TestCase):
 
     def test_a_twelve_lead_run_costs_a_fixed_number_of_queries(self):
         _make_leads(12)
+        # Resolved outside the counted block: the tenant lookup is a query of
+        # the caller's, not of the run's.
+        tenant = default_tenant()
 
         with _stub():
             with self.assertNumQueries(planner_queries(12)):
-                planned = plan_outreach()
+                planned = plan_outreach(tenant)
 
         self.assertEqual(len(planned), 12)
 
@@ -114,10 +121,11 @@ class PlannerQueryCountTests(TestCase):
         """Every other test here runs at `off`, which skips the verifier's event
         walk -- so this case is what pins `verify_copy`'s share of the prefetch."""
         _make_leads(12)
+        tenant = default_tenant()
 
         with _stub():
             with self.assertNumQueries(planner_queries(12)):
-                plan_outreach()
+                plan_outreach(tenant)
 
     def test_the_query_count_does_not_grow_with_the_number_of_leads(self):
         """Two runs of different sizes cost the same *non-INSERT* number.
@@ -126,9 +134,10 @@ class PlannerQueryCountTests(TestCase):
         comparison is of read cost only, not of how the writes batch.
         """
         _make_leads(3)
+        tenant = default_tenant()
         with _stub():
             with self.assertNumQueries(planner_queries(3)):
-                plan_outreach()
+                plan_outreach(tenant)
 
         # Clear the run so the second one has work to do: an open recommendation
         # suppresses a re-run.
@@ -137,7 +146,7 @@ class PlannerQueryCountTests(TestCase):
 
         with _stub():
             with self.assertNumQueries(planner_queries(80)):
-                plan_outreach()
+                plan_outreach(tenant)
 
         self.assertEqual(Lead.objects.count(), 80)
         self.assertEqual(
@@ -166,7 +175,7 @@ class BulkCreateTests(TestCase):
         _make_leads(5)
 
         with _stub():
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertTrue(all(action.pk is not None for action in planned))
         self.assertEqual(len({action.pk for action in planned}), 5)
@@ -177,7 +186,7 @@ class BulkCreateTests(TestCase):
         _make_leads(3)
 
         with _stub():
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         for action in planned:
             self.assertIsNotNone(action.created_at)
@@ -188,7 +197,7 @@ class BulkCreateTests(TestCase):
         _make_leads(2)
 
         with _stub():
-            plan_outreach()
+            plan_outreach(default_tenant())
 
         self.assertEqual(OutreachAction.objects.count(), 2)
         stored = OutreachAction.objects.get(lead_id="lead_000")
@@ -207,7 +216,7 @@ class BulkCreateTests(TestCase):
         Lead.objects.filter(id="lead_001").update(estimated_book_size_usd=8_000_000)
 
         with _stub():
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         priorities = [action.priority for action in planned]
         self.assertEqual(priorities, sorted(priorities))
@@ -223,7 +232,7 @@ class BulkCreateTests(TestCase):
 
         with _stub():
             with CaptureQueriesContext(connection) as captured:
-                plan_outreach()
+                plan_outreach(default_tenant())
 
         inserts = [
             query["sql"]
@@ -240,7 +249,7 @@ class BulkCreateTests(TestCase):
         _make_leads(80)
 
         with _stub():
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len({action.pk for action in planned}), 80)
 
@@ -248,7 +257,7 @@ class BulkCreateTests(TestCase):
         # `bulk_create([])` emits no INSERT, though the atomic wrapper and the
         # supersede DELETE still cost a few queries.
         with _stub():
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(planned, [])
         self.assertEqual(OutreachAction.objects.count(), 0)

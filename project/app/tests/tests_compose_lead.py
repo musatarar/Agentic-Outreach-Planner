@@ -15,6 +15,7 @@ from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import actions
 from project.app.services import dedupe as dedupe_service
 from project.app.services.outreach import plan_outreach
+from project.app.tests.tenancy_utils import default_tenant
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
@@ -22,6 +23,7 @@ def _make_lead(lead_id, agency_name):
     """A lead that classifies to ``complete_onboarding`` — ``demo_completed`` with no
     signup date is the one date-independent classification, so nothing drifts."""
     return Lead.objects.create(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name=agency_name,
         contact_name=f"Contact {lead_id}",
@@ -39,6 +41,7 @@ def _make_lead(lead_id, agency_name):
 def _unmatched_lead(lead_id="lead_nomatch"):
     """No stage, no dates, no usage -- falls through every rule to UNKNOWN."""
     return Lead.objects.create(
+        tenant=default_tenant(),
         id=lead_id,
         agency_name="Nomatch Agency",
         contact_name="Pat Quinn",
@@ -92,7 +95,7 @@ def _stub_provider(stub):
 
 
 # ---------------------------------------------------------------------------
-# The service: plan_outreach(lead_ids=...)
+# The service: plan_outreach(default_tenant(), lead_ids=...)
 # ---------------------------------------------------------------------------
 
 
@@ -109,7 +112,7 @@ class ScopedPlanOutreachTests(TestCase):
     def test_scoping_to_one_lead_writes_exactly_one_row_for_that_lead(self):
         stub = _ProviderStub()
         with _stub_provider(stub):
-            planned = plan_outreach(lead_ids=[self.bravo.id])
+            planned = plan_outreach(default_tenant(), lead_ids=[self.bravo.id])
 
         self.assertEqual(len(planned), 1)
         self.assertEqual(planned[0].lead_id, self.bravo.id)
@@ -119,7 +122,7 @@ class ScopedPlanOutreachTests(TestCase):
     def test_scoping_to_one_lead_sends_exactly_one_prompt_to_the_provider(self):
         stub = _ProviderStub()
         with _stub_provider(stub):
-            plan_outreach(lead_ids=[self.bravo.id])
+            plan_outreach(default_tenant(), lead_ids=[self.bravo.id])
 
         self.assertEqual(len(stub.prompts), 1)
         self.assertEqual(
@@ -132,7 +135,7 @@ class ScopedPlanOutreachTests(TestCase):
         nomatch = _unmatched_lead()
         stub = _ProviderStub()
         with _stub_provider(stub):
-            planned = plan_outreach(lead_ids=[nomatch.id])
+            planned = plan_outreach(default_tenant(), lead_ids=[nomatch.id])
 
         self.assertEqual(stub.prompts, [])
         self.assertEqual(len(planned), 1)
@@ -153,7 +156,7 @@ class ScopedPlanOutreachTests(TestCase):
 
         stub = _ProviderStub()
         with _stub_provider(stub):
-            planned = plan_outreach(lead_ids=[self.bravo.id])
+            planned = plan_outreach(default_tenant(), lead_ids=[self.bravo.id])
 
         self.assertEqual(planned, [])
         self.assertEqual(stub.prompts, [])
@@ -169,7 +172,7 @@ class ScopedPlanOutreachTests(TestCase):
 
         stub = _ProviderStub()
         with _stub_provider(stub):
-            planned = plan_outreach(lead_ids=[self.bravo.id])
+            planned = plan_outreach(default_tenant(), lead_ids=[self.bravo.id])
 
         self.assertEqual(planned, [])
         self.assertEqual(stub.prompts, [])
@@ -178,7 +181,7 @@ class ScopedPlanOutreachTests(TestCase):
     def test_an_unknown_lead_id_plans_nothing_and_calls_nothing(self):
         stub = _ProviderStub()
         with _stub_provider(stub):
-            planned = plan_outreach(lead_ids=["lead_does_not_exist"])
+            planned = plan_outreach(default_tenant(), lead_ids=["lead_does_not_exist"])
 
         self.assertEqual(planned, [])
         self.assertEqual(stub.prompts, [])
@@ -187,7 +190,7 @@ class ScopedPlanOutreachTests(TestCase):
     def test_the_whole_book_run_is_unchanged_when_no_scope_is_given(self):
         stub = _ProviderStub()
         with _stub_provider(stub):
-            planned = plan_outreach()
+            planned = plan_outreach(default_tenant())
 
         self.assertEqual(len(planned), 3)
         self.assertEqual(len(stub.prompts), 3)

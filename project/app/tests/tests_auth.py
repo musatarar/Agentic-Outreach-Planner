@@ -26,6 +26,8 @@ from rest_framework.throttling import SimpleRateThrottle
 from project.app import urls as app_urls
 from project.app.models import LoginToken
 from project.app.services import login_links
+from project.app.services.tenancy import add_member
+from project.app.tests.tenancy_utils import default_tenant
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.throttling import LoginEmailRateThrottle
 
@@ -410,7 +412,9 @@ class ConsumeEndpointTests(AuthAPITestCase):
 
         me = self.client.get("/api/auth/me/")
         self.assertEqual(me.status_code, 200)
-        self.assertEqual(me.data, {"authenticated": True, "email": ALLOWED})
+        # `tenant` is null here: signing in does not enrol anyone in a
+        # workspace, and this user has no membership.
+        self.assertEqual(me.data, {"authenticated": True, "email": ALLOWED, "tenant": None})
 
     def test_first_consume_creates_the_django_user_with_no_usable_password(self):
         issued = self._issue()
@@ -721,6 +725,10 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
             HTTP_X_CSRFTOKEN=stale,
         )
         self.assertEqual(consumed.status_code, 200)
+
+        # The endpoint below is tenant-scoped; enrol the freshly created user so
+        # this test keeps measuring CSRF and not membership.
+        add_member(default_tenant(), ALLOWED)
 
         fresh = client.cookies["csrftoken"].value
         self.assertNotEqual(fresh, stale)
