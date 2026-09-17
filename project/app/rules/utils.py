@@ -5,6 +5,12 @@ convention: the planner has to evaluate exactly this vocabulary, and a payload
 naming anything else would be stored happily and then never fire.
 :func:`validate_conditions` is that contract, and every write runs it.
 
+The vocabulary is read off the models rather than restated here: a ``Lead``
+column is named under ``lead`` and an ``Event`` column under ``events``, so a
+schema change moves the vocabulary with it instead of leaving the two to
+drift. Figures the engine computes have no column behind them, so those stay
+declared in :data:`COMPUTED_FIELDS`.
+
 Sources split by who controls the value. ``lead`` and ``derived`` are the
 agency's own record and figures computed from it; ``notes`` and ``events``
 carry free text a lead can write. A conditions payload may read the untrusted
@@ -13,8 +19,11 @@ ones, but is never satisfiable by them alone — see
 """
 
 import datetime
+import functools
 
+from django.apps import apps
 from django.core.exceptions import ValidationError
+from django.db import models
 
 SCHEMA_VERSION = 1
 
@@ -22,6 +31,10 @@ SOURCE_LEAD = "lead"
 SOURCE_DERIVED = "derived"
 SOURCE_NOTES = "notes"
 SOURCE_EVENTS = "events"
+
+# Resolution order for a condition that does not name its source, and the order
+# error messages list sources in.
+SOURCES = (SOURCE_LEAD, SOURCE_DERIVED, SOURCE_NOTES, SOURCE_EVENTS)
 
 # Sources whose values the lead cannot author, so a condition reading one is
 # enough to corroborate a branch that also reads CRM text. (An inference
@@ -33,23 +46,28 @@ DATE = "date"
 TEXT = "text"
 BOOL = "bool"
 
-# Every field a condition may name, by source and type. ``hubspot_notes`` sits
-# under `notes` and deliberately not under `lead`, or a rule could read
-# lead-controlled text while claiming a corroborating source.
-FIELDS = {
-    SOURCE_LEAD: {
-        "stage": TEXT,
-        "state": TEXT,
-        "num_producers": NUMBER,
-        "years_in_business": NUMBER,
-        "estimated_book_size_usd": NUMBER,
-        "signed_up_date": DATE,
-        "last_login_date": DATE,
-        "last_contacted_date": DATE,
-        "quotes_created": NUMBER,
-        "quotes_submitted": NUMBER,
-        "deals_closed": NUMBER,
-    },
+# The model behind each column-sourced source, and where that source sends the
+# columns its subject authors. `lead` is corroborating, so a lead-authored
+# column lands in `notes` instead; `events` is already untrusted, so it keeps
+# its own.
+COLUMN_SOURCES = {
+    SOURCE_LEAD: ("app.Lead", SOURCE_NOTES),
+    SOURCE_EVENTS: ("app.Event", SOURCE_EVENTS),
+}
+
+# Django column class -> condition type, most specific first. A column whose
+# class is absent here has no comparison vocabulary, so it stays out of the
+# vocabulary rather than being guessed at.
+COLUMN_TYPES = (
+    ((models.BooleanField,), BOOL),
+    ((models.DateField,), DATE),  # DateTimeField subclasses it; both compare as dates
+    ((models.IntegerField, models.FloatField, models.DecimalField), NUMBER),
+    ((models.CharField, models.TextField), TEXT),
+)
+
+# Figures the engine computes per lead. No column carries them, so unlike the
+# model-sourced fields these are declared.
+COMPUTED_FIELDS = {
     SOURCE_DERIVED: {
         "days_since_signup": NUMBER,
         "days_since_last_login": NUMBER,
@@ -59,7 +77,6 @@ FIELDS = {
         "gone_quiet": BOOL,
     },
     SOURCE_NOTES: {
-        "hubspot_notes": TEXT,
         # Parsed out of the notes, so lead-controlled however numeric it looks.
         "milestone_from_notes": NUMBER,
         "deals_below_milestone": BOOL,
@@ -96,8 +113,53 @@ ROOT_KEYS = frozenset({"version", "operator", "conditions"})
 PREDICATE_FORBIDDEN = ('"', "\n", "\r")
 
 
-def _cond(field, operator, threshold=None, source="lead"):
-    condition = {"field": field, "operator": operator, "source": source}
+@functools.cache
+def fields_by_source():
+    """Every field a condition may name, by source and type — read-only.
+
+    Model columns first: each source in :data:`COLUMN_SOURCES` takes its
+    model's concrete columns, minus the primary key, the relations and any
+    column whose type has no comparison vocabulary. A column its subject
+    authors goes to that source's untrusted sink, so ``hubspot_notes`` is
+    reachable as ``notes`` and never as ``lead``.
+    """
+    fields = {source: {} for source in SOURCES}
+    for source, names in COMPUTED_FIELDS.items():
+        fields[source].update(names)
+    for source, (label, untrusted_sink) in COLUMN_SOURCES.items():
+        model = apps.get_model(label)
+        for column in model._meta.concrete_fields:
+            if column.primary_key or column.is_relation:
+                continue
+            field_type = _column_type(column)
+            if field_type is None:
+                continue
+            owner = untrusted_sink if column.name in model.UNTRUSTED_FIELDS else source
+            fields[owner][column.name] = field_type
+    return fields
+
+
+def source_for(field):
+    """The source that owns ``field``, first match in :data:`SOURCES` order.
+
+    An unclaimed name answers ``lead`` so that :func:`validate_conditions`
+    stays the one place an unknown field is refused.
+    """
+    for source in SOURCES:
+        if field in fields_by_source()[source]:
+            return source
+    return SOURCE_LEAD
+
+
+def _column_type(column):
+    for classes, field_type in COLUMN_TYPES:
+        if isinstance(column, classes):
+            return field_type
+    return None
+
+
+def _cond(field, operator, threshold=None, source=None):
+    condition = {"field": field, "operator": operator, "source": source or source_for(field)}
     if threshold is not None:
         condition["threshold"] = threshold
     return condition
@@ -174,15 +236,16 @@ def _validate_leaf(leaf, path):
     unknown = set(leaf) - LEAF_KEYS
     if unknown:
         raise ValidationError(f"{path} has unknown key(s): {_listed(unknown)}.")
+    fields = fields_by_source()
     source = leaf.get("source")
-    if source not in FIELDS:
-        raise ValidationError(f"{path}.source must be one of {_listed(FIELDS)}, got {source!r}.")
+    if source not in fields:
+        raise ValidationError(f"{path}.source must be one of {_listed(fields)}, got {source!r}.")
     field = leaf.get("field")
-    if field not in FIELDS[source]:
+    if field not in fields[source]:
         raise ValidationError(
-            f"{path}: {source!r} has no field {field!r}; known: {_listed(FIELDS[source])}."
+            f"{path}: {source!r} has no field {field!r}; known: {_listed(fields[source])}."
         )
-    field_type = FIELDS[source][field]
+    field_type = fields[source][field]
     operator = leaf.get("operator")
     if operator not in OPERATORS_BY_TYPE[field_type]:
         raise ValidationError(
