@@ -125,7 +125,7 @@ Constraint and index names appear verbatim in the model and its migration — gr
 ## Comments
 
 - One line, or none. Default to no comment; when the code is not obvious, say why in a single
-  line. Never write the second line — see the `comment-discipline` skill.
+  line. Never write the second line.
 - Alternatives considered, non-goals, and design history do not go in the code. They go in the
   commit message, the PR, or SECURITY.md.
 - Module and class docstrings are one line. Tests get none; the test name is the sentence.
