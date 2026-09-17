@@ -55,8 +55,10 @@ ACTIONS = [
     },
 ]
 
-# "conditions" makes a deterministic rule, "inference" an AI-inference one;
-# derived fields name the engine's computed predicates.
+# "conditions" makes a deterministic rule, "inference" an AI-inference one.
+# Each condition's source is resolved from the field name (`utils.source_for`),
+# so a lead column reads as `lead`, an event column as `events`, and the
+# engine's computed figures as `derived` or `notes`.
 RULES = [
     {
         "name": "Demo completed but never signed up",
@@ -81,8 +83,8 @@ RULES = [
         "action": "follow_up_after_hold",
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
-            _cond("hubspot_notes", "contains", "HOLD_PHRASES", source="notes"),
-            _cond("gone_quiet", "==", True, source="derived"),
+            _cond("hubspot_notes", "contains", "HOLD_PHRASES"),
+            _cond("gone_quiet", "==", True),
         ),
     },
     {
@@ -91,7 +93,7 @@ RULES = [
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
             _cond("signed_up_date", "exists"),
-            _cond("days_since_last_login", ">", 21, source="derived"),
+            _cond("days_since_last_login", ">", 21),
         ),
     },
     {
@@ -99,7 +101,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
-            _cond("days_since_last_login", "<=", 21, source="derived"),
+            _cond("days_since_last_login", "<=", 21),
             _cond("quotes_created", ">", 0),
             _cond("quotes_submitted", "==", 0),
         ),
@@ -109,10 +111,10 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
-            _cond("days_since_last_login", "<=", 21, source="derived"),
+            _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
-            _cond("milestone_from_notes", "exists", source="notes"),
-            _cond("deals_below_milestone", "==", True, source="notes"),
+            _cond("milestone_from_notes", "exists"),
+            _cond("deals_below_milestone", "==", True),
         ),
     },
     {
@@ -120,7 +122,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_LOW,
         "conditions": _all_of(
-            _cond("days_since_last_login", "<=", 21, source="derived"),
+            _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
             _cond("deals_closed", "<", 5),
         ),

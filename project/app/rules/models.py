@@ -76,7 +76,8 @@ class OutreachRule(models.Model):
     ``action``.
 
     A ``deterministic`` rule is its ``conditions``: a structured, versioned
-    payload (:mod:`project.app.rules.utils`) evaluated in-process. An
+    payload (:mod:`project.app.rules.utils`) naming Lead and Event columns and
+    the engine's computed figures, evaluated in-process. An
     ``inference`` rule adds ``inference_prompt``, a natural-language predicate
     the LLM seam evaluates against the lead's sanitized, fenced data, and may
     stand on that predicate alone. Conditions on an inference rule are
@@ -108,8 +109,8 @@ class OutreachRule(models.Model):
     ]
 
     # The ``conditions`` schema, its vocabulary and its validator all live in
-    # utils; fields reference the Lead/Event shape for now, since user-defined
-    # data shapes are deliberately deferred.
+    # utils, which reads the nameable fields off the Lead and Event columns
+    # themselves; user-defined data shapes are deliberately deferred.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
 
     # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the

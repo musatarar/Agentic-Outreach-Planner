@@ -4,6 +4,10 @@ from django.db import models
 
 
 class Lead(models.Model):
+    # Columns the lead authors: untrusted everywhere, so the rules vocabulary
+    # sources them away from `lead` rather than letting a rule corroborate on them.
+    UNTRUSTED_FIELDS = frozenset({"hubspot_notes"})
+
     id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
     # Owning tenant -- opaque id, blank on every row today; nothing filters on it yet.
     tenant = models.CharField(max_length=64, blank=True, default="", db_index=True)
@@ -29,6 +33,8 @@ class Lead(models.Model):
 
 
 class Event(models.Model):
+    UNTRUSTED_FIELDS = frozenset({"meta"})
+
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="events")
     type = models.CharField(max_length=32)  # login, quote_created, quote_submitted,
     # deal_closed, call_logged, email_sent,
