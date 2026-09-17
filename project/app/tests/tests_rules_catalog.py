@@ -6,6 +6,8 @@ weights, and the delete story (RESTRICT on the action FK, clean sweep on owner
 delete).
 """
 
+import re
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -115,18 +117,16 @@ class OutreachRuleTests(TestCase):
         inference.refresh_from_db()
         self.assertEqual(inference.action.key, "set_up_appointment")
 
-    def test_an_inference_rule_builds_its_prompt_naming_the_callers_label(self):
+    def test_an_inference_rule_builds_its_prompt_naming_its_own_id(self):
         rule = self._inference_rule()
         self.assertEqual(
-            rule.build_inference_prompt("B"),
-            'the hubspot notes show they need help with something ? "B"',
+            rule.build_inference_prompt(),
+            f"the hubspot notes show they need help with something ? {rule.pk}",
         )
 
-    def test_no_database_id_reaches_the_inference_prompt(self):
+    def test_the_only_id_in_the_inference_prompt_is_the_rules_own(self):
         rule = self._inference_rule()
-        rendered = rule.build_inference_prompt("A")
-        self.assertNotIn(str(rule.pk), rendered)
-        self.assertNotIn(str(rule.action_id), rendered)
+        self.assertEqual(re.findall(r"\d+", rule.build_inference_prompt()), [str(rule.pk)])
 
     def test_a_predicate_that_could_forge_a_second_answer_is_refused(self):
         for predicate in (
@@ -149,7 +149,7 @@ class OutreachRuleTests(TestCase):
 
     def test_a_deterministic_rule_refuses_to_build_an_inference_prompt(self):
         with self.assertRaises(ValueError):
-            self._rule().build_inference_prompt("A")
+            self._rule().build_inference_prompt()
 
     def test_rules_list_heaviest_first_then_by_id(self):
         light = self._rule(name="modest momentum", weight=OutreachRule.WEIGHT_LOW)

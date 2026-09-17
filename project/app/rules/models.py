@@ -154,18 +154,19 @@ class OutreachRule(models.Model):
             models.CheckConstraint(check=Q(weight__in=(1, 2, 3)), name="orule_weight_1_to_3"),
         ]
 
-    def build_inference_prompt(self, label):
-        """One line of the evaluation prompt: ``<predicate> ? "<label>"``.
+    def build_inference_prompt(self):
+        """One line of the evaluation prompt: ``<predicate> ? <id>``.
 
-        ``label`` is assigned by the caller for one prompt and mapped back
-        server-side. Database ids never enter the prompt, so the model can only
-        ever answer with a slot the caller put in front of it — a predicate
-        that names some other id names nothing. ``clean()`` has already refused
-        the characters that could forge a second line or answer slot.
+        The id is this rule's own, so the prefix is identical for every lead the
+        same rules are asked about and a verdict maps straight back. It buys the
+        model no reach: the caller answers only for the ids it put in front of
+        the model, so a verdict naming any other id is unevaluable, never a
+        match. ``clean()`` has already refused the characters that could forge a
+        second line or answer slot.
         """
         if self.kind != self.KIND_INFERENCE:
             raise ValueError("Only inference rules build an inference prompt.")
-        return f'{(self.inference_prompt or "").strip()} ? "{label}"'
+        return f"{(self.inference_prompt or '').strip()} ? {self.pk}"
 
     def clean(self):
         """Enforce the kind <-> payload pairing and same-owner action selection.
