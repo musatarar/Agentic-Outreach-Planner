@@ -11,16 +11,12 @@ themselves are deleted, and the seeded actions' label and urgency are
 restored. Safe to re-run, but not a merge.
 """
 
-from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from project.app.rules.models import ActionType, OutreachRule
 from project.app.rules.utils import _all_of, _cond
-
-# Used when no --owner is given and LOGIN_ALLOWED_EMAILS is empty.
-DEFAULT_OWNER_EMAIL = "demo@lockedin.example"
+from project.app.services.owners import DEFAULT_OWNER_EMAIL, resolve_owner
 
 ACTIONS = [
     {
@@ -151,8 +147,8 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        email = self._resolve(options.get("owner"))
-        owner = self._user_for(email)
+        owner = resolve_owner(options.get("owner"))
+        email = owner.username
 
         OutreachRule.objects.filter(owner=owner).delete()
         action_by_key = {}
@@ -188,22 +184,3 @@ class Command(BaseCommand):
                 f"Seeded {len(action_by_key)} action types and {len(rules)} rules for {email}."
             )
         )
-
-    def _resolve(self, explicit):
-        if explicit:
-            return explicit.strip().lower()
-        if settings.LOGIN_ALLOWED_EMAILS:
-            return sorted(settings.LOGIN_ALLOWED_EMAILS)[0]
-        return DEFAULT_OWNER_EMAIL
-
-    def _user_for(self, email):
-        """Fetch or create the owner, matching the magic-link sign-in
-        convention: username == email, unusable password."""
-        user_model = get_user_model()
-        user = user_model.objects.filter(username=email).first()
-        if user is not None:
-            return user
-        user = user_model(username=email, email=email)
-        user.set_unusable_password()
-        user.save()
-        return user
