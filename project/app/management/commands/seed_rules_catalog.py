@@ -8,15 +8,22 @@ the tally decides rather than evaluation position.
 
 Re-running RESETS the owner's catalog to this set: rules they authored
 themselves are deleted, and the seeded actions' label and urgency are
-restored. Safe to re-run, but not a merge.
+restored. Safe to re-run, but not a merge. It also puts every lead in that
+owner's book, since a lead with no owner has no rules and this is the command
+that knows who the demo owner is.
 """
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from project.app.models import Lead
 from project.app.rules.models import ActionType, OutreachRule
 from project.app.rules.utils import _all_of, _cond
-from project.app.services.owners import DEFAULT_OWNER_EMAIL, resolve_owner
+
+# Used when no --owner is given and LOGIN_ALLOWED_EMAILS is empty.
+DEFAULT_OWNER_EMAIL = "demo@lockedin.example"
 
 ACTIONS = [
     {
@@ -137,9 +144,9 @@ RULES = [
 
 class Command(BaseCommand):
     help = (
-        "Seed one user's action/rule catalog (idempotent; resets that user's "
-        "rules). Owner: --owner, else the first LOGIN_ALLOWED_EMAILS entry, "
-        "else " + DEFAULT_OWNER_EMAIL + "."
+        "Seed one user's action/rule catalog and put every lead in their book "
+        "(idempotent; resets that user's rules). Owner: --owner, else the "
+        "first LOGIN_ALLOWED_EMAILS entry, else " + DEFAULT_OWNER_EMAIL + "."
     )
 
     def add_arguments(self, parser):
@@ -147,8 +154,8 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        owner = resolve_owner(options.get("owner"))
-        email = owner.username
+        email = self._resolve(options.get("owner"))
+        owner = self._user_for(email)
 
         OutreachRule.objects.filter(owner=owner).delete()
         action_by_key = {}
@@ -179,8 +186,32 @@ class Command(BaseCommand):
             rules.append(rule)
         OutreachRule.objects.bulk_create(rules)
 
+        # A lead with no owner has no rules; this is the only command that
+        # knows which user the demo runs as.
+        leads = Lead.objects.update(owner=owner)
+
         self.stdout.write(
             self.style.SUCCESS(
-                f"Seeded {len(action_by_key)} action types and {len(rules)} rules for {email}."
+                f"Seeded {len(action_by_key)} action types and {len(rules)} rules "
+                f"for {email}, and put {leads} lead(s) in their book."
             )
         )
+
+    def _resolve(self, explicit):
+        if explicit:
+            return explicit.strip().lower()
+        if settings.LOGIN_ALLOWED_EMAILS:
+            return sorted(settings.LOGIN_ALLOWED_EMAILS)[0]
+        return DEFAULT_OWNER_EMAIL
+
+    def _user_for(self, email):
+        """Fetch or create the owner, matching the magic-link sign-in
+        convention: username == email, unusable password."""
+        user_model = get_user_model()
+        user = user_model.objects.filter(username=email).first()
+        if user is not None:
+            return user
+        user = user_model(username=email, email=email)
+        user.set_unusable_password()
+        user.save()
+        return user

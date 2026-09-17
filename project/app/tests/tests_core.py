@@ -3,14 +3,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils.timezone import is_aware
 
 from project.app.models import Event, Lead, OutreachAction
 from project.app.services.outreach import plan_outreach
-from project.app.services.owners import DEFAULT_OWNER_EMAIL
 
 
 def _raw_json(name):
@@ -67,37 +65,6 @@ class IngestDataCommandTests(TestCase):
         self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
         self.assertEqual(Event.objects.count(), EXPECTED_EVENTS)
         self.assertEqual(Lead.objects.get(id="lead_001").events.count(), 8)
-
-    def test_every_ingested_lead_lands_in_the_demo_owners_book(self):
-        call_command("ingest_data")
-
-        owner = get_user_model().objects.get(username=DEFAULT_OWNER_EMAIL)
-        self.assertEqual(owner.leads.count(), EXPECTED_LEADS)
-        self.assertFalse(Lead.objects.filter(owner__isnull=True).exists())
-
-    def test_the_owner_flag_names_whose_book_the_leads_are_in(self):
-        call_command("ingest_data", owner="ae@lockedin.example")
-
-        owner = get_user_model().objects.get(username="ae@lockedin.example")
-        self.assertEqual(owner.leads.count(), EXPECTED_LEADS)
-        self.assertFalse(get_user_model().objects.filter(username=DEFAULT_OWNER_EMAIL).exists())
-
-    def test_re_ingesting_for_another_user_moves_the_book(self):
-        call_command("ingest_data")
-        call_command("ingest_data", owner="ae@lockedin.example")
-
-        self.assertEqual(Lead.objects.filter(owner__username=DEFAULT_OWNER_EMAIL).count(), 0)
-        self.assertEqual(
-            Lead.objects.filter(owner__username="ae@lockedin.example").count(), EXPECTED_LEADS
-        )
-
-    def test_deleting_the_owner_leaves_their_leads_in_the_database(self):
-        call_command("ingest_data")
-
-        get_user_model().objects.get(username=DEFAULT_OWNER_EMAIL).delete()
-
-        self.assertEqual(Lead.objects.count(), EXPECTED_LEADS)
-        self.assertEqual(Lead.objects.filter(owner__isnull=True).count(), EXPECTED_LEADS)
 
 
 class ModelBasicsTests(TestCase):

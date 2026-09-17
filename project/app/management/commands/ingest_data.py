@@ -8,7 +8,6 @@ from django.utils.dateparse import parse_datetime
 from django.utils.timezone import is_naive, make_aware
 
 from project.app.models import Event, Lead
-from project.app.services.owners import resolve_owner
 
 DEFAULT_LEADS = "raw_data/leads.json"
 DEFAULT_EVENTS = "raw_data/events.json"
@@ -55,16 +54,11 @@ def _parse_timestamp(value):
 
 
 class Command(BaseCommand):
-    help = (
-        "Ingest leads.json and events.json into Lead/Event models (idempotent). "
-        "Every ingested lead is owned by --owner, else the first "
-        "LOGIN_ALLOWED_EMAILS entry, else the demo owner."
-    )
+    help = "Ingest leads.json and events.json into Lead/Event models (idempotent)."
 
     def add_arguments(self, parser):
         parser.add_argument("--leads", default=DEFAULT_LEADS, help="Path to leads JSON file.")
         parser.add_argument("--events", default=DEFAULT_EVENTS, help="Path to events JSON file.")
-        parser.add_argument("--owner", help="Email of the user whose book these leads are in.")
 
     def _resolve(self, path):
         """Resolve a path relative to BASE_DIR when not absolute."""
@@ -84,12 +78,9 @@ class Command(BaseCommand):
         with open(events_path, encoding="utf-8") as fh:
             events_data = json.load(fh)
 
-        owner = resolve_owner(options.get("owner"))
-
         lead_count = 0
         for row in leads_data:
             defaults = {field: row.get(field) for field in LEAD_FIELDS}
-            defaults["owner"] = owner
             for field in DATE_FIELDS:
                 defaults[field] = _parse_date(row.get(field))
             if defaults.get("hubspot_notes") is None:
@@ -112,7 +103,5 @@ class Command(BaseCommand):
                 event_count += 1
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Ingested {lead_count} leads and {event_count} events for {owner.username}."
-            )
+            self.style.SUCCESS(f"Ingested {lead_count} leads and {event_count} events.")
         )
