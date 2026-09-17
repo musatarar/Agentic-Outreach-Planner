@@ -1,6 +1,6 @@
 ---
 name: antipattern-guard
-description: Catch antipatterns in a coding request or in your own implementation plan and push back before writing them, instead of coding a literal reading of the ask. Use this whenever asked to add, change, or move code in this repo — especially when the request names a location ("add a method to services", "put this in the view", "just hardcode it for now", "make the test pass", "skip the check when testing"), when the fastest way to satisfy the words would put fixture data, test shortcuts, placeholders, or duplicated logic into production modules, or when a shorthand request seems to conflict with what the target module is for. Trigger even when the request looks simple; the failure mode this guards against is doing exactly what was said when it is not what was meant.
+description: Catch antipatterns in a coding request or in your own implementation plan and push back before writing them, instead of coding a literal reading of the ask. Use this whenever asked to add, change, or move code in this repo — especially when the request names a location ("add a method to services", "put this in the view", "just hardcode it for now", "make the test pass", "skip the check when testing"), when it builds on an existing field or table ("leads carry a tenant string, add the lookup", "wire X to Y", "add a mapping table"), when the fastest way to satisfy the words would put fixture data, test shortcuts, placeholders, or duplicated logic into production modules, or when a shorthand request seems to conflict with what the target module is for. Trigger even when the request looks simple; the failure mode this guards against is doing exactly what was said when it is not what was meant, or designing around a placeholder nobody meant to keep.
 ---
 
 # Antipattern guard
@@ -19,6 +19,11 @@ code exists, so the user reviews a decision rather than a diff they have to thro
 2. **Read your own plan for antipatterns.** Before the first edit, look at what you are about to
    write and check it against the catalog below. The catalog exists because these are the
    shortcuts that feel like progress and cost a review cycle to remove.
+3. **Read what you are building on.** Existing code is not automatically a constraint. A column
+   that is blank on every row, a field nothing reads, a `# not used yet` comment, a TODO: these
+   are placeholders, and a placeholder is a decision nobody made. If your design only works by
+   adding a structure around one, the question to raise is whether the placeholder should be
+   fixed instead.
 
 If either step finds something, push back (next section). If neither does, just build it; this
 skill is a gate, not a tax on ordinary work.
@@ -59,6 +64,7 @@ arguments, and leaving the data where it is. Say the word if you actually wanted
 | HTTP shape: auth, pagination, throttling, status codes | `project/app/views/`, `serializers/` | services |
 | Test data | factory helpers in the test module (`make_lead`, `_lead`) or `tests/fixtures/` | any production module |
 | Demo or seed data | `raw_data/*.json` via the `ingest_data` management command | services, migrations, settings |
+| Which user a row belongs to | a `ForeignKey` on that model (`OutreachRule.owner`) | an opaque string plus a table that maps it |
 | Constants and enums | `services/actions.py`, module-level constants | inline magic strings |
 | Configuration | environment variables read in `settings.py` with the `_env_*` helpers | hardcoded literals, database rows, API-editable fields |
 | Provider selection and retry | `services/llm/config.py`, `errors.py` | call sites |
@@ -140,6 +146,31 @@ Why: the first breaks every environment that already applied it; the others stal
 require a rewrite. All migrations are human-reviewed.
 Instead: additive follow-up migration; nullable-or-default first, backfill via management
 command, constrain after; concurrent index with `atomic = False`.
+
+### Placeholder column or field "for later"
+Looks like: a new model field with no reader ("nothing filters on it yet"), an opaque string
+id where the thing it identifies is already a model, a nullable column added so a future
+feature has somewhere to put data.
+Why: it looks like progress and costs nothing today, so it lands. Then the next feature treats
+it as a given and designs around its shape. `Lead.tenant` was a 64-character string, blank on
+every row, that nothing read; it could not say whose rules to run for a lead, because the
+rules were owned by a `User` and a string cannot point at a row.
+Instead: add a field when its first reader arrives, and make it the real relation. A foreign
+key to the model that already exists answers the question directly; an identifier that needs
+a lookup table to mean anything is not an identifier yet.
+
+### Compensating structure around a wrong foundation
+Looks like: a mapping table, adapter, or lookup that exists only to connect something the
+schema should have connected; a docstring that says "nothing joined the two, so this is that
+join"; a snapshot of a field copied onto a second model so a job can carry it.
+Why: the placeholder's cost was deferred, and this is where it comes due. The actions engine
+grew a `TenantCatalog` table, a `rules_for_tenant` lookup, and a `tenant` column on
+`ActionJob`, all so an opaque string could reach the user who owned the rules. Replacing the
+string with `Lead.owner`, one foreign key, deleted all three.
+Instead: when a design only works by wrapping an existing field, stop and say so: name the
+field, why it cannot express what you need, and the one-step fix. That fix is usually a
+migration, which is human-gated here, so it is a decision to raise, not a reason to route
+around it silently. Building the wrapper is the fallback after a human chooses it.
 
 ### Configuration in the wrong place
 Looks like: a literal timeout or model name at the call site; a default restated in

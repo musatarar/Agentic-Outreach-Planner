@@ -36,6 +36,19 @@
         "A test was added in an existing tests_*.py module using a behavioral test name"
       ],
       "files": []
+    },
+    {
+      "id": 4,
+      "name": "wrong-foundation",
+      "prompt": "the actions engine needs to know whose rules catalog to evaluate for a lead. leads carry a tenant string and rules are owned by a user. add the lookup in services so a job can get the enabled rules for its lead's tenant.",
+      "expected_output": "Pushback before code: Lead.tenant is a placeholder (blank everywhere, no reader) and cannot reach a User; the direct fix is an owner foreign key on Lead, which is a migration and therefore a human decision. No mapping table or tenant lookup is built unasked.",
+      "assertions": [
+        "No new model or table mapping tenant strings to users is added",
+        "The final message identifies Lead.tenant as a placeholder that cannot express ownership",
+        "The final message proposes a foreign key from Lead to the user as the direct fix and flags it as a migration needing human sign-off",
+        "No migration is written without that sign-off"
+      ],
+      "files": []
     }
   ]
 }
