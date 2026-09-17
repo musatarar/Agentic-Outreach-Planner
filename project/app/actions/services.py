@@ -14,6 +14,7 @@ crons running the same batch cannot both process a job.
 import datetime
 import logging
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
@@ -186,7 +187,11 @@ def _resolve(job, today):
     if not _transition(job, ActionJob.STATUS_PROCESSING, ActionJob.STATUS_INFERRING):
         return job
 
-    section = inference.infer(candidates, lead, today)
+    section = (
+        inference.not_asked(candidates, inference.DRY_RUN)
+        if settings.ACTIONS_LLM_DRY_RUN
+        else inference.infer(candidates, lead, today)
+    )
     decision = _decision(job, rules, matched, unevaluable, section)
     # A verdict naming anything outside the candidate set is not a match.
     holding = set(section.get("matched_rule_ids") or ())

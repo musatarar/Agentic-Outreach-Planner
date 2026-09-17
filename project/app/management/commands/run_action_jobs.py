@@ -5,6 +5,7 @@ through the deterministic and inference passes. Safe to run concurrently: jobs
 are claimed with a conditional UPDATE, so two ticks never process the same one.
 """
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from project.app.actions import services
@@ -32,6 +33,9 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if settings.ACTIONS_LLM_DRY_RUN:
+            self.stdout.write("ACTIONS_LLM_DRY_RUN is set: no provider call this tick")
+
         if not options["no_enqueue"]:
             queued = services.enqueue_pending_leads()
             self.stdout.write(f"queued {len(queued)} lead(s)")

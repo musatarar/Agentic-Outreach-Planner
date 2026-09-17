@@ -2,12 +2,13 @@
 that take one job from queued to a chosen action."""
 
 import datetime
+from io import StringIO
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.db.models import Q
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from project.app.actions import evaluate, inference, services
@@ -352,7 +353,7 @@ class InferencePassTests(EngineTestCase):
         self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
         self.assertIsNone(job.selected_action)
         self.assertNotIn("selected", job.decision)
-        self.assertIn("TODO", job.decision["inference"]["todo"])
+        self.assertIn("TODO", job.decision["inference"]["reason"])
 
     def test_a_candidate_the_stub_never_asked_about_is_unevaluable_not_a_refusal(self):
         rule = self._inference_rule(self._action("set_up_appointment"), "they need help")
@@ -457,6 +458,71 @@ class InferencePassTests(EngineTestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_INFERRED_ACTION_CHOSEN)
         self.assertEqual(job.decision["selected"]["weight"], 2)
+
+
+class DryRunTests(EngineTestCase):
+    """ACTIONS_LLM_DRY_RUN decides whether a run may reach the provider at all."""
+
+    def _inference_rule(self, name="they need help"):
+        return self._rule(
+            self._action("set_up_appointment"),
+            name,
+            OutreachRule.WEIGHT_HIGH,
+            kind=OutreachRule.KIND_INFERENCE,
+            conditions={},
+            inference_prompt="the notes say they need help",
+        )
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_a_dry_run_never_calls_the_inference_pass(self):
+        self._inference_rule()
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer") as infer:
+            self._run(job)
+
+        infer.assert_not_called()
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_a_dry_run_leaves_every_candidate_unevaluable_and_says_why(self):
+        rule = self._inference_rule()
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
+        self.assertIn("ACTIONS_LLM_DRY_RUN", job.decision["inference"]["reason"])
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_a_dry_run_still_resolves_a_lead_the_deterministic_pass_settles(self):
+        self._rule(self._action("nudge_usage"), "modest momentum", OutreachRule.WEIGHT_HIGH)
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=False)
+    def test_the_inference_pass_runs_when_the_dry_run_flag_is_off(self):
+        self._inference_rule()
+        job = services.enqueue_lead(self._lead())
+
+        with mock.patch.object(inference, "infer", wraps=inference.infer) as infer:
+            self._run(job)
+
+        infer.assert_called_once()
+
+    @override_settings(ACTIONS_LLM_DRY_RUN=True)
+    def test_the_command_says_a_tick_is_dry_before_it_runs(self):
+        self._lead()
+        out = StringIO()
+
+        call_command("run_action_jobs", stdout=out)
+
+        self.assertIn("ACTIONS_LLM_DRY_RUN", out.getvalue())
 
 
 class FailureTests(EngineTestCase):
