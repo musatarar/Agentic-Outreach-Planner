@@ -23,8 +23,12 @@ python scripts/populate_demo_data.py         # seeds demo data (--reset empties 
 python manage.py runserver      # http://127.0.0.1:8000
 ```
 
-Updating a checkout from before the migration squash: `rm db.sqlite3`, then re-run
-`migrate` and `populate_demo_data` above. Demo data is regenerated, not migrated.
+Updating a checkout from before a migration was regenerated in place (`0001_initial` says
+when): the old database still records that migration as applied, so it never picks up the
+new shape and the first query fails on a missing column. Locally, `rm db.sqlite3` and re-run
+`migrate` and `populate_demo_data` above. Under Docker the applied history lives in the
+`postgres_data` volume instead, so it is `docker compose down -v`. Demo data is regenerated,
+not migrated.
 
 Put your address in `LOGIN_ALLOWED_EMAILS` in `.env`, open
 **http://127.0.0.1:8000/signin**, enter it, and the sign-in link is printed to the server
@@ -51,7 +55,13 @@ docker compose up
 ```
 
 Starts Postgres, builds the image, migrates, seeds the demo pipeline and serves on
-**http://127.0.0.1:8000/**. It runs Django's development server, not a production stack.
+**http://127.0.0.1:8000/**, with the actions engine's cron ticking beside it. It runs
+Django's development server, not a production stack.
+
+`up` reuses the image it already built, so pass `--build` after pulling code. On a column
+that does not exist, the database predates a regenerated migration: `docker compose down -v`
+drops the `postgres_data` volume and the next `up` rebuilds it from scratch. That volume
+holds only demo data, which is reseeded on every start.
 
 ## Configuration
 
