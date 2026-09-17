@@ -23,7 +23,7 @@ code exists, so the user reviews a decision rather than a diff they have to thro
    that is blank on every row, a field nothing reads, a `# not used yet` comment, a TODO: these
    are placeholders, and a placeholder is a decision nobody made. If your design only works by
    adding a structure around one, the question to raise is whether the placeholder should be
-   fixed instead.
+   fixed instead, and the first fix you offer is the smallest one that makes it real.
 
 If either step finds something, push back (next section). If neither does, just build it; this
 skill is a gate, not a tax on ordinary work.
@@ -168,9 +168,14 @@ grew a `TenantCatalog` table, a `rules_for_tenant` lookup, and a `tenant` column
 `ActionJob`, all so an opaque string could reach the user who owned the rules. Replacing the
 string with `Lead.owner`, one foreign key, deleted all three.
 Instead: when a design only works by wrapping an existing field, stop and say so: name the
-field, why it cannot express what you need, and the one-step fix. That fix is usually a
-migration, which is human-gated here, so it is a decision to raise, not a reason to route
-around it silently. Building the wrapper is the fallback after a human chooses it.
+field, why it cannot express what you need, and the one-step fix. Offer the smallest true
+relation first: the question was "which user's rules", and a `User` already existed, so the
+first option is `Lead.owner` as a foreign key to it. A richer model (a workspace with members,
+a membership table) is a separate ask; a placeholder nobody used is evidence nobody has needed
+it yet. The placeholder's name is not a requirement either: a column called `tenant` does not
+mean a `Tenant` model is wanted. That fix is usually a migration, which is human-gated here,
+so it is a decision to raise, not a reason to route around it silently. Building the wrapper
+is the fallback after a human chooses it.
 
 ### Configuration in the wrong place
 Looks like: a literal timeout or model name at the call site; a default restated in
