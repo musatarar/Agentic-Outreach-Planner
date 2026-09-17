@@ -62,23 +62,6 @@ def _env_float(name, default):
     return _env_number(name, default, float, "a number")
 
 
-def _env_bool(name, default):
-    """Parse a boolean env var, or return ``default`` when it is unset/blank.
-
-    Spelled out rather than ``== "True"``: a switch that decides whether money
-    is spent must not read a typo as "off".
-    """
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    value = raw.strip().lower()
-    if value in ("1", "true", "yes", "on"):
-        return True
-    if value in ("0", "false", "no", "off"):
-        return False
-    raise ImproperlyConfigured(f"{name} must be true or false, got {raw!r}.")
-
-
 def _env_list(name):
     """Comma-separated env var -> list of stripped, non-empty entries."""
     return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
@@ -93,10 +76,14 @@ OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
 OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
 OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
 
-# When true, an actions-engine run makes no provider call: the inference pass
-# returns no verdicts, so every candidate it would have asked about is
-# unevaluable and the run says so on each job it touches.
-ACTIONS_LLM_DRY_RUN = _env_bool("ACTIONS_LLM_DRY_RUN", False)
+# Whether an actions-engine run may call the provider. Two values:
+#   True (the default) -- dry run: the inference pass asks nothing, every
+#     candidate it would have asked about comes back unevaluable, and the run
+#     says so on each job it touches. A tick costs nothing.
+#   False -- the inference pass calls the provider, once per lead that reaches
+#     it. Only the exact string "False" turns the dry run off, so a typo leaves
+#     it on rather than quietly starting to spend.
+ACTIONS_LLM_DRY_RUN = os.environ.get("ACTIONS_LLM_DRY_RUN", "True") != "False"
 
 
 # SECURITY WARNING: keep the secret key used in production secret!

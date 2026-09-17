@@ -5,7 +5,6 @@ import os
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ImproperlyConfigured
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from project import settings as project_settings
@@ -29,37 +28,6 @@ class EnvListTests(SimpleTestCase):
     def test_an_unset_variable_reads_as_empty(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(project_settings._env_list("DJANGO_ALLOWED_HOSTS"), [])
-
-
-class EnvBoolTests(SimpleTestCase):
-    """`_env_bool` decides whether a run may spend, so it never guesses."""
-
-    def _read(self, raw):
-        with mock.patch.dict(os.environ, {"ACTIONS_LLM_DRY_RUN": raw}):
-            return project_settings._env_bool("ACTIONS_LLM_DRY_RUN", False)
-
-    def test_every_documented_true_spelling_reads_as_true(self):
-        for raw in ("1", "true", "True", "TRUE", " yes ", "on"):
-            with self.subTest(raw=raw):
-                self.assertIs(self._read(raw), True)
-
-    def test_every_documented_false_spelling_reads_as_false(self):
-        for raw in ("0", "false", "False", "no", "off"):
-            with self.subTest(raw=raw):
-                self.assertIs(self._read(raw), False)
-
-    def test_a_blank_or_unset_value_falls_back_to_the_default(self):
-        self.assertIs(self._read(""), False)
-        self.assertIs(self._read("   "), False)
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIs(project_settings._env_bool("ACTIONS_LLM_DRY_RUN", True), True)
-
-    def test_a_value_that_is_neither_is_refused_by_name(self):
-        for raw in ("maybe", "2", "tru"):
-            with self.subTest(raw=raw):
-                with self.assertRaises(ImproperlyConfigured) as caught:
-                    self._read(raw)
-                self.assertIn("ACTIONS_LLM_DRY_RUN", str(caught.exception))
 
 
 class CsrfTrustedOriginTests(TestCase):

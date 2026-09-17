@@ -135,6 +135,86 @@ class EnqueueTests(EngineTestCase):
         self.assertEqual([job.lead_id for job in queued], ["lead_002"])
 
 
+class SettledLeadTests(EngineTestCase):
+    """A lead a run decided today, with nothing new since, is not asked again."""
+
+    def _decided_today(self, lead, status=ActionJob.STATUS_NO_ACTION, **kwargs):
+        job = services.enqueue_lead(lead)
+        ActionJob.objects.filter(pk=job.pk).update(
+            status=status, finished_at=timezone.now(), **kwargs
+        )
+        return ActionJob.objects.get(pk=job.pk)
+
+    def test_a_lead_decided_today_with_no_new_events_is_not_queued_again(self):
+        lead = self._lead()
+        self._event(lead)
+        self._decided_today(lead)
+
+        self.assertEqual(services.enqueue_pending_leads(), [])
+
+    def test_an_event_newer_than_the_run_queues_the_lead_again(self):
+        lead = self._lead()
+        self._decided_today(lead)
+        self._event(lead, "deal_closed")
+
+        queued = services.enqueue_pending_leads()
+
+        self.assertEqual([job.lead_id for job in queued], [lead.id])
+
+    def test_an_event_that_arrived_mid_run_still_queues_the_lead_again(self):
+        lead = self._lead()
+        job = services.enqueue_lead(lead)
+        # Queued, then the event lands, then the run ends: it judged neither.
+        event = self._event(lead, "login")
+        ActionJob.objects.filter(pk=job.pk).update(
+            status=ActionJob.STATUS_NO_ACTION,
+            finished_at=event.timestamp + datetime.timedelta(minutes=1),
+        )
+
+        queued = services.enqueue_pending_leads()
+
+        self.assertEqual([job.lead_id for job in queued], [lead.id])
+
+    def test_a_run_that_failed_today_does_not_settle_the_lead(self):
+        lead = self._lead()
+        self._decided_today(lead, status=ActionJob.STATUS_FAILED)
+
+        queued = services.enqueue_pending_leads()
+
+        self.assertEqual([job.lead_id for job in queued], [lead.id])
+
+    def test_a_run_decided_yesterday_does_not_settle_the_lead(self):
+        lead = self._lead()
+        job = self._decided_today(lead)
+        ActionJob.objects.filter(pk=job.pk).update(
+            finished_at=timezone.now() - datetime.timedelta(days=1)
+        )
+
+        queued = services.enqueue_pending_leads()
+
+        self.assertEqual([job.lead_id for job in queued], [lead.id])
+
+    def test_a_lead_no_run_has_touched_is_still_queued(self):
+        settled = self._lead("lead_001")
+        self._decided_today(settled)
+        untouched = self._lead("lead_002")
+
+        queued = services.enqueue_pending_leads()
+
+        self.assertEqual([job.lead_id for job in queued], [untouched.id])
+
+    def test_the_second_tick_of_a_day_queues_nothing_new(self):
+        self._lead("lead_001")
+        self._lead("lead_002")
+        call_command("run_action_jobs")
+
+        out = StringIO()
+        call_command("run_action_jobs", stdout=out)
+
+        self.assertIn("queued 0 lead(s)", out.getvalue())
+        self.assertEqual(ActionJob.objects.count(), 2)
+
+
 class ClaimTests(EngineTestCase):
     def test_claiming_moves_the_job_to_processing_and_counts_the_attempt(self):
         job = services.enqueue_lead(self._lead())
@@ -317,6 +397,7 @@ class OwnerScopingTests(EngineTestCase):
         self.assertEqual(job.decision["selected"]["action_key"], "reengage_dormant")
 
 
+@override_settings(ACTIONS_LLM_DRY_RUN=False)
 class InferencePassTests(EngineTestCase):
     def _inference_rule(self, action, name, weight=OutreachRule.WEIGHT_HIGH, **kwargs):
         return self._rule(

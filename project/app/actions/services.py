@@ -16,12 +16,12 @@ import logging
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import F
+from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
 
 from project.app.actions import evaluate, inference
 from project.app.actions.models import ActionJob
-from project.app.models.lead import Lead
+from project.app.models.lead import Event, Lead
 from project.app.rules import services as rules_services
 from project.app.rules.models import OutreachRule
 from project.app.services import outreach
@@ -85,17 +85,40 @@ def enqueue_lead(lead, events=None):
     return job
 
 
-def enqueue_pending_leads(lead_ids=None):
-    """Queue every lead that has no open job -- the engine's ingest step."""
-    open_lead_ids = set(
+def settled_lead_ids(today):
+    """Leads a run already decided today with nothing new to say about them.
+
+    A job judges the events it snapshotted at ``created_at``, so an event newer
+    than that was never looked at and unsettles the lead -- ``finished_at``
+    would wrongly count one that arrived mid-run. Events only accumulate, so if
+    any of today's jobs has nothing newer than it, the latest one has not
+    either.
+    """
+    newer_event = Event.objects.filter(
+        lead_id=OuterRef("lead_id"), timestamp__gt=OuterRef("created_at")
+    )
+    return set(
+        ActionJob.objects.filter(status__in=ActionJob.DECIDED_STATUSES, finished_at__date=today)
+        .annotate(has_newer_event=Exists(newer_event))
+        .filter(has_newer_event=False)
+        .values_list("lead_id", flat=True)
+    )
+
+
+def enqueue_pending_leads(lead_ids=None, *, today=None):
+    """Queue every lead with no open job that today has not already settled --
+    the engine's ingest step."""
+    today = today or datetime.date.today()
+    skip = set(
         ActionJob.objects.filter(status__in=ActionJob.OPEN_STATUSES).values_list(
             "lead_id", flat=True
         )
     )
+    skip |= settled_lead_ids(today)
     leads = Lead.objects.prefetch_related("events")
     if lead_ids is not None:
         leads = leads.filter(id__in=list(lead_ids))
-    queued = [enqueue_lead(lead) for lead in leads if lead.id not in open_lead_ids]
+    queued = [enqueue_lead(lead) for lead in leads if lead.id not in skip]
     return [job for job in queued if job is not None]
 
 

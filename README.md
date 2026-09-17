@@ -77,7 +77,7 @@ Everything is environment variables. `.env.example` is the full list in two sect
 | `COPY_VERIFY_LEVEL` | Grounding strictness: `off` \| `standard` \| `strict`. |
 | `LLM_MODEL` | Model id; blank uses the adapter's own default. |
 | `OUTREACH_MAX_IN_FLIGHT`, `OUTREACH_MAX_ATTEMPTS`, `OUTREACH_INITIAL_BACKOFF_S`, `OUTREACH_MAX_BACKOFF_S`, `OUTREACH_BACKOFF_MULTIPLIER`, `OUTREACH_REQUEST_TIMEOUT_S`, `OUTREACH_PER_LEAD_TIMEOUT_S` | How hard a planner run drives the provider. Bad values fail at boot with the variable named. |
-| `ACTIONS_LLM_DRY_RUN` | `true` makes an actions-engine run skip the provider: every inference candidate comes back unevaluable and the tick costs nothing. Default `false`. A value that is neither true nor false fails at boot. |
+| `ACTIONS_LLM_DRY_RUN` | Whether an actions-engine run may call the provider. `True` (the default) skips it: every inference candidate comes back unevaluable and the tick costs nothing. Exactly `False` turns the dry run off; anything else leaves it on. |
 | `ACTIONS_CRON_INTERVAL_SECONDS` | Seconds between `run_action_jobs` ticks in the compose `cron` service. Read by `docker/cron.sh`, not by Django. Default 300. |
 | `LOGIN_LINK_DELIVERY`, `LOGIN_TOKEN_TTL_SECONDS`, `LOGIN_LINK_BASE_URL`, `LOGIN_RATE_LIMIT_EMAIL`, `LOGIN_RATE_LIMIT_IP`, `LOGIN_RESEND_COOLDOWN_SECONDS` | Magic-link delivery, expiry and rate limits. |
 
@@ -100,7 +100,7 @@ python evals/run_rules_eval.py
 
 # actions engine: queue every lead without an open job, then run the batch.
 # `docker compose up` runs this on a loop in the `cron` service; this is the
-# same entry point by hand. ACTIONS_LLM_DRY_RUN=true keeps a run off the provider.
+# same entry point by hand. Runs are dry by default: ACTIONS_LLM_DRY_RUN=False spends.
 python manage.py run_action_jobs [--limit N] [--no-enqueue]
 
 # frontend -- only when frontend/ changed

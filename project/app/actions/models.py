@@ -38,6 +38,14 @@ class ActionJob(models.Model):
     # Statuses that still owe work, so re-enqueuing the lead is a no-op.
     OPEN_STATUSES = (STATUS_QUEUED, STATUS_PROCESSING, STATUS_INFERRING)
 
+    # Statuses where the engine reached a verdict. A failed job is not one:
+    # it owes a retry, so it never settles the lead.
+    DECIDED_STATUSES = (
+        STATUS_DETERMINISTIC_ACTION_CHOSEN,
+        STATUS_INFERRED_ACTION_CHOSEN,
+        STATUS_NO_ACTION,
+    )
+
     # The state machine. A transition runs as a conditional UPDATE from the
     # status named here, never a read-then-check.
     ALLOWED_TRANSITIONS = {

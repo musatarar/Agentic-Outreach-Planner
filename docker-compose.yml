@@ -19,8 +19,9 @@ x-app-env: &app-env
   CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-  # Actions engine: true makes a run skip the provider entirely, so every
-  # inference candidate comes back unevaluable and the tick costs nothing.
+  # Actions engine: a dry run skips the provider entirely, so every inference
+  # candidate comes back unevaluable and the tick costs nothing. Blank reads as
+  # the settings.py default, which is a dry run -- set exactly "False" to spend.
   ACTIONS_LLM_DRY_RUN: ${ACTIONS_LLM_DRY_RUN:-}
   # Planner concurrency, retries and timeouts -- see .env.example for what
   # each one bounds. Passed through blank rather than defaulted here:
