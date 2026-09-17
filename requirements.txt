@@ -12,3 +12,7 @@ psycopg2-binary==2.9.12
 # (chatgpt, deepseek, groq) talk REST over httpx with no vendor SDK.
 anthropic==0.109.1
 httpx==0.28.1
+
+# Structured outputs derive their JSON schema from a pydantic model; pinned
+# here because the LLM layer imports it, not just the anthropic SDK.
+pydantic==2.13.5
