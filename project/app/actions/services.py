@@ -19,7 +19,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from project.app.actions import evaluate, inference
-from project.app.actions.models import ActionJob, TenantCatalog
+from project.app.actions.models import ActionJob
 from project.app.models.lead import Lead
 from project.app.rules import services as rules_services
 from project.app.rules.models import OutreachRule
@@ -47,19 +47,18 @@ class _JobLead:
 
 
 # --------------------------------------------------------------------------
-# the tenant's catalog
+# the lead's catalog
 # --------------------------------------------------------------------------
 
 
-def rules_for_tenant(tenant):
-    """Every enabled rule whose catalog this tenant runs.
+def rules_for_lead(lead):
+    """Every enabled rule in the catalog of the user whose book this lead is in.
 
-    Rules are owned by a user and leads carry an opaque tenant;
-    :class:`~project.app.actions.models.TenantCatalog` is the join. A tenant
-    with no rows there has no rules, and its jobs resolve to no action.
+    An unowned lead has no rules, so its job resolves to no action.
     """
-    owners = TenantCatalog.objects.filter(tenant=tenant).values("owner_id")
-    return rules_services.enabled_rules_for_owners(owners)
+    if lead.owner_id is None:
+        return OutreachRule.objects.none()
+    return rules_services.enabled_rules_for(lead.owner_id)
 
 
 # --------------------------------------------------------------------------
@@ -77,7 +76,7 @@ def enqueue_lead(lead, events=None):
     events = list(lead.events.all()) if events is None else list(events)
     try:
         with transaction.atomic():
-            job = ActionJob.objects.create(lead=lead, tenant=lead.tenant)
+            job = ActionJob.objects.create(lead=lead)
             job.events.set(events)
     except IntegrityError:
         # Whoever won the race owns the open job; None means it finished since.
@@ -157,7 +156,7 @@ def run_job(job, *, today=None):
 
 def _resolve(job, today):
     lead = _JobLead(job.lead, job.events.all())
-    rules = list(rules_for_tenant(job.tenant))
+    rules = list(rules_for_lead(job.lead))
     unevaluable = []
 
     matched = [
@@ -166,7 +165,7 @@ def _resolve(job, today):
         if rule.kind == OutreachRule.KIND_DETERMINISTIC and _holds(rule, lead, today, unevaluable)
     ]
     decision = {
-        "tenant": job.tenant,
+        "owner_id": job.lead.owner_id,
         "rules_evaluated": len(rules),
         "deterministic": {
             "matched_rule_ids": [rule.pk for rule in matched],

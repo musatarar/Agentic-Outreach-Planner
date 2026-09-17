@@ -13,9 +13,9 @@ from project.app.actions.models import ActionJob
 
 class Command(BaseCommand):
     help = (
-        "Run queued action jobs: pull the lead's tenant catalog, run the "
-        "deterministic rules, then the (stubbed) inference pass, and record "
-        "the action the weight tally chose."
+        "Run queued action jobs: pull the rules of the user whose book the "
+        "lead is in, run the deterministic ones, then the (stubbed) inference "
+        "pass, and record the action the weight tally chose."
     )
 
     def add_arguments(self, parser):

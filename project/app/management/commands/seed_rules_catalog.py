@@ -14,7 +14,6 @@ restored. Safe to re-run, but not a merge.
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from project.app.actions.models import TenantCatalog
 from project.app.rules.models import ActionType, OutreachRule
 from project.app.rules.utils import _all_of, _cond
 from project.app.services.owners import DEFAULT_OWNER_EMAIL, resolve_owner
@@ -145,11 +144,6 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--owner", help="Email of the user who owns the catalog.")
-        parser.add_argument(
-            "--tenant",
-            default="",
-            help="Tenant whose leads run this catalog (default: the blank tenant every demo lead carries).",
-        )
 
     @transaction.atomic
     def handle(self, *args, **options):
@@ -185,13 +179,8 @@ class Command(BaseCommand):
             rules.append(rule)
         OutreachRule.objects.bulk_create(rules)
 
-        # Without this join the actions engine finds no rules for the lead's tenant.
-        tenant = options.get("tenant") or ""
-        TenantCatalog.objects.get_or_create(tenant=tenant, owner=owner)
-
         self.stdout.write(
             self.style.SUCCESS(
-                f"Seeded {len(action_by_key)} action types and {len(rules)} rules for {email}, "
-                f"run by tenant {tenant!r}."
+                f"Seeded {len(action_by_key)} action types and {len(rules)} rules for {email}."
             )
         )

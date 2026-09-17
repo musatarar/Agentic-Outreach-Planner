@@ -1,4 +1,4 @@
-"""The actions engine's own tables: the work queue, and whose rules a tenant runs.
+"""The actions engine's own table: the queue of per-lead jobs.
 
 A job is one lead's trip through the engine: queued with the events it was
 queued for, claimed by the cron, then resolved by the deterministic pass or,
@@ -6,35 +6,8 @@ failing that, the inference pass. Every status write is a conditional UPDATE in
 :mod:`project.app.actions.services`, so two crons cannot run the same job.
 """
 
-from django.conf import settings
 from django.db import models
 from django.db.models import Q
-
-
-class TenantCatalog(models.Model):
-    """Whose rules catalog the engine evaluates for a tenant's leads.
-
-    Rules are owned by a user (``OutreachRule.owner``) and leads carry an
-    opaque ``tenant``; nothing joined the two, so this is that join. A tenant
-    with no row here has no rules, and its jobs resolve to no action.
-    """
-
-    tenant = models.CharField(max_length=64, blank=True, default="", db_index=True)
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="tenant_catalogs"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["tenant", "id"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["tenant", "owner"], name="tcatalog_one_row_per_tenant_owner"
-            ),
-        ]
-
-    def __str__(self):
-        return f"tenant {self.tenant!r} runs user {self.owner_id}'s catalog"
 
 
 class ActionJob(models.Model):
@@ -79,9 +52,6 @@ class ActionJob(models.Model):
     }
 
     lead = models.ForeignKey("app.Lead", on_delete=models.CASCADE, related_name="action_jobs")
-    # Snapshot of the lead's tenant at enqueue: the job keeps running against
-    # the catalog it was queued for.
-    tenant = models.CharField(max_length=64, blank=True, default="", db_index=True)
     events = models.ManyToManyField("app.Event", blank=True, related_name="action_jobs")
     status = models.CharField(
         max_length=32, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True

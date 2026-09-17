@@ -44,8 +44,10 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 actions/ is the queue and the cron: one ActionJob per lead, resolved by the deterministic
 pass (actions/evaluate.py, the evaluator for the conditions vocabulary rules/utils.py
-validates) or the stubbed inference pass, then the rules entity's own weight tally. A
-tenant runs the catalogs TenantCatalog maps to it; nothing else joins leads to rules.
+validates) or the stubbed inference pass, then the rules entity's own weight tally. A job
+runs the catalog of lead.owner; an unowned lead has no rules. The vocabulary is derived
+from the columns, so it can widen past what evaluate.py resolves — an unresolved field is
+refused at evaluation and recorded on the job, never fired.
 services/outreach.py is the rules engine and the planner (numbered phases in comments);
 services/llm/ is the provider-agnostic layer; services/verify.py is the grounding verifier.
 Registries, to find anything: project/app/models/__init__.py, views/__init__.py,

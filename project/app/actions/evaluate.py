@@ -1,8 +1,8 @@
 """The deterministic pass: one stored ``conditions`` payload against one lead.
 
-:mod:`project.app.rules.utils` owns the vocabulary and refuses on write
-anything this module cannot evaluate; every field it lists is resolved here.
-Pure Python and duck-typed like the planner's rule functions -- no database, no
+:mod:`project.app.rules.utils` owns the vocabulary, reading it off the Lead and
+Event columns. A field it names that nothing here resolves is refused at
+evaluation rather than quietly firing. Pure Python and duck-typed like the planner's rule functions -- no database, no
 provider call. Lead-controlled text is only ever read through the planner's
 sanitized notes blob.
 """
@@ -92,7 +92,7 @@ def _group(operator, children, lead, today):
 def _leaf(leaf, lead, today):
     source = leaf.get("source")
     field = leaf.get("field")
-    field_type = utils.FIELDS.get(source, {}).get(field)
+    field_type = utils.fields_by_source().get(source, {}).get(field)
     if field_type is None:
         raise ConditionError(f"Unknown field {field!r} on source {source!r}.")
     return _compare(
@@ -104,7 +104,12 @@ def _value(source, field, lead, today):
     if source == utils.SOURCE_LEAD:
         # `_as_date` only narrows datetimes; every other type passes through.
         return outreach._as_date(getattr(lead, field, None))
-    return RESOLVERS[source][field](lead, today)
+    resolver = RESOLVERS.get(source, {}).get(field)
+    if resolver is None:
+        # In the vocabulary, but nothing computes it yet -- see the Event
+        # columns, which need an "any event where..." semantic first.
+        raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")
+    return resolver(lead, today)
 
 
 def _blank(value):

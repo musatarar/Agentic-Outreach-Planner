@@ -11,22 +11,20 @@ from django.test import TestCase
 from django.utils import timezone
 
 from project.app.actions import evaluate, inference, services
-from project.app.actions.models import ActionJob, TenantCatalog
+from project.app.actions.models import ActionJob
 from project.app.models import ActionType, Event, Lead, OutreachRule
 from project.app.rules import utils
 from project.app.rules.utils import _all_of, _cond
 
 TODAY = datetime.date(2026, 6, 12)
-TENANT = "acme"
 
 
 class EngineTestCase(TestCase):
     def setUp(self):
         super().setUp()
         self.owner = get_user_model().objects.create_user(username="planner@lockedin.example")
-        TenantCatalog.objects.create(tenant=TENANT, owner=self.owner)
 
-    def _lead(self, lead_id="lead_001", tenant=TENANT, **kwargs):
+    def _lead(self, lead_id="lead_001", owner=None, **kwargs):
         fields = dict(
             agency_name="Summit Risk Advisors",
             contact_name="Priya Nair",
@@ -46,7 +44,7 @@ class EngineTestCase(TestCase):
             hubspot_notes="",
         )
         fields.update(kwargs)
-        return Lead.objects.create(id=lead_id, tenant=tenant, **fields)
+        return Lead.objects.create(id=lead_id, owner=owner or self.owner, **fields)
 
     def _event(self, lead, type_="login", **meta):
         return Event.objects.create(lead=lead, type=type_, timestamp=timezone.now(), meta=meta)
@@ -66,7 +64,7 @@ class EngineTestCase(TestCase):
 
 
 class EnqueueTests(EngineTestCase):
-    def test_a_queued_job_snapshots_the_leads_tenant_and_its_events(self):
+    def test_a_queued_job_holds_the_lead_and_the_events_it_was_queued_with(self):
         lead = self._lead()
         self._event(lead)
         self._event(lead, "quote_created")
@@ -74,7 +72,7 @@ class EnqueueTests(EngineTestCase):
         job = services.enqueue_lead(lead)
 
         self.assertEqual(job.status, ActionJob.STATUS_QUEUED)
-        self.assertEqual(job.tenant, TENANT)
+        self.assertEqual(job.lead, lead)
         self.assertEqual(job.events.count(), 2)
 
     def test_a_job_keeps_the_events_it_was_queued_with_when_new_ones_arrive(self):
@@ -264,10 +262,9 @@ class DeterministicPassTests(EngineTestCase):
         self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
 
 
-class TenantScopingTests(EngineTestCase):
-    def test_a_rule_belonging_to_another_tenants_catalog_never_fires(self):
+class OwnerScopingTests(EngineTestCase):
+    def test_another_users_rules_never_fire_on_this_leads_job(self):
         other = get_user_model().objects.create_user(username="other@elsewhere.example")
-        TenantCatalog.objects.create(tenant="globex", owner=other)
         self._rule(self._action("nudge_usage", owner=other), "theirs", OutreachRule.WEIGHT_HIGH)
         job = services.enqueue_lead(self._lead())
 
@@ -277,27 +274,32 @@ class TenantScopingTests(EngineTestCase):
         self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
         self.assertEqual(job.decision["rules_evaluated"], 0)
 
-    def test_a_tenant_with_no_catalog_row_has_no_rules(self):
+    def test_an_unowned_lead_has_no_rules(self):
         self._rule(self._action("nudge_usage"), "ours", OutreachRule.WEIGHT_HIGH)
-        job = services.enqueue_lead(self._lead(tenant="unmapped"))
+        lead = self._lead()
+        Lead.objects.filter(pk=lead.pk).update(owner=None)
+        job = services.enqueue_lead(Lead.objects.get(pk=lead.pk))
 
         self._run(job)
 
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
         self.assertEqual(job.decision["rules_evaluated"], 0)
+        self.assertIsNone(job.decision["owner_id"])
 
-    def test_two_owners_mapped_to_one_tenant_are_evaluated_together(self):
+    def test_the_job_runs_the_catalog_of_the_user_whose_book_the_lead_is_in(self):
         colleague = get_user_model().objects.create_user(username="colleague@lockedin.example")
-        TenantCatalog.objects.create(tenant=TENANT, owner=colleague)
-        self._rule(self._action("nudge_usage"), "mine", OutreachRule.WEIGHT_LOW)
-        self._rule(self._action("nudge_usage", owner=colleague), "theirs", OutreachRule.WEIGHT_LOW)
-        job = services.enqueue_lead(self._lead())
+        self._rule(self._action("nudge_usage"), "mine", OutreachRule.WEIGHT_HIGH)
+        self._rule(
+            self._action("reengage_dormant", owner=colleague), "theirs", OutreachRule.WEIGHT_HIGH
+        )
+        job = services.enqueue_lead(self._lead(owner=colleague))
 
         self._run(job)
 
         job.refresh_from_db()
-        self.assertEqual(job.decision["rules_evaluated"], 2)
+        self.assertEqual(job.decision["owner_id"], colleague.pk)
+        self.assertEqual(job.decision["selected"]["action_key"], "reengage_dormant")
 
 
 class InferencePassTests(EngineTestCase):
@@ -452,14 +454,15 @@ class SeededCatalogTests(EngineTestCase):
             with self.subTest(spec["name"]):
                 self.assertIsInstance(evaluate.matches(conditions, lead, TODAY), bool)
 
-    def test_the_seed_command_maps_the_demo_tenant_to_the_catalog_it_seeds(self):
+    def test_the_seeded_catalog_is_what_its_owners_leads_are_run_against(self):
         call_command("seed_rules_catalog", owner="demo@lockedin.example")
+        demo = get_user_model().objects.get(username="demo@lockedin.example")
 
-        catalog = TenantCatalog.objects.get(tenant="", owner__username="demo@lockedin.example")
-        self.assertTrue(services.rules_for_tenant(catalog.tenant).exists())
+        self.assertTrue(services.rules_for_lead(self._lead(owner=demo)).exists())
+        self.assertFalse(services.rules_for_lead(self._lead("lead_002")).exists())
 
     def test_the_seeded_catalog_chooses_the_planners_action_for_a_dormant_lead(self):
-        call_command("seed_rules_catalog", owner="demo@lockedin.example", tenant=TENANT)
+        call_command("seed_rules_catalog", owner=self.owner.username)
         lead = self._lead(last_login_date=TODAY - datetime.timedelta(days=60))
 
         job = self._run(services.enqueue_lead(lead))
@@ -467,6 +470,39 @@ class SeededCatalogTests(EngineTestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
         self.assertEqual(job.selected_action.key, "reengage_dormant")
+
+
+class VocabularyCoverageTests(EngineTestCase):
+    """What the catalog can store against what this engine can evaluate. The
+    vocabulary is read off the Lead and Event columns, so it can widen without
+    anyone touching the engine."""
+
+    def test_every_computed_field_in_the_vocabulary_has_a_resolver(self):
+        fields = utils.fields_by_source()
+        for source in (utils.SOURCE_DERIVED, utils.SOURCE_NOTES):
+            for field in fields[source]:
+                with self.subTest(source=source, field=field):
+                    self.assertIn(field, evaluate.RESOLVERS[source])
+
+    def test_every_lead_column_in_the_vocabulary_is_read_straight_off_the_row(self):
+        lead = self._lead()
+        for field in utils.fields_by_source()[utils.SOURCE_LEAD]:
+            with self.subTest(field=field):
+                self.assertTrue(hasattr(lead, field))
+
+    def test_an_event_column_stores_in_a_rule_but_has_no_verdict_yet(self):
+        unresolved = set(utils.fields_by_source()[utils.SOURCE_EVENTS]) - set(
+            evaluate.RESOLVERS[utils.SOURCE_EVENTS]
+        )
+        self.assertEqual(unresolved, {"type", "timestamp"})
+
+        payload = _all_of(
+            _cond("deals_closed", ">", 0),
+            _cond("type", "==", "login", source=utils.SOURCE_EVENTS),
+        )
+        utils.validate_conditions(payload)
+        with self.assertRaises(evaluate.ConditionError):
+            evaluate.matches(payload, self._lead(), TODAY)
 
 
 class ConstraintTests(EngineTestCase):

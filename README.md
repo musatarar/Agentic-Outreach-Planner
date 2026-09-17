@@ -111,11 +111,11 @@ lint, mypy, the migration check, the rules eval and the frontend build.
 ## Architecture
 
 - **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction`,
-  `DismissedOutreachKey`, `LoginToken`, `ActionJob`, `TenantCatalog`.
+  `DismissedOutreachKey`, `LoginToken`, `ActionJob`.
 - **Actions engine** (`project/app/actions/`): a queue of per-lead jobs, each holding the
   events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
-  the tenant's deterministic rules in-process, sends what is left to the inference pass
-  (stubbed), and records the action the weight tally chose.
+  the deterministic rules of the user whose book the lead is in, sends what is left to the
+  inference pass (stubbed), and records the action the weight tally chose.
 - **Rules + planner** (`services/outreach.py`): `determine_action` / `determine_priority`
   are pure functions over a lead and its events. `plan_outreach` runs in numbered phases —
   read, classify and build prompts, call the provider, run the two output gates, write.
