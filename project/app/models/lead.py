@@ -1,12 +1,24 @@
 """The lead record and its ingested activity events."""
 
+from django.conf import settings
 from django.db import models
 
 
 class Lead(models.Model):
+    # Columns the lead authors: untrusted everywhere, so the rules vocabulary
+    # sources them away from `lead` rather than letting a rule corroborate on them.
+    UNTRUSTED_FIELDS = frozenset({"hubspot_notes"})
+
     id = models.CharField(max_length=32, primary_key=True)  # "lead_001"
-    # Owning tenant -- opaque id, blank on every row today; nothing filters on it yet.
-    tenant = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # Whose book this lead sits in: the user whose rules an engine runs for it.
+    # NULL where ingestion named nobody, and an unowned lead has no rules.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="leads",
+    )
     agency_name = models.CharField(max_length=255)
     contact_name = models.CharField(max_length=255)
     contact_email = models.EmailField()
@@ -29,6 +41,8 @@ class Lead(models.Model):
 
 
 class Event(models.Model):
+    UNTRUSTED_FIELDS = frozenset({"meta"})
+
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="events")
     type = models.CharField(max_length=32)  # login, quote_created, quote_submitted,
     # deal_closed, call_logged, email_sent,

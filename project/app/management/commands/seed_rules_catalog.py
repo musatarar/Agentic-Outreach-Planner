@@ -11,17 +11,13 @@ themselves are deleted, and the seeded actions' label and urgency are
 restored. Safe to re-run, but not a merge.
 """
 
-from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from project.app.actions.models import TenantCatalog
 from project.app.rules.models import ActionType, OutreachRule
 from project.app.rules.utils import _all_of, _cond
-
-# Used when no --owner is given and LOGIN_ALLOWED_EMAILS is empty.
-DEFAULT_OWNER_EMAIL = "demo@lockedin.example"
+from project.app.services.owners import DEFAULT_OWNER_EMAIL, resolve_owner
 
 ACTIONS = [
     {
@@ -56,8 +52,10 @@ ACTIONS = [
     },
 ]
 
-# "conditions" makes a deterministic rule, "inference" an AI-inference one;
-# derived fields name the engine's computed predicates.
+# "conditions" makes a deterministic rule, "inference" an AI-inference one.
+# Each condition's source is resolved from the field name (`utils.source_for`),
+# so a lead column reads as `lead`, an event column as `events`, and the
+# engine's computed figures as `derived` or `notes`.
 RULES = [
     {
         "name": "Demo completed but never signed up",
@@ -82,8 +80,8 @@ RULES = [
         "action": "follow_up_after_hold",
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
-            _cond("hubspot_notes", "contains", "HOLD_PHRASES", source="notes"),
-            _cond("gone_quiet", "==", True, source="derived"),
+            _cond("hubspot_notes", "contains", "HOLD_PHRASES"),
+            _cond("gone_quiet", "==", True),
         ),
     },
     {
@@ -92,7 +90,7 @@ RULES = [
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
             _cond("signed_up_date", "exists"),
-            _cond("days_since_last_login", ">", 21, source="derived"),
+            _cond("days_since_last_login", ">", 21),
         ),
     },
     {
@@ -100,7 +98,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
-            _cond("days_since_last_login", "<=", 21, source="derived"),
+            _cond("days_since_last_login", "<=", 21),
             _cond("quotes_created", ">", 0),
             _cond("quotes_submitted", "==", 0),
         ),
@@ -110,10 +108,10 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
-            _cond("days_since_last_login", "<=", 21, source="derived"),
+            _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
-            _cond("milestone_from_notes", "exists", source="notes"),
-            _cond("deals_below_milestone", "==", True, source="notes"),
+            _cond("milestone_from_notes", "exists"),
+            _cond("deals_below_milestone", "==", True),
         ),
     },
     {
@@ -121,7 +119,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_LOW,
         "conditions": _all_of(
-            _cond("days_since_last_login", "<=", 21, source="derived"),
+            _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
             _cond("deals_closed", "<", 5),
         ),
@@ -155,8 +153,8 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        email = self._resolve(options.get("owner"))
-        owner = self._user_for(email)
+        owner = resolve_owner(options.get("owner"))
+        email = owner.username
 
         OutreachRule.objects.filter(owner=owner).delete()
         action_by_key = {}
@@ -197,22 +195,3 @@ class Command(BaseCommand):
                 f"run by tenant {tenant!r}."
             )
         )
-
-    def _resolve(self, explicit):
-        if explicit:
-            return explicit.strip().lower()
-        if settings.LOGIN_ALLOWED_EMAILS:
-            return sorted(settings.LOGIN_ALLOWED_EMAILS)[0]
-        return DEFAULT_OWNER_EMAIL
-
-    def _user_for(self, email):
-        """Fetch or create the owner, matching the magic-link sign-in
-        convention: username == email, unusable password."""
-        user_model = get_user_model()
-        user = user_model.objects.filter(username=email).first()
-        if user is not None:
-            return user
-        user = user_model(username=email, email=email)
-        user.set_unusable_password()
-        user.save()
-        return user
