@@ -2,8 +2,9 @@
 
 One job runs as four steps -- read the lead and the events it was queued for,
 the deterministic pass (pure Python, no tokens), the inference pass for what is
-left (stubbed, see :mod:`project.app.actions.inference`), then the weight tally
-the rules entity already owns (``rules.services.select_action``). The chosen
+left (:mod:`project.app.rules.inference`, one provider call unless the run is
+dry), then the weight tally the rules entity already owns
+(``rules.services.select_action``). The chosen
 action and the tally's workings land on the job; generating copy for it is the
 planner's job, not this one.
 
@@ -19,9 +20,10 @@ from django.db import IntegrityError, transaction
 from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
 
-from project.app.actions import evaluate, inference
+from project.app.actions import evaluate
 from project.app.actions.models import ActionJob
 from project.app.models.lead import Event, Lead
+from project.app.rules import inference, schema
 from project.app.rules import services as rules_services
 from project.app.rules.models import OutreachRule
 from project.app.services import outreach
@@ -30,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 # How many jobs one cron tick drains; the command's --limit overrides it.
 DEFAULT_BATCH_SIZE = 50
+
+DRY_RUN = "ACTIONS_LLM_DRY_RUN is set: this run made no provider call."
 
 
 class _JobLead:
@@ -211,7 +215,7 @@ def _resolve(job, today):
         return job
 
     section = (
-        inference.not_asked(candidates, inference.DRY_RUN)
+        _not_asked(candidates, DRY_RUN)
         if settings.ACTIONS_LLM_DRY_RUN
         else inference.infer(candidates, lead, today)
     )
@@ -236,29 +240,29 @@ def _resolve(job, today):
     return job
 
 
-def _decision(job, rules, matched, unevaluable, section=None):
-    """The job's workings: what each pass read, matched and could not judge.
+def _not_asked(candidates, reason):
+    """The inference section for a pass that never ran: no verdict for any
+    candidate, so each is unevaluable rather than a non-match, and ``reason``
+    records which silence this was."""
+    section = schema.inference_section(
+        len(candidates), (), (), sorted(rule.pk for rule in candidates)
+    )
+    section["reason"] = reason
+    return section
 
-    ``unevaluable_rule_ids`` is the union of both passes' -- the inference
-    section's copy is lifted out rather than nested a second time, and so is
-    its own rule count, which the top-level figure already covers.
-    """
-    unevaluable = set(unevaluable)
-    decision = {
-        "owner_id": job.lead.owner_id,
-        "rules_evaluated": len(rules),
-        "deterministic": {
+
+def _decision(job, rules, matched, unevaluable, section=None):
+    """The job's workings: what each pass read, matched and could not judge."""
+    return schema.decision(
+        job.lead.owner_id,
+        len(rules),
+        deterministic={
             "matched_rule_ids": [rule.pk for rule in matched],
             "matched_rules": [rule.name for rule in matched],
+            "unevaluable_rule_ids": list(unevaluable),
         },
-    }
-    if section is not None:
-        section = dict(section)
-        section.pop("rules_evaluated", None)
-        unevaluable |= set(section.pop("unevaluable_rule_ids", None) or ())
-        decision["inference"] = section
-    decision["unevaluable_rule_ids"] = sorted(unevaluable)
-    return decision
+        inference=section,
+    )
 
 
 def _holds(rule, lead, today, unevaluable):

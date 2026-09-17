@@ -11,27 +11,24 @@ from django.db.models import Q
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from project.app.actions import evaluate, inference, services
+from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
 from project.app.models import ActionType, Event, Lead, OutreachRule
-from project.app.rules import utils
+from project.app.rules import inference, schema, utils
 from project.app.rules.utils import _all_of, _cond
 
 TODAY = datetime.date(2026, 6, 12)
 
 
-def _section(*holding):
-    """An inference section as ``rules.inference.infer`` returns one, with
-    every named rule holding."""
-    return {
-        "rules_evaluated": len(holding),
-        "matched_rule_ids": [rule.pk for rule in holding],
-        "matched_rules": [rule.name for rule in holding],
-        "verdicts": [
-            {"rule_id": rule.pk, "holds": True, "evidence_quote": None} for rule in holding
-        ],
-        "unevaluable_rule_ids": [],
-    }
+def _section(*holding, unevaluable=()):
+    """An inference section as ``rules.inference.infer`` returns one: every
+    named rule holding, and every id in ``unevaluable`` answered unusably."""
+    verdicts = [
+        schema.Verdict(rule_id=rule.pk, holds=True, evidence_quote=None) for rule in holding
+    ]
+    return schema.inference_section(
+        len(holding) + len(unevaluable), holding, verdicts, list(unevaluable)
+    )
 
 
 class EngineTestCase(TestCase):
@@ -415,32 +412,35 @@ class InferencePassTests(EngineTestCase):
         rule = self._inference_rule(action, "they need help")
         job = services.enqueue_lead(self._lead())
 
-        with mock.patch.object(inference, "infer", wraps=inference.infer) as infer:
+        with mock.patch.object(
+            inference, "infer", return_value=_section(unevaluable=[rule.pk])
+        ) as infer:
             self._run(job)
 
         candidates, _lead, today = infer.call_args.args
         self.assertEqual([candidate.pk for candidate in candidates], [rule.pk])
         self.assertEqual(today, TODAY)
         job.refresh_from_db()
-        self.assertIn("inference", job.decision)
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
 
-    def test_the_stub_chooses_no_action_and_says_what_is_missing(self):
-        self._inference_rule(self._action("set_up_appointment"), "they need help")
+    def test_a_pass_that_answers_nothing_chooses_no_action(self):
+        rule = self._inference_rule(self._action("set_up_appointment"), "they need help")
         job = services.enqueue_lead(self._lead())
 
-        self._run(job)
+        with mock.patch.object(inference, "infer", return_value=_section(unevaluable=[rule.pk])):
+            self._run(job)
 
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
         self.assertIsNone(job.selected_action)
         self.assertNotIn("selected", job.decision)
-        self.assertIn("TODO", job.decision["inference"]["reason"])
 
-    def test_a_candidate_the_stub_never_asked_about_is_unevaluable_not_a_refusal(self):
+    def test_a_candidate_answered_unusably_is_unevaluable_not_a_refusal(self):
         rule = self._inference_rule(self._action("set_up_appointment"), "they need help")
         job = services.enqueue_lead(self._lead())
 
-        self._run(job)
+        with mock.patch.object(inference, "infer", return_value=_section(unevaluable=[rule.pk])):
+            self._run(job)
 
         job.refresh_from_db()
         self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
@@ -468,7 +468,10 @@ class InferencePassTests(EngineTestCase):
         inferred = self._inference_rule(self._action("set_up_appointment"), "they need help")
         job = services.enqueue_lead(self._lead())
 
-        self._run(job)
+        with mock.patch.object(
+            inference, "infer", return_value=_section(unevaluable=[inferred.pk])
+        ):
+            self._run(job)
 
         job.refresh_from_db()
         self.assertEqual(
@@ -486,7 +489,7 @@ class InferencePassTests(EngineTestCase):
         )
         job = services.enqueue_lead(self._lead())
 
-        with mock.patch.object(inference, "infer", wraps=inference.infer) as infer:
+        with mock.patch.object(inference, "infer", return_value=_section()) as infer:
             self._run(job)
 
         candidates, _lead, _today = infer.call_args.args
@@ -591,7 +594,7 @@ class DryRunTests(EngineTestCase):
         self._inference_rule()
         job = services.enqueue_lead(self._lead())
 
-        with mock.patch.object(inference, "infer", wraps=inference.infer) as infer:
+        with mock.patch.object(inference, "infer", return_value=_section()) as infer:
             self._run(job)
 
         infer.assert_called_once()
