@@ -5,10 +5,28 @@
 
 INTERVAL="${ACTIONS_CRON_INTERVAL_SECONDS:-300}"
 
-# The web container owns migrations and seeding. A tick before those land would
-# fail on a missing table, so wait for the schema rather than racing it.
-until python manage.py migrate --check >/dev/null 2>&1; do
-    echo "actions cron: waiting for migrations"
+# ~2 minutes of polling: a cold start still migrating gets through, a real
+# fault does not wait for it forever.
+SCHEMA_ATTEMPTS=60
+
+# The web container applies the migrations (docker/entrypoint.sh) and a tick
+# before they land would fail on a missing table. `migrate --check` fails the
+# same way for a database this container cannot reach, so print what it says
+# rather than swallowing it -- otherwise every fault reads as "still migrating".
+attempt=0
+until REASON="$(python manage.py migrate --check 2>&1)"; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -eq 1 ]; then
+        echo "actions cron: waiting for the web container to apply migrations"
+        if [ -n "$REASON" ]; then
+            echo "$REASON"
+        fi
+    fi
+    if [ "$attempt" -ge "$SCHEMA_ATTEMPTS" ]; then
+        echo "actions cron: no usable schema after $attempt attempts, giving up:"
+        echo "$REASON"
+        exit 1
+    fi
     sleep 2
 done
 
