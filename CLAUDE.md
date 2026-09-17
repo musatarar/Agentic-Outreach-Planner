@@ -119,6 +119,8 @@ hygiene.
 - Closed matrix: every variable the app reads has a `.env.example` entry and a
   docker-compose passthrough, and nothing is documented that is not read. Exceptions:
   Django's own DJANGO_SETTINGS_MODULE and the test-only OUTREACH_ALLOW_STUB_LLM gate.
+- Minimal holds inside a helper too: a boolean reads `true`/`false` like the existing one,
+  not a synonym table. Accept what the ask named and raise on the rest.
 - DJANGO_SECRET_KEY is mandatory (boot fails without it). Boot-time checks live in
   project/app/checks.py — add one when a misconfiguration should fail boot, not first use.
 

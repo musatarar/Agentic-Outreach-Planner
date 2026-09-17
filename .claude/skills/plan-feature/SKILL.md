@@ -58,6 +58,12 @@ Write code in the plan only where the shape *is* the decision (a field type, a c
 name, a throttle rate). Full class bodies and migration tables belong in the PR, not the
 plan.
 
+Minimal holds inside the function too, not just across files. "An env bool for dry run"
+is a variable that reads `true` or `false`, the way the existing one does. A parser that
+also takes `yes`, `on` and `1` is a vocabulary decision: it makes two variables in the
+same file accept different spellings, and nobody chose that. Accept the inputs the ask
+named, raise on the rest, and put the synonyms in section 4 if you think they matter.
+
 Tests: the ones that prove each done-when, plus the mechanical edits the change forces on
 existing tests (name those files). Not a module per new function, and not new coverage of
 code the change does not touch.
