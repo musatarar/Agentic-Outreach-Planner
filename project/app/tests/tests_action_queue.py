@@ -19,6 +19,20 @@ from project.app.rules.utils import _all_of, _cond
 TODAY = datetime.date(2026, 6, 12)
 
 
+def _section(*holding):
+    """An inference section as ``rules.inference.infer`` returns one, with
+    every named rule holding."""
+    return {
+        "rules_evaluated": len(holding),
+        "matched_rule_ids": [rule.pk for rule in holding],
+        "matched_rules": [rule.name for rule in holding],
+        "verdicts": [
+            {"rule_id": rule.pk, "holds": True, "evidence_quote": None} for rule in holding
+        ],
+        "unevaluable_rule_ids": [],
+    }
+
+
 class EngineTestCase(TestCase):
     def setUp(self):
         super().setUp()
@@ -319,10 +333,14 @@ class InferencePassTests(EngineTestCase):
         rule = self._inference_rule(action, "they need help")
         job = services.enqueue_lead(self._lead())
 
-        self._run(job)
+        with mock.patch.object(inference, "infer", wraps=inference.infer) as infer:
+            self._run(job)
 
+        candidates, _lead, today = infer.call_args.args
+        self.assertEqual([candidate.pk for candidate in candidates], [rule.pk])
+        self.assertEqual(today, TODAY)
         job.refresh_from_db()
-        self.assertEqual(job.decision["inference"]["candidate_rule_ids"], [rule.pk])
+        self.assertIn("inference", job.decision)
 
     def test_the_stub_chooses_no_action_and_says_what_is_missing(self):
         self._inference_rule(self._action("set_up_appointment"), "they need help")
@@ -336,6 +354,47 @@ class InferencePassTests(EngineTestCase):
         self.assertNotIn("selected", job.decision)
         self.assertIn("TODO", job.decision["inference"]["todo"])
 
+    def test_a_candidate_the_stub_never_asked_about_is_unevaluable_not_a_refusal(self):
+        rule = self._inference_rule(self._action("set_up_appointment"), "they need help")
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [rule.pk])
+        self.assertEqual(job.decision["inference"]["matched_rule_ids"], [])
+        self.assertEqual(job.decision["inference"]["verdicts"], [])
+
+    def test_both_passes_unevaluable_rules_land_in_one_list(self):
+        deterministic = self._rule(
+            self._action("nudge_usage"), "stale vocabulary", OutreachRule.WEIGHT_HIGH
+        )
+        OutreachRule.objects.filter(pk=deterministic.pk).update(
+            conditions={
+                "version": utils.SCHEMA_VERSION,
+                "operator": "all_of",
+                "conditions": [
+                    {
+                        "field": "favourite_colour",
+                        "operator": "==",
+                        "source": "lead",
+                        "threshold": "red",
+                    }
+                ],
+            }
+        )
+        inferred = self._inference_rule(self._action("set_up_appointment"), "they need help")
+        job = services.enqueue_lead(self._lead())
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(
+            job.decision["unevaluable_rule_ids"], sorted([deterministic.pk, inferred.pk])
+        )
+        self.assertNotIn("unevaluable_rule_ids", job.decision["inference"])
+        self.assertNotIn("rules_evaluated", job.decision["inference"])
+
     def test_an_inference_rule_gated_by_conditions_is_not_asked_until_they_hold(self):
         action = self._action("set_up_appointment")
         self._inference_rule(
@@ -345,33 +404,54 @@ class InferencePassTests(EngineTestCase):
         )
         job = services.enqueue_lead(self._lead())
 
-        self._run(job)
+        with mock.patch.object(inference, "infer", wraps=inference.infer) as infer:
+            self._run(job)
 
+        candidates, _lead, _today = infer.call_args.args
+        self.assertEqual(list(candidates), [])
         job.refresh_from_db()
-        self.assertEqual(job.decision["inference"]["candidate_rule_ids"], [])
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [])
 
     def test_a_match_from_the_pass_chooses_an_action_through_the_same_tally(self):
         action = self._action("set_up_appointment")
         rule = self._inference_rule(action, "they need help")
         job = services.enqueue_lead(self._lead())
-        result = inference.InferenceResult(matched=(rule,), candidates=(rule,), todo="")
 
-        with mock.patch.object(inference, "infer", return_value=result):
+        with mock.patch.object(inference, "infer", return_value=_section(rule)):
             self._run(job)
 
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_INFERRED_ACTION_CHOSEN)
         self.assertEqual(job.selected_action, action)
         self.assertEqual(job.decision["selected"]["action_key"], "set_up_appointment")
+        self.assertEqual(job.decision["inference"]["matched_rule_ids"], [rule.pk])
+
+    def test_a_verdict_naming_a_rule_that_was_never_a_candidate_is_not_a_match(self):
+        action = self._action("set_up_appointment")
+        candidate = self._inference_rule(action, "they need help")
+        other = get_user_model().objects.create_user(username="other@elsewhere.example")
+        stranger = self._inference_rule(
+            self._action("nudge_usage", owner=other), "someone else's rule", owner=other
+        )
+        job = services.enqueue_lead(self._lead())
+        section = _section(candidate)
+        section["matched_rule_ids"] = [stranger.pk]
+        section["matched_rules"] = [stranger.name]
+
+        with mock.patch.object(inference, "infer", return_value=section):
+            self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertIsNone(job.selected_action)
 
     def test_both_passes_tally_together_so_two_weak_agreeing_rules_decide(self):
         action = self._action("nudge_usage")
         self._rule(action, "modest momentum", OutreachRule.WEIGHT_LOW)
         inferred = self._inference_rule(action, "they need help", OutreachRule.WEIGHT_LOW)
         job = services.enqueue_lead(self._lead())
-        result = inference.InferenceResult(matched=(inferred,), candidates=(inferred,), todo="")
 
-        with mock.patch.object(inference, "infer", return_value=result):
+        with mock.patch.object(inference, "infer", return_value=_section(inferred)):
             self._run(job)
 
         job.refresh_from_db()

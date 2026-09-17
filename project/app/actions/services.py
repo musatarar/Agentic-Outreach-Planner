@@ -164,15 +164,6 @@ def _resolve(job, today):
         for rule in rules
         if rule.kind == OutreachRule.KIND_DETERMINISTIC and _holds(rule, lead, today, unevaluable)
     ]
-    decision = {
-        "owner_id": job.lead.owner_id,
-        "rules_evaluated": len(rules),
-        "deterministic": {
-            "matched_rule_ids": [rule.pk for rule in matched],
-            "matched_rules": [rule.name for rule in matched],
-        },
-        "unevaluable_rule_ids": unevaluable,
-    }
 
     score = rules_services.select_action(matched)
     if score is not None:
@@ -181,7 +172,7 @@ def _resolve(job, today):
             ActionJob.STATUS_PROCESSING,
             ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN,
             score,
-            decision,
+            _decision(job, rules, matched, unevaluable),
         )
         return job
 
@@ -195,16 +186,15 @@ def _resolve(job, today):
     if not _transition(job, ActionJob.STATUS_PROCESSING, ActionJob.STATUS_INFERRING):
         return job
 
-    result = inference.infer(candidates, lead, today)
-    decision["inference"] = {
-        "candidate_rule_ids": [rule.pk for rule in result.candidates],
-        "matched_rule_ids": [rule.pk for rule in result.matched],
-        "todo": result.todo,
-    }
+    section = inference.infer(candidates, lead, today)
+    decision = _decision(job, rules, matched, unevaluable, section)
+    # A verdict naming anything outside the candidate set is not a match.
+    holding = set(section.get("matched_rule_ids") or ())
+    inferred = [rule for rule in candidates if rule.pk in holding]
 
     # One tally over both passes: a weak deterministic rule and a weak
     # inference rule agreeing is a case neither makes alone.
-    score = rules_services.select_action(matched + list(result.matched))
+    score = rules_services.select_action(matched + inferred)
     if score is not None:
         _finish(
             job,
@@ -216,6 +206,31 @@ def _resolve(job, today):
     else:
         _finish(job, ActionJob.STATUS_INFERRING, ActionJob.STATUS_NO_ACTION, None, decision)
     return job
+
+
+def _decision(job, rules, matched, unevaluable, section=None):
+    """The job's workings: what each pass read, matched and could not judge.
+
+    ``unevaluable_rule_ids`` is the union of both passes' -- the inference
+    section's copy is lifted out rather than nested a second time, and so is
+    its own rule count, which the top-level figure already covers.
+    """
+    unevaluable = set(unevaluable)
+    decision = {
+        "owner_id": job.lead.owner_id,
+        "rules_evaluated": len(rules),
+        "deterministic": {
+            "matched_rule_ids": [rule.pk for rule in matched],
+            "matched_rules": [rule.name for rule in matched],
+        },
+    }
+    if section is not None:
+        section = dict(section)
+        section.pop("rules_evaluated", None)
+        unevaluable |= set(section.pop("unevaluable_rule_ids", None) or ())
+        decision["inference"] = section
+    decision["unevaluable_rule_ids"] = sorted(unevaluable)
+    return decision
 
 
 def _holds(rule, lead, today, unevaluable):
