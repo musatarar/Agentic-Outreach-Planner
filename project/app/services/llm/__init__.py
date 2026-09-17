@@ -33,6 +33,7 @@ from .errors import (
     wrap_unexpected,
 )
 from .groq import GroqClient
+from .structured import StructuredResult, response_format_for
 from .stub import StubClient
 
 _REGISTRY = {
@@ -86,6 +87,8 @@ def build_client(provider):
 __all__ = [
     "LLMClient",
     "LLMResult",
+    "StructuredResult",
+    "response_format_for",
     "normalize_finish_reason",
     "FINISH_STOP",
     "FINISH_LENGTH",

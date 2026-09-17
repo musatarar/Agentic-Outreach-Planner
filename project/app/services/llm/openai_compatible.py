@@ -32,6 +32,8 @@ from .errors import (
     LLMMalformedResponseError,
     map_httpx_error,
 )
+from .structured import ModelT, StructuredResult, response_format_for
+from .structured import parse as parse_structured
 
 # Per-HTTP-attempt timeout.
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -102,16 +104,17 @@ class OpenAICompatibleClient(LLMClient):
             "json": body,
         }
 
-    def _request(self, prompt, max_tokens):
-        return self._post(
-            {
-                "model": self.model,
-                "max_tokens": max_tokens or self.default_max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-        )
+    def _request(self, prompt, max_tokens, response_format=None):
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.default_max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if response_format:
+            body["response_format"] = response_format
+        return self._post(body)
 
-    def _chat_request(self, messages, tools, max_tokens):
+    def _chat_request(self, messages, tools, max_tokens, response_format=None):
         """Chat-shaped counterpart of :meth:`_request`: same endpoint,
         tools in the ``{"type": "function", "function": {...}}`` envelope."""
         body = {
@@ -119,6 +122,8 @@ class OpenAICompatibleClient(LLMClient):
             "max_tokens": max_tokens or self.default_max_tokens,
             "messages": [_wire_chat_message(m) for m in messages],
         }
+        if response_format:
+            body["response_format"] = response_format
         if tools:
             body["tools"] = [
                 {
@@ -135,8 +140,9 @@ class OpenAICompatibleClient(LLMClient):
 
     # -- the two call paths -------------------------------------------------
 
-    def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
-        url, kwargs = self._request(prompt, max_tokens)
+    def _send(self, url, kwargs, timeout) -> LLMResult:
+        """Send one already-built request synchronously -- the blocking
+        counterpart of :meth:`_apost`."""
         # The clock stops before raise_for_status()/.json() so this matches
         # Claude's timing -- see LLMResult.latency_s.
         started = time.perf_counter()
@@ -155,6 +161,10 @@ class OpenAICompatibleClient(LLMClient):
             ) from exc
 
         return self._build_result(data, latency_s)
+
+    def generate(self, prompt, max_tokens=None, timeout=None) -> LLMResult:
+        url, kwargs = self._request(prompt, max_tokens)
+        return self._send(url, kwargs, timeout)
 
     async def _apost(self, url, kwargs, timeout) -> LLMResult:
         """Send one already-built request on the async client — client, timing,
@@ -192,6 +202,51 @@ class OpenAICompatibleClient(LLMClient):
         # Async-only by design; see the base class.
         url, kwargs = self._chat_request(messages, tools, max_tokens)
         return await self._apost(url, kwargs, timeout)
+
+    # -- structured outputs -------------------------------------------------
+
+    def generate_structured(
+        self,
+        input: str | Sequence[Message],
+        schema_model: type[ModelT],
+        *,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> StructuredResult[ModelT]:
+        url, kwargs = self._structured_request(input, schema_model, max_tokens)
+        return self._parse_structured(schema_model, self._send(url, kwargs, timeout))
+
+    async def agenerate_structured(
+        self,
+        input: str | Sequence[Message],
+        schema_model: type[ModelT],
+        *,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> StructuredResult[ModelT]:
+        url, kwargs = self._structured_request(input, schema_model, max_tokens)
+        return self._parse_structured(schema_model, await self._apost(url, kwargs, timeout))
+
+    def _structured_request(self, input, schema_model, max_tokens):
+        """One request that asks for ``schema_model``; ``input`` is a single
+        user prompt or a whole transcript, as the caller prefers."""
+        response_format = response_format_for(schema_model)
+        if isinstance(input, str):
+            return self._request(input, max_tokens, response_format=response_format)
+        return self._chat_request(input, (), max_tokens, response_format=response_format)
+
+    def _parse_structured(
+        self, schema_model: type[ModelT], result: LLMResult
+    ) -> StructuredResult[ModelT]:
+        return StructuredResult(
+            parsed=parse_structured(
+                schema_model,
+                result.text,
+                provider=self.provider_name,
+                label=self.provider_label,
+            ),
+            result=result,
+        )
 
     async def aclose(self) -> None:
         await self._async_client.aclose()
