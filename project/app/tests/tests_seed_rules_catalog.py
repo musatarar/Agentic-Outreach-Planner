@@ -10,7 +10,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from project.app.management.commands.seed_rules_catalog import DEFAULT_OWNER_EMAIL
-from project.app.models import ActionType, OutreachRule
+from project.app.models import ActionType, Lead, OutreachRule
 
 OWNER = "bd@lockedin.example"
 
@@ -88,3 +88,49 @@ class SeedRulesCatalogTests(TestCase):
     def test_with_no_allowlist_the_owner_falls_back_to_the_demo_address(self):
         _seed()
         self.assertEqual(ActionType.objects.filter(owner=_owner(DEFAULT_OWNER_EMAIL)).count(), 6)
+
+
+class LeadOwnershipTests(TestCase):
+    """A lead with no owner has no rules, so the seed puts the book in the
+    catalog owner's hands."""
+
+    def _lead(self, lead_id):
+        return Lead.objects.create(
+            id=lead_id,
+            agency_name="Summit Risk Advisors",
+            contact_name="Priya Nair",
+            contact_email="priya@summitrisk.example.com",
+            contact_phone="555-0100",
+            state="CO",
+            num_producers=4,
+            years_in_business=9,
+            estimated_book_size_usd=1_400_000,
+            stage="active_trial",
+        )
+
+    def test_seeding_puts_every_lead_in_the_owners_book(self):
+        self._lead("lead_001")
+        self._lead("lead_002")
+
+        _seed(owner=OWNER)
+
+        self.assertEqual(_owner().leads.count(), 2)
+        self.assertFalse(Lead.objects.filter(owner__isnull=True).exists())
+
+    def test_seeding_for_another_user_moves_the_book_with_the_catalog(self):
+        self._lead("lead_001")
+        _seed(owner=OWNER)
+
+        _seed(owner="ae@lockedin.example")
+
+        self.assertEqual(_owner().leads.count(), 0)
+        self.assertEqual(_owner("ae@lockedin.example").leads.count(), 1)
+
+    def test_deleting_the_owner_leaves_their_leads_in_the_database(self):
+        self._lead("lead_001")
+        _seed(owner=OWNER)
+
+        _owner().delete()
+
+        self.assertEqual(Lead.objects.count(), 1)
+        self.assertIsNone(Lead.objects.get(id="lead_001").owner)

@@ -12,8 +12,15 @@ the same cost: still no deployment, so the column is created with the table
 rather than ALTERed in afterwards. That is a decision about this file, not a
 relaxation of the rule -- follow-ups are additive unless a human says otherwise,
 and any checkout that already migrated deletes its `db.sqlite3` again.
+
+Regenerated a third time to replace that `Lead.tenant` column with `Lead.owner`,
+a foreign key to the user whose rules run for the lead. Same reasoning, same
+cost, same instruction: still no deployment, so the column is swapped in place
+rather than added and backfilled, and a checkout that already migrated deletes
+its `db.sqlite3` again.
 """
 
+from django.conf import settings
 from django.db import migrations, models
 import django.db.models.deletion
 
@@ -22,7 +29,9 @@ class Migration(migrations.Migration):
 
     initial = True
 
-    dependencies = []
+    dependencies = [
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
 
     operations = [
         migrations.CreateModel(
@@ -33,9 +42,13 @@ class Migration(migrations.Migration):
                     models.CharField(max_length=32, primary_key=True, serialize=False),
                 ),
                 (
-                    "tenant",
-                    models.CharField(
-                        blank=True, db_index=True, default="", max_length=64
+                    "owner",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="leads",
+                        to=settings.AUTH_USER_MODEL,
                     ),
                 ),
                 ("agency_name", models.CharField(max_length=255)),

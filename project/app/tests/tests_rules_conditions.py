@@ -175,9 +175,17 @@ class VocabularyTests(SimpleTestCase):
         columns = {
             column.name
             for column in Lead._meta.concrete_fields
-            if not column.primary_key and column.name not in Lead.UNTRUSTED_FIELDS
+            if not column.primary_key
+            and not column.is_relation
+            and column.name not in Lead.UNTRUSTED_FIELDS
         }
         self.assertEqual(columns, set(utils.fields_by_source()[utils.SOURCE_LEAD]))
+
+    def test_a_relation_is_not_a_comparable_column_so_no_rule_can_name_it(self):
+        fields = utils.fields_by_source()
+        for source in utils.SOURCES:
+            with self.subTest(source=source):
+                self.assertNotIn("owner", fields[source])
 
     def test_event_columns_are_nameable_under_the_events_source(self):
         events = utils.fields_by_source()[utils.SOURCE_EVENTS]

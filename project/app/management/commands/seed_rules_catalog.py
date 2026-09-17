@@ -8,7 +8,9 @@ the tally decides rather than evaluation position.
 
 Re-running RESETS the owner's catalog to this set: rules they authored
 themselves are deleted, and the seeded actions' label and urgency are
-restored. Safe to re-run, but not a merge.
+restored. Safe to re-run, but not a merge. It also puts every lead in that
+owner's book, since a lead with no owner has no rules and this is the command
+that knows who the demo owner is.
 """
 
 from django.conf import settings
@@ -16,6 +18,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from project.app.models import Lead
 from project.app.rules.models import ActionType, OutreachRule
 from project.app.rules.utils import _all_of, _cond
 
@@ -141,9 +144,9 @@ RULES = [
 
 class Command(BaseCommand):
     help = (
-        "Seed one user's action/rule catalog (idempotent; resets that user's "
-        "rules). Owner: --owner, else the first LOGIN_ALLOWED_EMAILS entry, "
-        "else " + DEFAULT_OWNER_EMAIL + "."
+        "Seed one user's action/rule catalog and put every lead in their book "
+        "(idempotent; resets that user's rules). Owner: --owner, else the "
+        "first LOGIN_ALLOWED_EMAILS entry, else " + DEFAULT_OWNER_EMAIL + "."
     )
 
     def add_arguments(self, parser):
@@ -183,9 +186,14 @@ class Command(BaseCommand):
             rules.append(rule)
         OutreachRule.objects.bulk_create(rules)
 
+        # A lead with no owner has no rules; this is the only command that
+        # knows which user the demo runs as.
+        leads = Lead.objects.update(owner=owner)
+
         self.stdout.write(
             self.style.SUCCESS(
-                f"Seeded {len(action_by_key)} action types and {len(rules)} rules for {email}."
+                f"Seeded {len(action_by_key)} action types and {len(rules)} rules "
+                f"for {email}, and put {leads} lead(s) in their book."
             )
         )
 
