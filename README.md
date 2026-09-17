@@ -96,6 +96,10 @@ python manage.py makemigrations --check --dry-run
 # rules regression gate (pure Python, no DB, no network)
 python evals/run_rules_eval.py
 
+# actions engine: queue every lead without an open job, then run the batch.
+# This is the cron entry point -- point a scheduler at it.
+python manage.py run_action_jobs [--limit N] [--no-enqueue]
+
 # frontend -- only when frontend/ changed
 cd frontend && npm ci && npm run typecheck && npm test && npm run build
 git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
@@ -107,7 +111,11 @@ lint, mypy, the migration check, the rules eval and the frontend build.
 ## Architecture
 
 - **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction`,
-  `DismissedOutreachKey`, `LoginToken`.
+  `DismissedOutreachKey`, `LoginToken`, `ActionJob`, `TenantCatalog`.
+- **Actions engine** (`project/app/actions/`): a queue of per-lead jobs, each holding the
+  events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
+  the tenant's deterministic rules in-process, sends what is left to the inference pass
+  (stubbed), and records the action the weight tally chose.
 - **Rules + planner** (`services/outreach.py`): `determine_action` / `determine_priority`
   are pure functions over a lead and its events. `plan_outreach` runs in numbered phases —
   read, classify and build prompts, call the provider, run the two output gates, write.

@@ -32,6 +32,9 @@ python manage.py makemigrations --check --dry-run   # must be clean
 # explicit human decision, never to make a run pass.
 python evals/run_rules_eval.py
 
+# actions engine cron: queue the leads with no open job, then run the batch.
+python manage.py run_action_jobs [--limit N] [--no-enqueue]
+
 # frontend — only when frontend/ changed. NEVER hand-edit the built bundle.
 cd frontend && npm ci && npm run typecheck && npm test && npm run build
 git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
@@ -39,6 +42,10 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 ## Where things are
 
+actions/ is the queue and the cron: one ActionJob per lead, resolved by the deterministic
+pass (actions/evaluate.py, the evaluator for the conditions vocabulary rules/utils.py
+validates) or the stubbed inference pass, then the rules entity's own weight tally. A
+tenant runs the catalogs TenantCatalog maps to it; nothing else joins leads to rules.
 services/outreach.py is the rules engine and the planner (numbered phases in comments);
 services/llm/ is the provider-agnostic layer; services/verify.py is the grounding verifier.
 Registries, to find anything: project/app/models/__init__.py, views/__init__.py,

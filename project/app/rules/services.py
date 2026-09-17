@@ -37,12 +37,22 @@ def actions_for(owner):
     return ActionType.objects.filter(owner=owner)
 
 
-def rules_for(owner):
-    """One owner's rules, heaviest first, with actions joined.
+def rules_for_owners(owners):
+    """Several owners' rules, heaviest first, with actions joined.
 
     Callers tally ``rule.action``; without the join that is one query per rule.
     """
-    return OutreachRule.objects.filter(owner=owner).select_related("action")
+    return OutreachRule.objects.filter(owner__in=owners).select_related("action")
+
+
+def rules_for(owner):
+    """One owner's rules, heaviest first, with actions joined."""
+    return rules_for_owners([owner])
+
+
+def enabled_rules_for_owners(owners):
+    """What an engine evaluates: enabled rules selecting enabled actions."""
+    return rules_for_owners(owners).filter(enabled=True, action__enabled=True)
 
 
 def enabled_rules_for(owner):
