@@ -1,9 +1,11 @@
-# Worked example: "make leads and events multitenant"
+# Worked examples
+
+## 1. "Make leads and events multitenant"
 
 The real plan filed for this ask is issue #123 in this repo (now closed). It is a good
 plan by most standards, and exactly the failure this skill prevents. Contrast the two.
 
-## What was filed
+### What was filed
 
 Two new models, four migrations (two on hot tables), a new `services/tenancy.py` with four
 functions, a new permission class applied to every data view, a change to the sign-in
@@ -14,7 +16,7 @@ edits, a test-utility module, edits to every lead factory and every `plan_outrea
 and a four-item follow-ups list. Around thirty files. Every item is defensible. Nobody
 asked for most of them.
 
-## The same ask through this skill
+### The same ask through this skill
 
 **Ask.** Leads and events belong to a workspace; a signed-in user sees only their own.
 
@@ -57,3 +59,46 @@ factories gain a tenant argument.
 Roughly eight files instead of thirty, one migration instead of four, no auth change, and
 the same two behaviours proven. The deferred list is longer than the plan, which is the
 point: the user decides what comes back in, and each item that does is a deliberate cost.
+
+## 2. A prerequisite found mid-task: "the lead needs an owner"
+
+PR #133 in this repo. An implementation session building the actions engine found that
+`Lead.tenant` was an opaque string nothing read, and that the engine needed to know whose
+rules to run. Nobody asked for the column change; the session needed it, so it planned it
+alone.
+
+### What was shipped
+
+The column swap, plus: a new `services/owners.py` with three functions extracted from a
+private helper in `seed_rules_catalog`; a new `--owner` flag on `ingest_data`; a new
+`tests_owners.py` covering the extracted module; four new tests in `tests_core.py`; one
+existing test edited; and the initial migration edited in place. Eight files, 156 lines,
+for one column. Every piece is tidy. The extraction alone is a third of the diff.
+
+### The same change through this skill
+
+**Ask.** A lead carries the user whose rules run for it.
+
+**Done when.** After `populate_demo_data.py`, every lead has an owner, and the engine can
+read it off the lead without a second table.
+
+**Change.**
+- `models/lead.py` — `tenant` becomes `owner`, nullable FK to the user, `SET_NULL`
+- migration — flag: the project's standing decision is to regenerate 0001 in place; say so
+  and get the human's yes rather than assuming it
+- `management/commands/ingest_data.py` — set `owner` on every lead it writes, resolved the
+  way `seed_rules_catalog` already resolves its owner (call its helper or copy the lines)
+
+**Tests.** In `tests_core.py`: every ingested lead is owned by the demo owner. Mechanical:
+the rules-vocabulary test that enumerates concrete columns now sees a relation; that edit
+is an existing-test change and needs sign-off, say so.
+
+**Deferred, to confirm with the user.**
+- `services/owners.py` extraction — two callers share a resolver — later, if a third appears
+- `ingest_data --owner` — "should be settable" — later issue; the demo owner is enough now
+- `tests_owners.py` — tests for the extraction — out with the extraction
+- "deleting the owner keeps the leads", "re-ingesting moves the book" — tests of behaviour
+  nobody asked for — drop
+
+Three files and one test instead of eight files and fifteen. The user gets to say whether
+a resolver module is worth having before it exists, which is the whole point of asking.

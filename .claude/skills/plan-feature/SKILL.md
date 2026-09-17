@@ -1,6 +1,6 @@
 ---
 name: plan-feature
-description: Plan a feature, behaviour change, or refactor as the smallest diff that satisfies the ask, list every inferred extra separately for the user to accept or defer, and file the confirmed plan as a GitHub issue. Use this whenever the user asks to plan, scope, spec, design, "write up", "think through", "figure out how to add", or "open an issue for" any change to this app, even if they never say "plan" and even if the change sounds small. Do not use for executing an already-planned change or for questions about how existing code works.
+description: Plan a feature, behaviour change, or refactor as the smallest diff that satisfies the ask, list every inferred extra separately for the user to accept or defer, and file the confirmed plan as a GitHub issue. Use this whenever the user asks to plan, scope, spec, design, "write up", "think through", "figure out how to add", or "open an issue for" any change to this app, even if they never say "plan" and even if the change sounds small. Also use it, without being asked, the moment you discover mid-implementation that you need a prerequisite change (a new column, a base PR, a "first I have to") — that sub-change is an ask of its own and gets the same minimal plan and the same confirmation. Do not use for executing a change that already went through this skill, or for questions about how existing code works.
 ---
 
 # Plan a feature at MVP scope
@@ -40,6 +40,13 @@ lines to existing structure.
 Keep two lists while reading: what the change **requires**, and what you **noticed**.
 Noticed things go to section 4. They never go to section 3, however good they are.
 
+A prerequisite you discover mid-implementation ("the engine needs a real owner on the
+lead first") is an ask in its own right and goes through sections 1 to 6 before you build
+it. The pull to over-build is strongest here, because nobody asked for the sub-change and
+so nobody is holding its scope: a one-column change quietly acquires a services module, a
+command-line flag, and a test module of its own. Pin its done-when, plan the column, and
+put the rest in front of the user.
+
 ## 3. The minimal change
 
 For each "done when", the fewest edits that make it true. One line per edit, and one
@@ -76,6 +83,16 @@ The usual suspects: admin registration; a management command for a one-off; deno
 a column "for later"; the NOT NULL follow-up; a UI affordance for a backend change;
 renaming while you're there; the refactor the change "reveals"; extra validation; docs
 that never mentioned the changed thing; a nicer error; a second endpoint "for symmetry".
+
+Three that look like hygiene and are not:
+
+- **Extracting a shared module.** A second caller for a private helper does not justify
+  moving it into `services/`. Call what exists or copy the three lines; a shared module is
+  a later issue once there is a third caller and the duplication has cost something.
+- **A new flag or option** on a command, because the new column "should be settable".
+  The done-when says what the column holds; the flag is a feature.
+- **A test module for the helper you extracted.** If the extraction is out, so are its tests.
+  Test the behaviour the ask named, in the module that already tests it.
 
 List the extras a reasonable engineer would actually have added, roughly six at most.
 The user has to read and decide on each one, so an item you would never have built

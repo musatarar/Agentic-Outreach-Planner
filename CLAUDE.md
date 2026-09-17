@@ -45,6 +45,15 @@ Registries, to find anything: project/app/models/__init__.py, views/__init__.py,
 serializers/__init__.py, frontend/src/api/endpoints.ts (every API call, one line each).
 Constraint and index names appear verbatim in the model and its migration — grep the name.
 
+## Planning — before building anything new
+
+Any feature, behaviour change, or refactor goes through `.claude/skills/plan-feature` first:
+the smallest change that satisfies the ask, every inferred extra listed for a human to accept
+or defer, and the confirmed plan filed as a GitHub issue. That includes a prerequisite you
+discover mid-task ("first the lead needs an owner"): it is an ask of its own, not part of the
+one you are on. This is an MVP; a shared module, a flag, or a follow-up is a decision, not
+hygiene.
+
 ## Database & migrations — hard rules
 
 - NEVER edit a migration committed on the default branch. Additive follow-ups only.
