@@ -124,6 +124,14 @@ Constraint and index names appear verbatim in the model and its migration — gr
   first, for the test or the code.
 - DRF throttle history persists across tests — clear it in setUp/tearDown as tests_auth.py does.
 
+## Comments
+
+- One line, or none. Default to no comment; when the code is not obvious, say why in a single
+  line. Never write the second line.
+- Alternatives considered, non-goals, and design history do not go in the code. They go in the
+  commit message, the PR, or SECURITY.md.
+- Module and class docstrings are one line. Tests get none; the test name is the sentence.
+
 ## What always needs a human before merge
 
 Migrations; auth/session/throttle code; the approval gate; sanitization and verifier logic;
