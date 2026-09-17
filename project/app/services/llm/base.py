@@ -10,9 +10,12 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from .chat_types import Message, ToolCallRequest, ToolSpec
+
+if TYPE_CHECKING:
+    from .structured import ModelT, StructuredResult
 
 # The async client an adapter caches: httpx.AsyncClient or AsyncAnthropic.
 ClientT = TypeVar("ClientT")
@@ -168,6 +171,34 @@ class LLMClient(ABC):
         double-retry underneath the loop's own retry policy.
         """
         raise NotImplementedError(f"{type(self).__name__} has no chat/tool-calling implementation.")
+
+    def generate_structured(
+        self,
+        input: "str | Sequence[Message]",
+        schema_model: "type[ModelT]",
+        *,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> "StructuredResult[ModelT]":
+        """Call the provider once, constrained to ``schema_model``'s JSON schema.
+
+        ``input`` is a single user prompt or a whole transcript. The parsed
+        instance and the underlying :class:`LLMResult` both ride on the
+        returned :class:`~.structured.StructuredResult`. Only providers whose
+        API accepts a schema implement this.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no structured-output implementation.")
+
+    async def agenerate_structured(
+        self,
+        input: "str | Sequence[Message]",
+        schema_model: "type[ModelT]",
+        *,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> "StructuredResult[ModelT]":
+        """Async counterpart of :meth:`generate_structured`."""
+        raise NotImplementedError(f"{type(self).__name__} has no structured-output implementation.")
 
     def complete(self, prompt, max_tokens=None, timeout=None) -> str:
         """Return just the model's text completion for a single user ``prompt``.
