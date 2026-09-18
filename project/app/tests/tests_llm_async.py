@@ -14,6 +14,7 @@ import httpx
 from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import errors
 from project.app.services.llm.base import LoopBoundAsyncClient
+from project.app.services.llm.chat_types import Message
 from project.app.services.llm.groq import GroqClient
 
 # ---------------------------------------------------------------------------
@@ -400,6 +401,13 @@ class OpenAICompatibleAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(peak, 4)
         self.assertTrue(all(r.text == "Generated copy" for r in results))
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    async def test_the_chat_path_carries_the_reasoning_effort_too(self):
+        _, client = self._patch_client(return_value=self._ok_response())
+        await GroqClient().agenerate_chat([Message(role="user", content="hi")])
+        body = client.post.await_args.kwargs["json"]
+        self.assertEqual(body["reasoning_effort"], "low")
 
 
 class AdapterAcrossRunsTests(unittest.TestCase):
