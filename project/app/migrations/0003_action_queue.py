@@ -1,0 +1,129 @@
+"""The actions engine: the per-lead work queue.
+
+Additive and schema-only: one new table plus the job/event through table.
+Nothing on `lead`, `event` or `outreachaction` is altered, but the through
+table's foreign key does take a brief lock on `event` while it is created --
+run it in the same window as any other migration touching that table.
+"""
+
+
+from django.db import migrations, models
+import django.db.models.deletion
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ("app", "0002_rules_catalog"),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="ActionJob",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("queued", "Queued"),
+                            ("processing", "Processing"),
+                            (
+                                "deterministic_action_chosen",
+                                "Deterministic action chosen",
+                            ),
+                            ("inferring", "Inferring"),
+                            ("inferred_action_chosen", "Inferred action chosen"),
+                            ("no_action", "No action"),
+                            ("failed", "Failed"),
+                        ],
+                        db_index=True,
+                        default="queued",
+                        max_length=32,
+                    ),
+                ),
+                ("decision", models.JSONField(blank=True, default=dict)),
+                ("attempts", models.PositiveSmallIntegerField(default=0)),
+                ("error", models.TextField(blank=True, default="")),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "started_at",
+                    models.DateTimeField(blank=True, default=None, null=True),
+                ),
+                (
+                    "finished_at",
+                    models.DateTimeField(blank=True, default=None, null=True),
+                ),
+                (
+                    "events",
+                    models.ManyToManyField(
+                        blank=True, related_name="action_jobs", to="app.event"
+                    ),
+                ),
+                (
+                    "lead",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="action_jobs",
+                        to="app.lead",
+                    ),
+                ),
+                (
+                    "selected_action",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="+",
+                        to="app.actiontype",
+                    ),
+                ),
+            ],
+            options={
+                "ordering": ["created_at", "id"],
+                "indexes": [
+                    models.Index(
+                        fields=["status", "created_at"], name="ajob_queue_order"
+                    )
+                ],
+            },
+        ),
+        migrations.AddConstraint(
+            model_name="actionjob",
+            constraint=models.CheckConstraint(
+                check=models.Q(
+                    (
+                        "status__in",
+                        (
+                            "queued",
+                            "processing",
+                            "deterministic_action_chosen",
+                            "inferring",
+                            "inferred_action_chosen",
+                            "no_action",
+                            "failed",
+                        ),
+                    )
+                ),
+                name="ajob_status_known",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="actionjob",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(
+                    ("status__in", ("queued", "processing", "inferring"))
+                ),
+                fields=("lead",),
+                name="ajob_one_open_per_lead",
+            ),
+        ),
+    ]

@@ -23,8 +23,12 @@ python scripts/populate_demo_data.py         # seeds demo data (--reset empties 
 python manage.py runserver      # http://127.0.0.1:8000
 ```
 
-Updating a checkout from before the migration squash: `rm db.sqlite3`, then re-run
-`migrate` and `populate_demo_data` above. Demo data is regenerated, not migrated.
+Updating a checkout from before a migration was regenerated in place (`0001_initial` says
+when): the old database still records that migration as applied, so it never picks up the
+new shape and the first query fails on a missing column. Locally, `rm db.sqlite3` and re-run
+`migrate` and `populate_demo_data` above. Under Docker the applied history lives in the
+`postgres_data` volume instead, so it is `docker compose down -v`. Demo data is regenerated,
+not migrated.
 
 Put your address in `LOGIN_ALLOWED_EMAILS` in `.env`, open
 **http://127.0.0.1:8000/signin**, enter it, and the sign-in link is printed to the server
@@ -51,7 +55,13 @@ docker compose up
 ```
 
 Starts Postgres, builds the image, migrates, seeds the demo pipeline and serves on
-**http://127.0.0.1:8000/**. It runs Django's development server, not a production stack.
+**http://127.0.0.1:8000/**, with the actions engine's cron ticking beside it. It runs
+Django's development server, not a production stack.
+
+`up` reuses the image it already built, so pass `--build` after pulling code. On a column
+that does not exist, the database predates a regenerated migration: `docker compose down -v`
+drops the `postgres_data` volume and the next `up` rebuilds it from scratch. That volume
+holds only demo data, which is reseeded on every start.
 
 ## Configuration
 
@@ -78,6 +88,8 @@ Everything is environment variables. `.env.example` is the full list in two sect
 | `LLM_MODEL` | Model id; blank uses the adapter's own default. |
 | `OUTREACH_MAX_IN_FLIGHT`, `OUTREACH_MAX_ATTEMPTS`, `OUTREACH_INITIAL_BACKOFF_S`, `OUTREACH_MAX_BACKOFF_S`, `OUTREACH_BACKOFF_MULTIPLIER`, `OUTREACH_REQUEST_TIMEOUT_S`, `OUTREACH_PER_LEAD_TIMEOUT_S` | How hard a planner run drives the provider. Bad values fail at boot with the variable named. |
 | `OUTREACH_MAX_COPY_TOKENS` | Token budget for one copy call; a reasoning model's hidden reasoning is billed against it. |
+| `ACTIONS_LLM_DRY_RUN` | Whether an actions-engine run may call the provider. `True` (the default) skips it: every inference candidate comes back unevaluable and the tick costs nothing. Exactly `False` turns the dry run off; anything else leaves it on. |
+| `ACTIONS_CRON_INTERVAL_SECONDS` | Seconds between `run_action_jobs` ticks in the compose `cron` service. Read by `docker/cron.sh`, not by Django. Default 300. |
 | `LOGIN_LINK_DELIVERY`, `LOGIN_TOKEN_TTL_SECONDS`, `LOGIN_LINK_BASE_URL`, `LOGIN_RATE_LIMIT_EMAIL`, `LOGIN_RATE_LIMIT_IP`, `LOGIN_RESEND_COOLDOWN_SECONDS` | Magic-link delivery, expiry and rate limits. |
 
 ## Commands
@@ -97,6 +109,11 @@ python manage.py makemigrations --check --dry-run
 # rules regression gate (pure Python, no DB, no network)
 python evals/run_rules_eval.py
 
+# actions engine: queue every lead without an open job, then run the batch.
+# `docker compose up` runs this on a loop in the `cron` service; this is the
+# same entry point by hand. Runs are dry by default: ACTIONS_LLM_DRY_RUN=False spends.
+python manage.py run_action_jobs [--limit N] [--no-enqueue]
+
 # frontend -- only when frontend/ changed
 cd frontend && npm ci && npm run typecheck && npm test && npm run build
 git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
@@ -108,7 +125,11 @@ lint, mypy, the migration check, the rules eval and the frontend build.
 ## Architecture
 
 - **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction`,
-  `DismissedOutreachKey`, `LoginToken`.
+  `DismissedOutreachKey`, `LoginToken`, `ActionJob`.
+- **Actions engine** (`project/app/actions/`): a queue of per-lead jobs, each holding the
+  events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
+  the deterministic rules of the user whose book the lead is in, sends what is left to the
+  inference pass (stubbed), and records the action the weight tally chose.
 - **Rules + planner** (`services/outreach.py`): `determine_action` / `determine_priority`
   are pure functions over a lead and its events. `plan_outreach` runs in numbered phases —
   read, classify and build prompts, call the provider, run the two output gates, write.

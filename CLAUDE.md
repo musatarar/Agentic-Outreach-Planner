@@ -32,6 +32,10 @@ python manage.py makemigrations --check --dry-run   # must be clean
 # explicit human decision, never to make a run pass.
 python evals/run_rules_eval.py
 
+# actions engine cron: queue the leads with no open job, then run the batch.
+# compose runs this on a loop in the `cron` service (docker/cron.sh).
+python manage.py run_action_jobs [--limit N] [--no-enqueue]
+
 # frontend — only when frontend/ changed. NEVER hand-edit the built bundle.
 cd frontend && npm ci && npm run typecheck && npm test && npm run build
 git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
@@ -39,6 +43,15 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 ## Where things are
 
+actions/ is the queue and the cron: one ActionJob per lead, resolved by the deterministic
+pass (actions/evaluate.py, the evaluator for the conditions vocabulary rules/utils.py
+validates) or the stubbed inference pass, then the rules entity's own weight tally. A job
+runs the catalog of lead.owner; an unowned lead has no rules. The vocabulary is derived
+from the columns, so it can widen past what evaluate.py resolves — an unresolved field is
+refused at evaluation and recorded on the job, never fired. Runs are dry by default
+(ACTIONS_LLM_DRY_RUN): the inference pass asks nothing and says so on every job it touches,
+until an operator sets exactly False. A lead a run decided today with no newer event is not
+re-queued, so an unchanged lead is judged once a day, not once a tick.
 services/outreach.py is the rules engine and the planner (numbered phases in comments);
 services/llm/ is the provider-agnostic layer; services/verify.py is the grounding verifier.
 Registries, to find anything: project/app/models/__init__.py, views/__init__.py,

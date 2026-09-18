@@ -1,3 +1,55 @@
+# Every process that runs the app reads the same environment, so `web` and
+# `cron` share one block: a knob added for one is never quietly missing from
+# the other.
+x-app-env: &app-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY -- copy .env.example to .env}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
+  DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}
+  DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+  # Grounding strictness: off | standard | strict. `off` disables the check.
+  COPY_VERIFY_LEVEL: ${COPY_VERIFY_LEVEL:-standard}
+  # LLM provider/model selection -- see .env.example. Blank reads as unset,
+  # so an operator who sets neither gets groq on its default model.
+  LLM_PROVIDER: ${LLM_PROVIDER:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  # Actions engine: a dry run skips the provider entirely, so every inference
+  # candidate comes back unevaluable and the tick costs nothing. Blank reads as
+  # the settings.py default, which is a dry run -- set exactly "False" to spend.
+  ACTIONS_LLM_DRY_RUN: ${ACTIONS_LLM_DRY_RUN:-}
+  # Planner concurrency, retries and timeouts -- see .env.example for what
+  # each one bounds. Passed through blank rather than defaulted here:
+  # settings.py already owns the defaults, and restating them would make
+  # this another copy that nothing pins. A blank value reads as "unset"
+  # (see project/settings.py::_env_number), so an operator who never sets
+  # these gets exactly the documented defaults.
+  OUTREACH_MAX_IN_FLIGHT: ${OUTREACH_MAX_IN_FLIGHT:-}
+  OUTREACH_MAX_ATTEMPTS: ${OUTREACH_MAX_ATTEMPTS:-}
+  OUTREACH_INITIAL_BACKOFF_S: ${OUTREACH_INITIAL_BACKOFF_S:-}
+  OUTREACH_MAX_BACKOFF_S: ${OUTREACH_MAX_BACKOFF_S:-}
+  OUTREACH_BACKOFF_MULTIPLIER: ${OUTREACH_BACKOFF_MULTIPLIER:-}
+  OUTREACH_REQUEST_TIMEOUT_S: ${OUTREACH_REQUEST_TIMEOUT_S:-}
+  OUTREACH_PER_LEAD_TIMEOUT_S: ${OUTREACH_PER_LEAD_TIMEOUT_S:-}
+  OUTREACH_MAX_COPY_TOKENS: ${OUTREACH_MAX_COPY_TOKENS:-}
+  # Magic-link sign-in. The API is authenticated, so set
+  # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
+  # -- there is no signup flow, the allowlist is the whole gate. Delivery
+  # defaults to `console`: the link is printed to this container's log,
+  # which is the demo path. No SMTP is involved.
+  LOGIN_ALLOWED_EMAILS: ${LOGIN_ALLOWED_EMAILS:-}
+  LOGIN_LINK_DELIVERY: ${LOGIN_LINK_DELIVERY:-console}
+  LOGIN_LINK_BASE_URL: ${LOGIN_LINK_BASE_URL:-http://127.0.0.1:8000}
+  LOGIN_TOKEN_TTL_SECONDS: ${LOGIN_TOKEN_TTL_SECONDS:-900}
+  LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
+  LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
+  LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
+
 services:
   db:
     image: postgres:16-alpine
@@ -22,55 +74,29 @@ services:
         condition: service_healthy
     # Compose reads .env in this directory for ${VAR} interpolation. Run
     # `python scripts/setup_env.py` first: DJANGO_SECRET_KEY is required and
-    # .env.example ships it blank on purpose. DATABASE_URL below points at the
-    # Postgres service whatever .env says (the SQLite fallback in
+    # .env.example ships it blank on purpose. DATABASE_URL in the shared block
+    # points at the Postgres service whatever .env says (the SQLite fallback in
     # project/settings.py is for running outside Docker). Set an LLM provider
     # key too for the copy step -- without one the server still starts and
     # serves the seeded demo data.
+    environment: *app-env
+
+  # The actions engine's scheduler, alongside the server rather than inside it:
+  # same image and environment, its own process, so a tick that hangs cannot
+  # take the web server with it. `web` owns migrations and seeding; this waits
+  # for them rather than racing (docker/cron.sh).
+  cron:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY -- copy .env.example to .env}
-      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
-      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
-      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
-      DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}
-      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
-      # Grounding strictness: off | standard | strict. `off` disables the check.
-      COPY_VERIFY_LEVEL: ${COPY_VERIFY_LEVEL:-standard}
-      # LLM provider/model selection -- see .env.example. Blank reads as unset,
-      # so an operator who sets neither gets groq on its default model.
-      LLM_PROVIDER: ${LLM_PROVIDER:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      # Planner concurrency, retries and timeouts -- see .env.example for what
-      # each one bounds. Passed through blank rather than defaulted here:
-      # settings.py already owns the defaults, and restating them would make
-      # this another copy that nothing pins. A blank value reads as "unset"
-      # (see project/settings.py::_env_number), so an operator who never sets
-      # these gets exactly the documented defaults.
-      OUTREACH_MAX_IN_FLIGHT: ${OUTREACH_MAX_IN_FLIGHT:-}
-      OUTREACH_MAX_ATTEMPTS: ${OUTREACH_MAX_ATTEMPTS:-}
-      OUTREACH_INITIAL_BACKOFF_S: ${OUTREACH_INITIAL_BACKOFF_S:-}
-      OUTREACH_MAX_BACKOFF_S: ${OUTREACH_MAX_BACKOFF_S:-}
-      OUTREACH_BACKOFF_MULTIPLIER: ${OUTREACH_BACKOFF_MULTIPLIER:-}
-      OUTREACH_REQUEST_TIMEOUT_S: ${OUTREACH_REQUEST_TIMEOUT_S:-}
-      OUTREACH_PER_LEAD_TIMEOUT_S: ${OUTREACH_PER_LEAD_TIMEOUT_S:-}
-      OUTREACH_MAX_COPY_TOKENS: ${OUTREACH_MAX_COPY_TOKENS:-}
-      # Magic-link sign-in. The API is authenticated, so set
-      # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
-      # -- there is no signup flow, the allowlist is the whole gate. Delivery
-      # defaults to `console`: the link is printed to this container's log,
-      # which is the demo path. No SMTP is involved.
-      LOGIN_ALLOWED_EMAILS: ${LOGIN_ALLOWED_EMAILS:-}
-      LOGIN_LINK_DELIVERY: ${LOGIN_LINK_DELIVERY:-console}
-      LOGIN_LINK_BASE_URL: ${LOGIN_LINK_BASE_URL:-http://127.0.0.1:8000}
-      LOGIN_TOKEN_TTL_SECONDS: ${LOGIN_TOKEN_TTL_SECONDS:-900}
-      LOGIN_RATE_LIMIT_EMAIL: ${LOGIN_RATE_LIMIT_EMAIL:-5/hour}
-      LOGIN_RATE_LIMIT_IP: ${LOGIN_RATE_LIMIT_IP:-20/hour}
-      LOGIN_RESEND_COOLDOWN_SECONDS: ${LOGIN_RESEND_COOLDOWN_SECONDS:-30}
+      <<: *app-env
+      # Seconds between ticks; read by docker/cron.sh, not by Django, so its
+      # default lives in that script rather than in settings.py.
+      ACTIONS_CRON_INTERVAL_SECONDS: ${ACTIONS_CRON_INTERVAL_SECONDS:-}
+    entrypoint: ["sh", "docker/cron.sh"]
+    restart: unless-stopped
 
 volumes:
   postgres_data:

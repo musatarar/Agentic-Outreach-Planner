@@ -78,6 +78,15 @@ OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
 # Token budget for one copy call; a reasoning model's hidden reasoning is billed against it.
 OUTREACH_MAX_COPY_TOKENS = _env_int("OUTREACH_MAX_COPY_TOKENS", 1000)
 
+# Whether an actions-engine run may call the provider. Two values:
+#   True (the default) -- dry run: the inference pass asks nothing, every
+#     candidate it would have asked about comes back unevaluable, and the run
+#     says so on each job it touches. A tick costs nothing.
+#   False -- the inference pass calls the provider, once per lead that reaches
+#     it. Only the exact string "False" turns the dry run off, so a typo leaves
+#     it on rather than quietly starting to spend.
+ACTIONS_LLM_DRY_RUN = os.environ.get("ACTIONS_LLM_DRY_RUN", "True") != "False"
+
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # The key formerly hardcoded here is committed to git and must never be reused.
