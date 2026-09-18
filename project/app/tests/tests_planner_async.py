@@ -357,7 +357,10 @@ class AgenerateCopyTests(TestCase):
         )
 
         self.assertEqual(result, "drafted")
-        self.assertEqual(client.async_calls, [{"prompt": "a prompt", "max_tokens": 500}])
+        self.assertEqual(
+            client.async_calls,
+            [{"prompt": "a prompt", "max_tokens": outreach.MAX_COPY_TOKENS}],
+        )
         self.assertEqual(client.sync_calls, [])
 
     def test_it_builds_a_prompt_when_given_a_lead(self):
@@ -413,7 +416,9 @@ class EndToEndProviderPathTests(TestCase):
         self.assertEqual(len(planned), 3)
         self.assertEqual(len(client.async_calls), 3)
         self.assertEqual(client.sync_calls, [])
-        self.assertTrue(all(call["max_tokens"] == 500 for call in client.async_calls))
+        self.assertTrue(
+            all(call["max_tokens"] == outreach.MAX_COPY_TOKENS for call in client.async_calls)
+        )
 
     def test_the_run_closes_the_client_it_was_handed(self):
         """`asyncio.run` closes the loop but not the transports on it, so the

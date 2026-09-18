@@ -28,7 +28,8 @@ from project.app.services.llm import (
 from project.app.services.llm import runtime as llm_runtime
 from project.app.services.llm.retry import acall_with_retry
 
-MAX_COPY_TOKENS = 500
+# Fallback for OUTREACH_MAX_COPY_TOKENS, whose default settings.py restates.
+MAX_COPY_TOKENS = 1000
 
 # Phrases (lowercase) suggesting the lead asked to be contacted later — a "hold".
 HOLD_PHRASES = [
@@ -444,6 +445,19 @@ Write the email now. Requirements:
 - Output only the email (subject + body), no commentary."""
 
 
+def max_copy_tokens():
+    """The token budget for one copy call.
+
+    A knob, not a constant: a reasoning model is billed for its hidden
+    reasoning out of this same budget, so too small a budget returns empty copy.
+    ``settings`` is read inside the function, keeping this module importable
+    without Django.
+    """
+    from django.conf import settings
+
+    return getattr(settings, "OUTREACH_MAX_COPY_TOKENS", MAX_COPY_TOKENS)
+
+
 def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     """Generate a personalized outreach email via the configured LLM provider.
 
@@ -457,7 +471,7 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     prompt = _prompt_for(lead, action_type, reason, prompt)
     if client is None:
         client = get_llm_client()
-    return client.complete(prompt, max_tokens=MAX_COPY_TOKENS)
+    return client.complete(prompt, max_tokens=max_copy_tokens())
 
 
 class CopyGenerationGaveUp(RuntimeError):
@@ -489,6 +503,8 @@ async def agenerate_copy(
         retry = llm_runtime.get_retry_policy()
     if timeouts is None:
         timeouts = llm_runtime.get_timeouts()
+    # Read before the loop: every retry of this lead shares one budget.
+    max_tokens = max_copy_tokens()
 
     attempts = 0
     last_error = None
@@ -500,9 +516,7 @@ async def agenerate_copy(
         try:
             # `agenerate`, not `acomplete`: the caller needs the full LLMResult,
             # not just its text.
-            return await client.agenerate(
-                prompt, max_tokens=MAX_COPY_TOKENS, timeout=timeouts.request_s
-            )
+            return await client.agenerate(prompt, max_tokens=max_tokens, timeout=timeouts.request_s)
         except LLMError as exc:
             # Remembered: the per-lead budget expiring discards the in-flight
             # exception, and the reviewer's message is built from this.
