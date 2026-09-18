@@ -36,6 +36,7 @@ x-app-env: &app-env
   OUTREACH_BACKOFF_MULTIPLIER: ${OUTREACH_BACKOFF_MULTIPLIER:-}
   OUTREACH_REQUEST_TIMEOUT_S: ${OUTREACH_REQUEST_TIMEOUT_S:-}
   OUTREACH_PER_LEAD_TIMEOUT_S: ${OUTREACH_PER_LEAD_TIMEOUT_S:-}
+  OUTREACH_MAX_COPY_TOKENS: ${OUTREACH_MAX_COPY_TOKENS:-}
   # Magic-link sign-in. The API is authenticated, so set
   # LOGIN_ALLOWED_EMAILS in .env to your own address or you cannot sign in
   # -- there is no signup flow, the allowlist is the whole gate. Delivery
