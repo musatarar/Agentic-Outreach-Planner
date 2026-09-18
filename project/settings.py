@@ -23,7 +23,6 @@ if _env_file.exists():
 # may read Django settings. LLM_PROVIDER picks the adapter (default groq),
 # LLM_MODEL optionally overrides its default model, and the key comes from the
 # provider's own variable:
-#   claude   -> ANTHROPIC_API_KEY (or CLAUDE_API_KEY, aliased in config.py)
 #   chatgpt  -> OPENAI_API_KEY
 #   deepseek -> DEEPSEEK_API_KEY
 #   groq     -> GROQ_API_KEY

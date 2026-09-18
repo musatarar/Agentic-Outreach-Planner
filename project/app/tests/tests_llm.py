@@ -4,70 +4,16 @@ import asyncio
 import dataclasses
 import json
 import os
-import types
 import unittest
 from unittest import mock
 
-import anthropic
 import httpx
 
 from project.app.services import llm
 from project.app.services.llm import base, config, errors
-from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import groq as groq_mod
 from project.app.services.llm.chatgpt import ChatGPTClient
 from project.app.services.llm.groq import GroqClient
-
-# ---------------------------------------------------------------------------
-# Claude adapter (anthropic SDK mocked)
-# ---------------------------------------------------------------------------
-
-
-class ClaudeClientTests(unittest.TestCase):
-    def _mock_response(self, *blocks):
-        response = mock.Mock()
-        response.content = list(blocks)
-        return response
-
-    def _block(self, block_type, text=""):
-        block = mock.Mock()
-        block.type = block_type
-        block.text = text
-        return block
-
-    def test_complete_passes_model_and_max_tokens(self):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = self._mock_response(
-                self._block("text", "Hello there")
-            )
-            result = claude_mod.ClaudeClient().complete("a prompt", max_tokens=500)
-
-        self.assertEqual(result, "Hello there")
-        kwargs = client.messages.create.call_args.kwargs
-        self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
-        self.assertEqual(kwargs["max_tokens"], 500)
-        self.assertEqual(kwargs["messages"], [{"role": "user", "content": "a prompt"}])
-
-    def test_complete_joins_only_text_blocks(self):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = self._mock_response(
-                self._block("thinking", "internal"),
-                self._block("text", "Subject: Hi\n\nBody"),
-            )
-            result = claude_mod.ClaudeClient().complete("p")
-
-        self.assertEqual(result, "Subject: Hi\n\nBody")
-
-    def test_complete_falls_back_to_default_max_tokens(self):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = self._mock_response(self._block("text", "x"))
-            claude_mod.ClaudeClient(default_max_tokens=123).complete("p")
-
-        self.assertEqual(client.messages.create.call_args.kwargs["max_tokens"], 123)
-
 
 # ---------------------------------------------------------------------------
 # OpenAI-compatible adapter (httpx mocked) -- exercised via GroqClient
@@ -154,12 +100,12 @@ class ConfigResolutionTests(unittest.TestCase):
                     self.assertIsNone(config.get_model())
 
     def test_the_provider_is_read_from_the_environment(self):
-        with self._env(LLM_PROVIDER="claude"):
-            self.assertEqual(config.get_provider(), "claude")
+        with self._env(LLM_PROVIDER="chatgpt"):
+            self.assertEqual(config.get_provider(), "chatgpt")
 
     def test_surrounding_whitespace_is_forgiven(self):
-        with self._env(LLM_PROVIDER=" claude ", LLM_MODEL=" some-model "):
-            self.assertEqual(config.get_provider(), "claude")
+        with self._env(LLM_PROVIDER=" chatgpt ", LLM_MODEL=" some-model "):
+            self.assertEqual(config.get_provider(), "chatgpt")
             self.assertEqual(config.get_model(), "some-model")
 
     def test_an_unsupported_provider_names_the_variable_and_the_choices(self):
@@ -170,7 +116,7 @@ class ConfigResolutionTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("LLM_PROVIDER", message)
         self.assertIn("bogus", message)
-        for choice in ("claude", "chatgpt", "deepseek", "groq"):
+        for choice in ("chatgpt", "deepseek", "groq"):
             self.assertIn(choice, message)
 
     def test_no_model_configured_means_the_adapters_own_default(self):
@@ -182,21 +128,13 @@ class ConfigResolutionTests(unittest.TestCase):
         # A model id is provider-specific: it must not ride along onto another.
         with self._env(LLM_PROVIDER="groq", LLM_MODEL="some-groq-model"):
             self.assertEqual(config.get_provider_config("groq"), {"model": "some-groq-model"})
-            self.assertEqual(config.get_provider_config("claude"), {})
+            self.assertEqual(config.get_provider_config("chatgpt"), {})
 
     def test_the_key_comes_from_the_providers_own_variable(self):
         with self._env(LLM_PROVIDER="groq", GROQ_API_KEY="groq-key", OPENAI_API_KEY="other-key"):
             self.assertEqual(config.resolve_api_key(), "groq-key")
             self.assertEqual(config.resolve_api_key("chatgpt"), "other-key")
             self.assertIsNone(config.resolve_api_key("deepseek"))
-
-    def test_claude_api_key_is_accepted_as_an_alias(self):
-        with self._env(LLM_PROVIDER="claude", CLAUDE_API_KEY="legacy-key"):
-            self.assertEqual(config.resolve_api_key(), "legacy-key")
-
-    def test_the_canonical_anthropic_variable_wins_over_the_alias(self):
-        with self._env(ANTHROPIC_API_KEY="canonical", CLAUDE_API_KEY="legacy"):
-            self.assertEqual(config.resolve_api_key("claude"), "canonical")
 
     def test_a_missing_key_is_none_rather_than_an_error(self):
         # The adapter raises the auth error at call time, naming its own var.
@@ -302,33 +240,6 @@ class ResolvedKeyAndTimeoutTests(unittest.TestCase):
             GroqClient(timeout_s=11.0).complete("a prompt")
         self.assertEqual(post.call_args.kwargs["timeout"], 11.0)
 
-    def test_claude_builds_its_sdk_client_once_with_the_resolved_key(self):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = mock.Mock(
-                content=[mock.Mock(type="text", text="Hello")]
-            )
-            adapter = claude_mod.ClaudeClient(api_key="db-key")
-            adapter.complete("p")
-            adapter.complete("p")
-
-        self.assertEqual(mock_cls.call_count, 1)  # built in __init__, not per call
-        self.assertEqual(mock_cls.call_args.kwargs["api_key"], "db-key")
-
-    def test_claude_carries_a_per_call_timeout_on_the_request_only_when_given(self):
-        # Passing timeout unconditionally would override the client-level
-        # timeout with None and restore the SDK's 600s default by accident.
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = mock.Mock(
-                content=[mock.Mock(type="text", text="Hello")]
-            )
-            adapter = claude_mod.ClaudeClient(api_key="db-key", timeout_s=60.0)
-            adapter.complete("p")
-            self.assertNotIn("timeout", client.messages.create.call_args.kwargs)
-            adapter.complete("p", timeout=2.5)
-            self.assertEqual(client.messages.create.call_args.kwargs["timeout"], 2.5)
-
 
 # ---------------------------------------------------------------------------
 # Error taxonomy -- pure mapping functions, no network, no mocking
@@ -343,31 +254,24 @@ def _httpx_response(status_code, headers=None, content=None):
     )
 
 
-def _anthropic_status_error(cls, status_code, headers=None):
-    """Build an anthropic APIStatusError subclass the way the SDK does."""
-    response = _httpx_response(status_code, headers)
-    return cls("boom", response=response, body=None)
-
-
 # One table, every surface that turns a provider's HTTP status into our
-# taxonomy: (status_code, expected LLMError subclass, retryable, the anthropic
-# SDK class that carries that status -- None where the SDK names none).
+# taxonomy: (status_code, expected LLMError subclass, retryable).
 # `retryable` is spelled per row on purpose, not derived from the class.
 STATUS_TABLE = (
-    (400, errors.LLMBadRequestError, False, anthropic.BadRequestError),
-    (401, errors.LLMAuthError, False, anthropic.AuthenticationError),
-    (403, errors.LLMAuthError, False, anthropic.PermissionDeniedError),
-    (404, errors.LLMBadRequestError, False, anthropic.NotFoundError),
-    (408, errors.LLMTimeoutError, True, None),
-    (409, errors.LLMBadRequestError, False, anthropic.ConflictError),
-    (413, errors.LLMBadRequestError, False, anthropic.RequestTooLargeError),
-    (422, errors.LLMBadRequestError, False, anthropic.UnprocessableEntityError),
-    (425, errors.LLMTransientError, True, None),
-    (429, errors.LLMRateLimitError, True, anthropic.RateLimitError),
-    (500, errors.LLMTransientError, True, anthropic.InternalServerError),
-    (502, errors.LLMTransientError, True, None),
-    (503, errors.LLMTransientError, True, None),
-    (529, errors.LLMTransientError, True, anthropic.OverloadedError),
+    (400, errors.LLMBadRequestError, False),
+    (401, errors.LLMAuthError, False),
+    (403, errors.LLMAuthError, False),
+    (404, errors.LLMBadRequestError, False),
+    (408, errors.LLMTimeoutError, True),
+    (409, errors.LLMBadRequestError, False),
+    (413, errors.LLMBadRequestError, False),
+    (422, errors.LLMBadRequestError, False),
+    (425, errors.LLMTransientError, True),
+    (429, errors.LLMRateLimitError, True),
+    (500, errors.LLMTransientError, True),
+    (502, errors.LLMTransientError, True),
+    (503, errors.LLMTransientError, True),
+    (529, errors.LLMTransientError, True),
 )
 
 RETRYABLE_CLASSES = (
@@ -428,13 +332,12 @@ class ErrorTaxonomyTests(unittest.TestCase):
 
 
 class StatusCodeMappingTests(unittest.TestCase):
-    """STATUS_TABLE, walked on all three surfaces it has to hold for: the httpx
-    mapper, the anthropic mapper (SDK-named subclass and the generic
-    ``APIStatusError`` a future SDK may hand us), and the adapter that has to
-    raise the mapped class rather than the vendor's."""
+    """STATUS_TABLE, walked on both surfaces it has to hold for: the httpx
+    mapper, and the adapter that has to raise the mapped class rather than the
+    vendor's."""
 
-    def test_both_mappers_agree_on_every_status_code(self):
-        for status_code, expected, retryable, sdk_cls in STATUS_TABLE:
+    def test_the_mapper_lands_every_status_code_in_its_bucket(self):
+        for status_code, expected, retryable in STATUS_TABLE:
             with self.subTest(status_code=status_code):
                 httpx_exc = _httpx_status_error(status_code)
                 mapped = errors.map_httpx_error(httpx_exc, "groq")
@@ -443,26 +346,11 @@ class StatusCodeMappingTests(unittest.TestCase):
                 self.assertEqual(mapped.provider, "groq")
                 self.assertIs(mapped.cause, httpx_exc)
                 self.assertEqual(mapped.retryable, retryable)
-
-                # An SDK subclass we don't enumerate must land by status code.
-                generic = _anthropic_status_error(anthropic.APIStatusError, status_code)
-                mapped = errors.map_anthropic_error(generic, "claude")
-                self.assertIsInstance(mapped, expected)
-                self.assertEqual(mapped.status_code, status_code)
-                self.assertEqual(mapped.retryable, retryable)
-
-                if sdk_cls is None:
-                    continue
-                sdk_exc = _anthropic_status_error(sdk_cls, status_code)
-                mapped = errors.map_anthropic_error(sdk_exc, "claude")
-                self.assertIsInstance(mapped, expected)
-                self.assertEqual(mapped.provider, "claude")
-                self.assertIs(mapped.cause, sdk_exc)
                 self.assertEqual(mapped.retryable, isinstance(mapped, RETRYABLE_CLASSES))
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_the_adapter_raises_the_mapped_class_for_every_status_code(self):
-        for status_code, expected, retryable, _sdk_cls in STATUS_TABLE:
+        for status_code, expected, retryable in STATUS_TABLE:
             with self.subTest(status_code=status_code):
                 with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
                     post.return_value = _httpx_response(status_code)
@@ -489,13 +377,11 @@ class StatusCodeMappingTests(unittest.TestCase):
 
 class NonStatusMappingTests(unittest.TestCase):
     """Everything that never carries a status code: transport failures, unusable
-    response shapes and the residue. One row per exception, both mappers.
+    response shapes and the residue. One row per exception.
 
     An expected class of ``LLMError`` means *exactly* that class -- the
     non-retryable base, not one of its buckets.
     """
-
-    _REQUEST = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
 
     HTTPX_CASES = (
         # Every timeout flavour is a timeout, never "transient".
@@ -522,58 +408,31 @@ class NonStatusMappingTests(unittest.TestCase):
         (ValueError("something else entirely"), errors.LLMError),
     )
 
-    ANTHROPIC_CASES = (
-        # REGRESSION GUARD: APITimeoutError subclasses APIConnectionError, so a
-        # wrong isinstance order silently classifies every timeout as transient.
-        (anthropic.APITimeoutError(_REQUEST), errors.LLMTimeoutError),
-        (anthropic.APIConnectionError(request=_REQUEST), errors.LLMTransientError),
-        # RetryableError subclasses AnthropicError, not APIError, so without an
-        # explicit branch it would land on the non-retryable base.
-        (anthropic.RetryableError("try again"), errors.LLMTransientError),
-        (
-            anthropic.APIResponseValidationError(response=_httpx_response(200), body=None),
-            errors.LLMMalformedResponseError,
-        ),
-        # Residue, including a type that never came from the SDK: the mapper
-        # takes BaseException and must not blow up on one.
-        (anthropic.AnthropicError("odd"), errors.LLMError),
-        (TypeError("could not resolve auth"), errors.LLMError),
-    )
-
     def test_every_non_status_failure_lands_in_its_declared_bucket(self):
-        surfaces = (
-            (errors.map_httpx_error, "groq", self.HTTPX_CASES),
-            (errors.map_anthropic_error, "claude", self.ANTHROPIC_CASES),
-        )
-        for mapper, provider, cases in surfaces:
-            for exc, expected in cases:
-                with self.subTest(mapper=mapper.__name__, exc=type(exc).__name__):
-                    mapped = mapper(exc, provider)
-                    if expected is errors.LLMError:
-                        self.assertIs(type(mapped), errors.LLMError)
-                    else:
-                        self.assertIsInstance(mapped, expected)
-                    # The buckets stay disjoint: the retry policy reads the class.
-                    if expected is errors.LLMTimeoutError:
-                        self.assertNotIsInstance(mapped, errors.LLMTransientError)
-                    self.assertEqual(mapped.provider, provider)
-                    self.assertEqual(mapped.retryable, expected.retryable)
+        for exc, expected in self.HTTPX_CASES:
+            with self.subTest(exc=type(exc).__name__):
+                mapped = errors.map_httpx_error(exc, "groq")
+                if expected is errors.LLMError:
+                    self.assertIs(type(mapped), errors.LLMError)
+                else:
+                    self.assertIsInstance(mapped, expected)
+                # The buckets stay disjoint: the retry policy reads the class.
+                if expected is errors.LLMTimeoutError:
+                    self.assertNotIsInstance(mapped, errors.LLMTransientError)
+                self.assertEqual(mapped.provider, "groq")
+                self.assertEqual(mapped.retryable, expected.retryable)
 
 
 class RetryAfterTests(unittest.TestCase):
-    """The only header the taxonomy reads, on both mappers."""
+    """The only header the taxonomy reads."""
 
     def test_it_is_parsed_from_the_header_and_absent_without_one(self):
         with_header = errors.map_httpx_error(_httpx_status_error(429, {"Retry-After": "30"}), "g")
         self.assertEqual(with_header.retry_after, 30.0)
         self.assertIsNone(errors.map_httpx_error(_httpx_status_error(429), "g").retry_after)
 
-        anthropic_with = _anthropic_status_error(
-            anthropic.RateLimitError, 429, headers={"retry-after": "12.5"}
-        )
-        self.assertEqual(errors.map_anthropic_error(anthropic_with, "claude").retry_after, 12.5)
-        anthropic_without = _anthropic_status_error(anthropic.RateLimitError, 429)
-        self.assertIsNone(errors.map_anthropic_error(anthropic_without, "claude").retry_after)
+        lowercase = _httpx_status_error(429, {"retry-after": "12.5"})
+        self.assertEqual(errors.map_httpx_error(lowercase, "g").retry_after, 12.5)
 
     def test_unusable_values_are_ignored(self):
         # Date-form or negative values degrade to "no guidance", not a bad sleep().
@@ -586,13 +445,6 @@ class RetryAfterTests(unittest.TestCase):
         # base_url is operator-configurable; a proxy must not park a worker.
         mapped = errors.map_httpx_error(_httpx_status_error(429, {"Retry-After": "86400000"}), "g")
         self.assertEqual(mapped.retry_after, errors.MAX_RETRY_AFTER_SECONDS)
-
-    def test_unreadable_headers_do_not_break_the_mapper(self):
-        # `headers` is read with getattr; a bad value must degrade to "no
-        # guidance", never to an exception raised from inside the mapper.
-        exc = anthropic.AnthropicError("odd")
-        exc.response = types.SimpleNamespace(headers=object())
-        self.assertIsNone(errors.map_anthropic_error(exc, "claude").retry_after)
 
     @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
     def test_the_adapter_carries_it_out_of_a_rate_limited_call(self):
@@ -669,50 +521,6 @@ class AdapterErrorTranslationTests(unittest.TestCase):
                     post.return_value = response
                     with self.assertRaises(errors.LLMMalformedResponseError):
                         GroqClient().complete("a prompt")
-
-    @mock.patch.dict(os.environ, {}, clear=True)
-    def test_claude_missing_key_is_a_non_retryable_auth_error(self):
-        # default_credentials() is patched off: clearing os.environ is not
-        # enough -- the SDK also reads the active profile from disk, so a
-        # logged-in developer machine would resolve a credential anyway.
-        with (
-            mock.patch.object(
-                claude_mod.anthropic._client, "default_credentials", return_value=None
-            ),
-            self.assertRaises(errors.LLMAuthError) as ctx,
-        ):
-            claude_mod.ClaudeClient().complete("p")
-        self.assertFalse(ctx.exception.retryable)
-        self.assertEqual(ctx.exception.provider, "claude")
-        self.assertIn("ANTHROPIC_API_KEY", str(ctx.exception))
-
-    def test_claude_sdk_error_becomes_a_taxonomy_error(self):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.side_effect = _anthropic_status_error(
-                anthropic.InternalServerError, 500
-            )
-            with self.assertRaises(errors.LLMTransientError) as ctx:
-                claude_mod.ClaudeClient().complete("p")
-        self.assertEqual(ctx.exception.provider, "claude")
-        self.assertTrue(ctx.exception.retryable)
-
-    def test_claude_raw_httpx_error_is_still_typed(self):
-        # Insurance branch: the SDK normally wraps transport failures itself.
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.side_effect = httpx.ConnectError("refused")
-            with self.assertRaises(errors.LLMTransientError):
-                claude_mod.ClaudeClient().complete("p")
-
-    def test_claude_response_with_no_text_block_is_malformed(self):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            response = mock.Mock()
-            response.content = []
-            client.messages.create.return_value = response
-            with self.assertRaises(errors.LLMMalformedResponseError):
-                claude_mod.ClaudeClient().complete("p")
 
 
 # ---------------------------------------------------------------------------
@@ -809,105 +617,6 @@ class LLMResultTests(unittest.TestCase):
         self.assertEqual(asyncio.run(_AsyncStub(model="m").acomplete("p")), "async copy")
 
 
-class ClaudeResultTests(unittest.TestCase):
-    def _response(self, *, text="Subject: Hi\n\nBody", **overrides):
-        response = mock.Mock()
-        block = mock.Mock()
-        block.type = "text"
-        block.text = text
-        response.content = [block]
-        for key, value in overrides.items():
-            setattr(response, key, value)
-        return response
-
-    def _generate(self, response):
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as mock_cls:
-            client = mock_cls.return_value
-            client.messages.create.return_value = response
-            return claude_mod.ClaudeClient(model="claude-requested").generate("p")
-
-    def test_extracts_usage_model_and_finish_reason(self):
-        usage = mock.Mock(input_tokens=1200, output_tokens=310)
-        result = self._generate(
-            self._response(
-                usage=usage,
-                model="claude-sonnet-4-6-20260101",
-                stop_reason="end_turn",
-            )
-        )
-        self.assertEqual(result.text, "Subject: Hi\n\nBody")
-        self.assertEqual(result.provider, "claude")
-        # Requested model vs what the provider says it served -- both kept.
-        self.assertEqual(result.model, "claude-requested")
-        self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
-        self.assertEqual(result.input_tokens, 1200)
-        self.assertEqual(result.output_tokens, 310)
-        self.assertEqual(result.raw_finish_reason, "end_turn")
-        self.assertEqual(result.finish_reason, base.FINISH_STOP)
-        self.assertGreaterEqual(result.latency_s, 0.0)
-
-    def test_truncated_generation_normalizes_to_length(self):
-        usage = mock.Mock(input_tokens=1, output_tokens=500)
-        result = self._generate(self._response(usage=usage, stop_reason="max_tokens"))
-        self.assertEqual(result.finish_reason, base.FINISH_LENGTH)
-        self.assertEqual(result.raw_finish_reason, "max_tokens")
-
-    def test_absent_usage_yields_none_not_zero(self):
-        result = self._generate(self._response(usage=None, model=None, stop_reason=None))
-        self.assertIsNone(result.input_tokens)
-        self.assertIsNone(result.output_tokens)
-        self.assertIsNone(result.response_model)
-        self.assertIsNone(result.finish_reason)
-        self.assertIsNone(result.raw_finish_reason)
-        # "No observation", not an observation of zero.
-
-
-class ClaudeSdkShapeTests(unittest.TestCase):
-    """Pin the extraction against the SDK's REAL response types — Mocks would
-    stay green if ``anthropic`` renamed ``Usage.input_tokens``."""
-
-    def _message(self, **overrides):
-        fields = {
-            "id": "msg_01",
-            "type": "message",
-            "role": "assistant",
-            "model": "claude-sonnet-4-6-20260101",
-            "stop_reason": "end_turn",
-            "content": [anthropic.types.TextBlock(type="text", text="Subject: Hi\n\nBody")],
-            "usage": anthropic.types.Usage(
-                input_tokens=1200,
-                output_tokens=310,
-                cache_read_input_tokens=64,
-                cache_creation_input_tokens=8,
-            ),
-        }
-        fields.update(overrides)
-        return anthropic.types.Message(**fields)
-
-    def test_extraction_matches_the_real_sdk_response_type(self):
-        result = claude_mod.ClaudeClient(model="claude-requested")._build_result(
-            self._message(), latency_s=0.25
-        )
-        self.assertEqual(result.text, "Subject: Hi\n\nBody")
-        self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
-        self.assertEqual(result.input_tokens, 1200)
-        self.assertEqual(result.output_tokens, 310)
-        self.assertEqual(result.cache_read_tokens, 64)
-        self.assertEqual(result.cache_write_tokens, 8)
-        self.assertEqual(result.raw_finish_reason, "end_turn")
-        self.assertEqual(result.finish_reason, base.FINISH_STOP)
-        self.assertEqual(result.latency_s, 0.25)
-
-    def test_a_dumped_response_reads_identically(self):
-        # with_raw_response / model_dump() turn the SDK's models into plain dicts.
-        dumped = self._message().model_dump()
-        result = claude_mod.ClaudeClient(model="m")._build_result(dumped, latency_s=0.1)
-        self.assertEqual(result.text, "Subject: Hi\n\nBody")
-        self.assertEqual(result.input_tokens, 1200)
-        self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
-        self.assertEqual(result.finish_reason, base.FINISH_STOP)
-
-
 class OpenAICompatibleResultTests(unittest.TestCase):
     def _generate(self, payload, model="some-model"):
         response = mock.Mock()
@@ -994,8 +703,8 @@ class OpenAICompatibleResultTests(unittest.TestCase):
             }
         )
         self.assertEqual(result.cache_read_tokens, 512)
-        # OpenAI-compatible providers count cached tokens WITHIN prompt_tokens
-        # (unlike Anthropic's), so the two are not additive.
+        # Cached tokens are counted WITHIN prompt_tokens, so the two are not
+        # additive.
         self.assertEqual(result.input_tokens, 980)
         self.assertIsNone(result.cache_write_tokens)
 

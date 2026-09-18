@@ -8,12 +8,10 @@ import threading
 import unittest
 from unittest import mock
 
-import anthropic
 import httpx
 
-from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import errors
-from project.app.services.llm.base import LoopBoundAsyncClient
+from project.app.services.llm.base import LLMClient, LoopBoundAsyncClient
 from project.app.services.llm.chat_types import Message
 from project.app.services.llm.groq import GroqClient
 
@@ -149,143 +147,6 @@ async def _call(fn):
 
 
 # ---------------------------------------------------------------------------
-# Claude async path
-# ---------------------------------------------------------------------------
-
-
-def _text_response(text="Subject: Hi\n\nBody", **overrides):
-    response = mock.Mock()
-    block = mock.Mock()
-    block.type = "text"
-    block.text = text
-    response.content = [block]
-    response.usage = mock.Mock(
-        input_tokens=100,
-        output_tokens=20,
-        cache_read_input_tokens=None,
-        cache_creation_input_tokens=None,
-    )
-    response.model = "claude-sonnet-4-6-20260101"
-    response.stop_reason = "end_turn"
-    for key, value in overrides.items():
-        setattr(response, key, value)
-    return response
-
-
-class ClaudeAsyncTests(unittest.IsolatedAsyncioTestCase):
-    def _patch_sdk(self, **create):
-        patcher = mock.patch.object(claude_mod.anthropic, "AsyncAnthropic")
-        mock_cls = patcher.start()
-        self.addCleanup(patcher.stop)
-        client = mock_cls.return_value
-        client.api_key = "test-key"
-        # Pinned to None explicitly: a Mock invents attributes, so
-        # _check_credentials would otherwise pass on a truthy auto-attribute.
-        client.auth_token = None
-        client.credentials = None
-        client.messages.create = mock.AsyncMock(**create)
-        return mock_cls, client
-
-    async def test_agenerate_returns_a_full_result(self):
-        _, client = self._patch_sdk(return_value=_text_response())
-        result = await claude_mod.ClaudeClient(model="claude-requested").agenerate(
-            "p", max_tokens=42
-        )
-
-        self.assertEqual(result.text, "Subject: Hi\n\nBody")
-        self.assertEqual(result.provider, "claude")
-        self.assertEqual(result.model, "claude-requested")
-        self.assertEqual(result.response_model, "claude-sonnet-4-6-20260101")
-        self.assertEqual(result.input_tokens, 100)
-        self.assertEqual(result.output_tokens, 20)
-        self.assertIsNotNone(result.latency_s)
-        self.assertEqual(client.messages.create.await_args.kwargs["max_tokens"], 42)
-
-    async def test_sdk_retries_are_off_where_we_own_the_budget_and_on_where_we_do_not(self):
-        # llm/retry.py owns the async budget, so SDK retries are off there; the
-        # sync path has no retries of ours, so the SDK's stay on.
-        mock_cls, _ = self._patch_sdk(return_value=_text_response())
-        await claude_mod.ClaudeClient(timeout_s=12.5).agenerate("p")
-        self.assertEqual(mock_cls.call_args.kwargs["max_retries"], 0)
-        self.assertEqual(mock_cls.call_args.kwargs["timeout"], 12.5)
-
-        with mock.patch.object(claude_mod.anthropic, "Anthropic") as sync_cls:
-            sync_cls.return_value.messages.create.return_value = _text_response()
-            claude_mod.ClaudeClient(timeout_s=7.0).generate("p")
-        self.assertNotIn("max_retries", sync_cls.call_args.kwargs)
-        # Both paths tighten the timeout off the SDK's 600s default.
-        self.assertEqual(sync_cls.call_args.kwargs["timeout"], 7.0)
-
-    async def test_async_failures_are_typed_and_timed(self):
-        response = httpx.Response(
-            429,
-            headers={"retry-after": "3"},
-            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
-        )
-        self._patch_sdk(
-            side_effect=anthropic.RateLimitError("slow down", response=response, body=None)
-        )
-        with self.assertRaises(errors.LLMRateLimitError) as ctx:
-            await claude_mod.ClaudeClient().agenerate("p")
-        self.assertEqual(ctx.exception.retry_after, 3.0)
-        self.assertIsNotNone(ctx.exception.latency_s)
-
-    async def test_missing_credentials_fail_before_any_request(self):
-        _, client = self._patch_sdk(return_value=_text_response())
-        client.api_key = None
-        client.auth_token = None
-        client.credentials = None
-        with self.assertRaises(errors.LLMAuthError):
-            await claude_mod.ClaudeClient().agenerate("p")
-        client.messages.create.assert_not_awaited()
-
-    async def test_a_credentials_provider_counts_as_a_resolved_credential(self):
-        # A credentials provider (profile-on-disk, workload identity) leaves
-        # api_key and auth_token None; checking only those two static
-        # mechanisms would reject a working deployment.
-        _, client = self._patch_sdk(return_value=_text_response())
-        client.api_key = None
-        client.auth_token = None
-        client.credentials = object()
-        result = await claude_mod.ClaudeClient().agenerate("p")
-        self.assertEqual(result.text, "Subject: Hi\n\nBody")
-
-    async def test_acomplete_returns_text(self):
-        self._patch_sdk(return_value=_text_response("Just the copy"))
-        self.assertEqual(await claude_mod.ClaudeClient().acomplete("p"), "Just the copy")
-
-    async def test_the_async_sdk_client_gets_the_resolved_key(self):
-        mock_cls, _ = self._patch_sdk(return_value=_text_response())
-        await claude_mod.ClaudeClient(api_key="db-key").agenerate("p")
-        self.assertEqual(mock_cls.call_args.kwargs["api_key"], "db-key")
-
-    async def test_no_resolved_key_hands_the_lookup_back_to_the_sdk(self):
-        # api_key=None, not "": an empty string would be a real (invalid)
-        # credential instead of falling back to ANTHROPIC_API_KEY.
-        mock_cls, _ = self._patch_sdk(return_value=_text_response())
-        await claude_mod.ClaudeClient().agenerate("p")
-        self.assertIsNone(mock_cls.call_args.kwargs["api_key"])
-
-    async def test_aclose_closes_the_underlying_sdk_client(self):
-        _, client = self._patch_sdk(return_value=_text_response())
-        client.close = mock.AsyncMock()
-        claude = claude_mod.ClaudeClient()
-        await claude.agenerate("p")
-        await claude.aclose()
-        client.close.assert_awaited_once()
-
-    async def test_base_aclose_is_a_no_op_for_adapters_without_async_state(self):
-        # aclose() must be safe on any adapter, sync ones included.
-        class _Sync(claude_mod.LLMClient):
-            provider_name = "stub"
-
-            def generate(self, prompt, max_tokens=None, timeout=None):  # pragma: no cover - unused
-                raise AssertionError
-
-        self.assertIsNone(await _Sync(model="m").aclose())
-
-
-# ---------------------------------------------------------------------------
 # OpenAI-compatible async path
 # ---------------------------------------------------------------------------
 
@@ -331,6 +192,16 @@ class OpenAICompatibleAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(url, "https://api.groq.com/openai/v1/chat/completions")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertNotIn("timeout", kwargs)
+
+    async def test_base_aclose_is_a_no_op_for_adapters_without_async_state(self):
+        # aclose() must be safe on any adapter, sync ones included.
+        class _Sync(LLMClient):
+            provider_name = "stub"
+
+            def generate(self, prompt, max_tokens=None, timeout=None):  # pragma: no cover - unused
+                raise AssertionError
+
+        self.assertIsNone(await _Sync(model="m").aclose())
 
     @mock.patch.dict(os.environ, {}, clear=True)
     async def test_missing_key_fails_before_a_client_is_built(self):

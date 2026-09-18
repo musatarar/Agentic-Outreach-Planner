@@ -1,10 +1,9 @@
 """Typed provider errors for the LLM layer.
 
-Adapters re-raise their SDK/httpx exceptions as one of the classes below;
+Adapters re-raise their httpx exceptions as one of the classes below;
 callers branch on :attr:`LLMError.retryable`. The ``RuntimeError`` base is
 load-bearing: pre-taxonomy callers and tests expect ``RuntimeError`` for a
-missing key. Mapping lives in the pure functions :func:`map_anthropic_error`
-and :func:`map_httpx_error`.
+missing key. Mapping lives in the pure function :func:`map_httpx_error`.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import json
 import math
 from typing import Any
 
-import anthropic
 import httpx
 
 # HTTP status codes we classify by hand. Everything else falls through to the
@@ -97,7 +95,7 @@ class LLMTimeoutError(LLMError):
 class LLMTransientError(LLMError):
     """Provider-side failure that is expected to clear on its own.
 
-    5xx, connection resets, and Anthropic's 529 "overloaded".
+    5xx and connection resets.
     """
 
     retryable = True
@@ -218,13 +216,8 @@ def _parse_retry_after(headers: Any) -> float | None:
     return min(value, MAX_RETRY_AFTER_SECONDS)
 
 
-def _response_headers(exc: BaseException) -> Any:
-    response = getattr(exc, "response", None)
-    return getattr(response, "headers", None)
-
-
 # ---------------------------------------------------------------------------
-# status-code dispatch (shared by both providers)
+# status-code dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +231,7 @@ def _from_status_code(
 ) -> LLMError:
     """Map a bare HTTP status to the taxonomy.
 
-    Shared by the Anthropic and httpx mappers so the two providers can never
+    The one place a bare status becomes a class, so no two providers can
     disagree about what a 503 means.
     """
     kwargs: dict[str, Any] = {
@@ -263,83 +256,6 @@ def _from_status_code(
         # Unenumerated 4xx: client-side, not retryable (408/425 handled above).
         return LLMBadRequestError(message, **kwargs)
     return LLMError(message, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Anthropic SDK -> taxonomy
-# ---------------------------------------------------------------------------
-
-
-def map_anthropic_error(exc: BaseException, provider: str | None = None) -> LLMError:
-    """Translate an ``anthropic`` SDK exception into an :class:`LLMError`.
-
-    Pure; verified against ``anthropic==0.109.1``. Ordering matters:
-    ``APITimeoutError`` subclasses ``APIConnectionError`` so it is checked
-    first, and the specific ``APIStatusError`` subclasses are checked before
-    the base, with a status-code fallback for subclasses a future SDK adds.
-    """
-    retry_after = _parse_retry_after(_response_headers(exc))
-    message = str(exc) or exc.__class__.__name__
-
-    def build(cls: type[LLMError], status_code: int | None = None) -> LLMError:
-        return cls(
-            message,
-            provider=provider,
-            status_code=status_code if status_code is not None else _status_of(exc),
-            retry_after=retry_after,
-            cause=exc,
-        )
-
-    # APITimeoutError subclasses APIConnectionError -- check it first.
-    if isinstance(exc, anthropic.APITimeoutError):
-        return build(LLMTimeoutError)
-    if isinstance(exc, anthropic.APIConnectionError):
-        return build(LLMTransientError)
-
-    if isinstance(exc, anthropic.APIResponseValidationError):
-        return build(LLMMalformedResponseError)
-
-    if isinstance(exc, anthropic.RateLimitError):
-        return build(LLMRateLimitError)
-    if isinstance(exc, (anthropic.InternalServerError, anthropic.OverloadedError)):
-        return build(LLMTransientError)
-    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
-        return build(LLMAuthError)
-    if isinstance(
-        exc,
-        (
-            anthropic.BadRequestError,
-            anthropic.NotFoundError,
-            anthropic.ConflictError,
-            anthropic.UnprocessableEntityError,
-            anthropic.RequestTooLargeError,
-        ),
-    ):
-        return build(LLMBadRequestError)
-
-    if isinstance(exc, anthropic.RetryableError):
-        # SDK-middleware signal whose whole meaning is "try again"; falling
-        # through to the non-retryable base would invert it.
-        return build(LLMTransientError)
-
-    if isinstance(exc, anthropic.APIStatusError):
-        # Unnamed status-carrying subclass: dispatch on the code so it degrades
-        # to the right category instead of to the base LLMError.
-        return _from_status_code(
-            exc.status_code,
-            message,
-            provider=provider,
-            retry_after=retry_after,
-            cause=exc,
-        )
-
-    # Residual AnthropicError: unknown retryability -- fail closed.
-    return build(LLMError)
-
-
-def _status_of(exc: BaseException) -> int | None:
-    status = getattr(exc, "status_code", None)
-    return status if isinstance(status, int) else None
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +310,7 @@ def map_httpx_error(exc: BaseException, provider: str | None = None) -> LLMError
     :class:`LLMError`.
 
     Pure. ``TimeoutException`` is checked before ``TransportError`` — it is a
-    subclass, the same ordering trap as Anthropic's ``APITimeoutError``.
+    subclass, and the general case would otherwise swallow it.
     """
     message = str(exc) or exc.__class__.__name__
 
@@ -442,7 +358,6 @@ __all__ = [
     "LLMMalformedResponseError",
     "LLMEmptyCompletionError",
     "LLMUnexpectedError",
-    "map_anthropic_error",
     "map_httpx_error",
     "wrap_unexpected",
 ]

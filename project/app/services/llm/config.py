@@ -3,13 +3,13 @@
 Three variables, nothing else:
 
 ``LLM_PROVIDER``
-    Which adapter runs, e.g. ``groq`` (the default) or ``claude``. An
+    Which adapter runs, e.g. ``groq`` (the default) or ``chatgpt``. An
     unsupported value fails loudly rather than silently falling back.
 ``LLM_MODEL``
     Optional model id for that provider. Blank means the adapter's own
     ``DEFAULT_MODEL``, so the model is never restated in two places.
 the provider's key variable
-    ``GROQ_API_KEY``, ``ANTHROPIC_API_KEY``, ... per :data:`PROVIDER_ENV_VARS`.
+    ``GROQ_API_KEY``, ``OPENAI_API_KEY``, ... per :data:`PROVIDER_ENV_VARS`.
 
 Blank counts as unset everywhere (that is what an untouched ``.env`` line and
 a docker-compose ``${VAR:-}`` passthrough produce). Django is deliberately not
@@ -24,9 +24,7 @@ MODEL_VAR = "LLM_MODEL"
 # Provider -> env var name(s) its adapter accepts, in priority order. Also the
 # set of values LLM_PROVIDER accepts, so adding a provider means editing this
 # map and the client registry in __init__.py -- those two places, no more.
-# CLAUDE_API_KEY is a legacy alias handled here.
 PROVIDER_ENV_VARS = {
-    "claude": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
     "chatgpt": ("OPENAI_API_KEY",),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "groq": ("GROQ_API_KEY",),
@@ -50,7 +48,7 @@ def _configured_provider():
 
 
 def get_provider():
-    """Name of the active provider, e.g. ``"claude"`` or ``"groq"``."""
+    """Name of the active provider, e.g. ``"chatgpt"`` or ``"groq"``."""
     name = _configured_provider()
     if name not in PROVIDER_ENV_VARS:
         raise ValueError(
