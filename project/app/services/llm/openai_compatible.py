@@ -143,8 +143,8 @@ class OpenAICompatibleClient(LLMClient):
     def _send(self, url, kwargs, timeout) -> LLMResult:
         """Send one already-built request synchronously -- the blocking
         counterpart of :meth:`_apost`."""
-        # The clock stops before raise_for_status()/.json() so this matches
-        # Claude's timing -- see LLMResult.latency_s.
+        # The clock stops before raise_for_status()/.json(): it times the
+        # provider call only -- see LLMResult.latency_s.
         started = time.perf_counter()
         try:
             response = httpx.post(
@@ -346,8 +346,8 @@ class OpenAICompatibleClient(LLMClient):
             response_model=coerce_text(data.get("model")),
             input_tokens=coerce_token_count(usage.get("prompt_tokens")),
             output_tokens=coerce_token_count(usage.get("completion_tokens")),
-            # Cached tokens are reported WITHIN prompt_tokens (unlike Anthropic)
-            # and there is no cache-write notion; Groq omits the block entirely.
+            # Cached tokens are reported WITHIN prompt_tokens and there is no
+            # cache-write notion; Groq omits the block entirely.
             cache_read_tokens=coerce_token_count(prompt_details.get("cached_tokens")),
             finish_reason=normalize_finish_reason(raw_finish_reason),
             raw_finish_reason=raw_finish_reason,

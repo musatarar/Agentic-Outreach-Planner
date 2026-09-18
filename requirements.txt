@@ -8,11 +8,10 @@ djangorestframework==3.16.1
 dj-database-url==3.1.2
 psycopg2-binary==2.9.12
 
-# LLM providers: claude uses the anthropic SDK, the OpenAI-compatible three
-# (chatgpt, deepseek, groq) talk REST over httpx with no vendor SDK.
-anthropic==0.109.1
+# LLM providers: chatgpt, deepseek and groq are all OpenAI Chat
+# Completions-compatible and talk REST over httpx with no vendor SDK.
 httpx==0.28.1
 
 # Structured outputs derive their JSON schema from a pydantic model; pinned
-# here because the LLM layer imports it, not just the anthropic SDK.
+# here because the LLM layer imports it directly.
 pydantic==2.13.5

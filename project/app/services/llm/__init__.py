@@ -18,7 +18,6 @@ from .base import (
     normalize_finish_reason,
 )
 from .chatgpt import ChatGPTClient
-from .claude import ClaudeClient
 from .deepseek import DeepSeekClient
 from .errors import (
     LLMAuthError,
@@ -37,7 +36,6 @@ from .structured import StructuredResult, response_format_for
 from .stub import StubClient
 
 _REGISTRY = {
-    "claude": ClaudeClient,
     "chatgpt": ChatGPTClient,
     "deepseek": DeepSeekClient,
     "groq": GroqClient,

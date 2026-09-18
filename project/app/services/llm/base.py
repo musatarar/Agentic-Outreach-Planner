@@ -17,7 +17,7 @@ from .chat_types import Message, ToolCallRequest, ToolSpec
 if TYPE_CHECKING:
     from .structured import ModelT, StructuredResult
 
-# The async client an adapter caches: httpx.AsyncClient or AsyncAnthropic.
+# The async client an adapter caches, e.g. httpx.AsyncClient.
 ClientT = TypeVar("ClientT")
 
 # Normalized finish reasons, shared across provider vocabularies.
@@ -26,8 +26,8 @@ FINISH_LENGTH = "length"
 FINISH_CONTENT_FILTER = "content_filter"
 FINISH_TOOL_CALLS = "tool_calls"
 
-# Provider vocabulary -> ours. Anthropic ``stop_reason`` values first, then the
-# OpenAI-compatible ``finish_reason`` values.
+# Provider vocabulary -> ours: the OpenAI-compatible ``finish_reason`` values,
+# plus ``stop_reason`` spellings left over from the removed Claude adapter.
 _FINISH_REASONS = {
     "end_turn": FINISH_STOP,
     "stop_sequence": FINISH_STOP,
@@ -40,8 +40,8 @@ _FINISH_REASONS = {
     "tool_calls": FINISH_TOOL_CALLS,
     "function_call": FINISH_TOOL_CALLS,
 }
-# Anthropic's "pause_turn" and DeepSeek's "insufficient_system_resource" must
-# stay absent: unknown reasons map to None, never to an error bucket.
+# DeepSeek's "insufficient_system_resource" must stay absent: unknown reasons
+# map to None, never to an error bucket.
 
 
 def normalize_finish_reason(raw: object) -> str | None:
@@ -97,10 +97,10 @@ class LLMResult:
     :func:`normalize_finish_reason`); ``raw_finish_reason`` is the provider's
     own string. ``latency_s`` times the provider call only — retry backoff
     excluded — and defaults to ``None``, never ``0.0``. Cache fields follow
-    each provider's own accounting: Anthropic counts cache reads/writes
-    *alongside* ``input_tokens``, OpenAI-compatible providers *within*
-    ``prompt_tokens``. ``tool_calls`` is appended last with a default
-    so existing construction stays valid.
+    the provider's own accounting: OpenAI-compatible providers report cached
+    tokens *within* ``prompt_tokens`` and have no cache-write notion, so
+    ``cache_write_tokens`` stays ``None``. ``tool_calls`` is appended last with
+    a default so existing construction stays valid.
     """
 
     text: str
@@ -126,7 +126,7 @@ class LLMClient(ABC):
     to reading its own env var only when ``api_key`` is ``None``.
     """
 
-    # Configured provider name ("groq", "claude", ...); rides on both
+    # Configured provider name ("groq", "chatgpt", ...); rides on both
     # LLMResult.provider and LLMError.provider. Subclasses must set it.
     provider_name: str
 
@@ -166,9 +166,8 @@ class LLMClient(ABC):
         """Async multi-turn chat with optional tool offers.
 
         The agent loop's seam; the result may carry :attr:`LLMResult.tool_calls`
-        instead of — or alongside — text. Async-only by design: the sync Claude
-        client keeps SDK-internal retries, so a sync chat path would
-        double-retry underneath the loop's own retry policy.
+        instead of — or alongside — text. Async-only: the agent loop that
+        drives it is async, and no adapter offers a sync chat path.
         """
         raise NotImplementedError(f"{type(self).__name__} has no chat/tool-calling implementation.")
 

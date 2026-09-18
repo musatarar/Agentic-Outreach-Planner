@@ -1,15 +1,11 @@
 """Adapter tool-call parsing: the shapes no existing test constructs --
-blank arguments, parallel calls, unreadable entries, and the tool-result fold."""
-
-import asyncio
-from unittest import mock
+blank arguments, parallel calls and unreadable entries."""
 
 from django.test import TestCase
 
-from project.app.services.llm import claude as claude_mod
 from project.app.services.llm import openai_compatible as oa_mod
 from project.app.services.llm.base import FINISH_TOOL_CALLS
-from project.app.services.llm.chat_types import Message, ToolCallRequest, ToolSpec
+from project.app.services.llm.chat_types import ToolSpec
 from project.app.services.llm.errors import LLMEmptyCompletionError, LLMMalformedResponseError
 
 HISTORY_TOOL = ToolSpec(
@@ -17,22 +13,6 @@ HISTORY_TOOL = ToolSpec(
     description="d",
     parameters={"type": "object", "properties": {}},
 )
-
-
-class _Obj:
-    """Attribute-style stand-in for an SDK model (the Claude adapter reads both)."""
-
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-
-
-def _usage():
-    return _Obj(
-        input_tokens=10,
-        output_tokens=5,
-        cache_read_input_tokens=None,
-        cache_creation_input_tokens=None,
-    )
 
 
 def _oa_body(tool_calls, *, content=None, finish_reason="tool_calls"):
@@ -166,108 +146,3 @@ class OpenAIDroppedEntryTests(TestCase):
             ]
         )
         self._assert_raises_structural(body)
-
-
-class ClaudeToolUseBlockTests(TestCase):
-    """The same parsing contract on the Anthropic side."""
-
-    def _client_returning(self, response):
-        async def fake_create(**kwargs):
-            return response
-
-        patcher = mock.patch.object(claude_mod.anthropic, "AsyncAnthropic")
-        cls_ = patcher.start()
-        self.addCleanup(patcher.stop)
-        cls_.return_value.messages.create = fake_create
-        cls_.return_value.api_key = "k"
-        cls_.return_value.auth_token = None
-        return claude_mod.ClaudeClient(api_key="k")
-
-    def _result_for(self, blocks):
-        client = self._client_returning(
-            _Obj(content=blocks, stop_reason="tool_use", model="claude-sonnet-4-6", usage=_usage())
-        )
-        return asyncio.run(
-            client.agenerate_chat([Message(role="user", content="hi")], tools=(HISTORY_TOOL,))
-        )
-
-    def _assert_raises_structural(self, blocks):
-        with self.assertRaises(LLMMalformedResponseError) as caught:
-            self._result_for(blocks)
-        self.assertNotIsInstance(caught.exception, LLMEmptyCompletionError)
-        self.assertFalse(caught.exception.retryable)
-
-    def test_parallel_tool_use_blocks_all_survive_in_order(self):
-        result = self._result_for(
-            [
-                _Obj(type="text", text="Gathering context."),
-                _Obj(type="tool_use", id="toolu_1", name="get_lead_history", input={}),
-                _Obj(type="tool_use", id="toolu_2", name="check_ae_calendar", input={"days": 7}),
-            ]
-        )
-        self.assertEqual([c.id for c in result.tool_calls], ["toolu_1", "toolu_2"])
-        self.assertEqual([dict(c.arguments) for c in result.tool_calls], [{}, {"days": 7}])
-        self.assertEqual(result.text, "Gathering context.")
-
-    def test_block_without_an_input_is_a_zero_argument_call(self):
-        result = self._result_for(
-            [_Obj(type="tool_use", id="toolu_1", name="get_lead_history", input=None)]
-        )
-        self.assertEqual(dict(result.tool_calls[0].arguments), {})
-
-    def test_block_without_an_id_raises(self):
-        self._assert_raises_structural(
-            [_Obj(type="tool_use", id=None, name="get_lead_history", input={})]
-        )
-
-    def test_block_without_a_name_raises(self):
-        self._assert_raises_structural([_Obj(type="tool_use", id="toolu_1", name="", input={})])
-
-    def test_block_whose_input_is_not_an_object_raises(self):
-        self._assert_raises_structural(
-            [_Obj(type="tool_use", id="toolu_1", name="get_lead_history", input=[1, 2])]
-        )
-
-
-class ClaudeToolResultFoldTests(TestCase):
-    """Anthropic's contract: parallel tool results ride in one user message."""
-
-    def _kwargs_for(self, messages):
-        client = claude_mod.ClaudeClient.__new__(claude_mod.ClaudeClient)
-        client.model = "m"
-        client.default_max_tokens = 100
-        return client._chat_request_kwargs(messages, (), None, None)
-
-    def test_consecutive_tool_results_become_one_user_message(self):
-        wire = self._kwargs_for(
-            [
-                Message(role="user", content="hi"),
-                Message(
-                    role="assistant",
-                    tool_calls=(
-                        ToolCallRequest(id="toolu_1", name="get_lead_history", arguments={}),
-                        ToolCallRequest(id="toolu_2", name="check_ae_calendar", arguments={}),
-                    ),
-                ),
-                Message(role="tool_result", tool_call_id="toolu_1", content="history"),
-                Message(role="tool_result", tool_call_id="toolu_2", content="calendar"),
-            ]
-        )["messages"]
-        self.assertEqual([m["role"] for m in wire], ["user", "assistant", "user"])
-        blocks = wire[-1]["content"]
-        self.assertEqual([b["type"] for b in blocks], ["tool_result", "tool_result"])
-        self.assertEqual([b["tool_use_id"] for b in blocks], ["toolu_1", "toolu_2"])
-        self.assertEqual([b["content"] for b in blocks], ["history", "calendar"])
-
-    def test_tool_results_split_by_another_turn_stay_separate(self):
-        wire = self._kwargs_for(
-            [
-                Message(role="user", content="hi"),
-                Message(role="tool_result", tool_call_id="toolu_1", content="history"),
-                Message(role="assistant", content="thinking"),
-                Message(role="tool_result", tool_call_id="toolu_2", content="calendar"),
-            ]
-        )["messages"]
-        self.assertEqual([m["role"] for m in wire], ["user", "user", "assistant", "user"])
-        self.assertEqual(len(wire[1]["content"]), 1)
-        self.assertEqual(len(wire[3]["content"]), 1)

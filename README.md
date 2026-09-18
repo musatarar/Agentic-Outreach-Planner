@@ -63,8 +63,8 @@ Everything is environment variables. `.env.example` is the full list in two sect
 | Variable | What it is |
 |---|---|
 | `DJANGO_SECRET_KEY` | Required; the app refuses to boot without it. `scripts/setup_env.py` generates one. |
-| `LLM_PROVIDER` | `groq` (default) \| `claude` \| `chatgpt` \| `deepseek` |
-| `GROQ_API_KEY`, `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | The key for whichever provider you chose. |
+| `LLM_PROVIDER` | `groq` (default) \| `chatgpt` \| `deepseek` |
+| `GROQ_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | The key for whichever provider you chose. |
 | `LOGIN_ALLOWED_EMAILS` | Comma-separated addresses allowed to sign in. There is no signup flow. |
 
 **Advanced — defaults are fine**
