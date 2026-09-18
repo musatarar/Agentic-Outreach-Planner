@@ -1,13 +1,15 @@
-"""The host and CSRF-origin allowlists, read from the environment (see
-`.env.example`)."""
+"""The host and CSRF-origin allowlists, and the copy token budget, read from
+the environment (see `.env.example`)."""
 
 import os
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from project import settings as project_settings
+from project.app.services import outreach
 
 CROSS_SCHEME_ORIGIN = "https://demo.example.test"
 
@@ -63,3 +65,21 @@ class CsrfTrustedOriginTests(TestCase):
             project_settings.CSRF_TRUSTED_ORIGINS,
             project_settings._env_list("DJANGO_CSRF_TRUSTED_ORIGINS"),
         )
+
+
+class CopyTokenBudgetTests(SimpleTestCase):
+    """`OUTREACH_MAX_COPY_TOKENS` caps one copy call; a reasoning model spends
+    part of it on hidden reasoning, so an operator has to be able to raise it."""
+
+    def test_the_default_budget_is_a_thousand_tokens(self):
+        self.assertEqual(project_settings.OUTREACH_MAX_COPY_TOKENS, 1000)
+        self.assertEqual(outreach.max_copy_tokens(), 1000)
+
+    def test_the_setting_decides_what_the_provider_is_asked_for(self):
+        with override_settings(OUTREACH_MAX_COPY_TOKENS=2048):
+            self.assertEqual(outreach.max_copy_tokens(), 2048)
+
+    def test_a_settings_module_without_the_knob_still_generates_copy(self):
+        with self.settings():
+            del settings.OUTREACH_MAX_COPY_TOKENS
+            self.assertEqual(outreach.max_copy_tokens(), outreach.MAX_COPY_TOKENS)

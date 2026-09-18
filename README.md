@@ -77,6 +77,7 @@ Everything is environment variables. `.env.example` is the full list in two sect
 | `COPY_VERIFY_LEVEL` | Grounding strictness: `off` \| `standard` \| `strict`. |
 | `LLM_MODEL` | Model id; blank uses the adapter's own default. |
 | `OUTREACH_MAX_IN_FLIGHT`, `OUTREACH_MAX_ATTEMPTS`, `OUTREACH_INITIAL_BACKOFF_S`, `OUTREACH_MAX_BACKOFF_S`, `OUTREACH_BACKOFF_MULTIPLIER`, `OUTREACH_REQUEST_TIMEOUT_S`, `OUTREACH_PER_LEAD_TIMEOUT_S` | How hard a planner run drives the provider. Bad values fail at boot with the variable named. |
+| `OUTREACH_MAX_COPY_TOKENS` | Token budget for one copy call; a reasoning model's hidden reasoning is billed against it. |
 | `LOGIN_LINK_DELIVERY`, `LOGIN_TOKEN_TTL_SECONDS`, `LOGIN_LINK_BASE_URL`, `LOGIN_RATE_LIMIT_EMAIL`, `LOGIN_RATE_LIMIT_IP`, `LOGIN_RESEND_COOLDOWN_SECONDS` | Magic-link delivery, expiry and rate limits. |
 
 ## Commands

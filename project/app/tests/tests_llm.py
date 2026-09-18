@@ -12,6 +12,7 @@ import httpx
 from project.app.services import llm
 from project.app.services.llm import base, config, errors
 from project.app.services.llm import groq as groq_mod
+from project.app.services.llm.chatgpt import ChatGPTClient
 from project.app.services.llm.groq import GroqClient
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,32 @@ class OpenAICompatibleClientTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             GroqClient().complete("a prompt")
         self.assertIn("GROQ_API_KEY", str(ctx.exception))
+
+    def _sent_body(self, client):
+        """The request body one ``complete`` call put on the wire."""
+        with mock.patch("project.app.services.llm.openai_compatible.httpx.post") as post:
+            post.return_value = self._mock_post()
+            client.complete("a prompt")
+        return post.call_args.kwargs["json"]
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_groqs_default_reasoning_model_asks_for_low_reasoning_effort(self):
+        # Groq bills gpt-oss reasoning against max_tokens; at the default effort
+        # the whole budget goes to reasoning and the content comes back empty.
+        self.assertEqual(self._sent_body(GroqClient())["reasoning_effort"], "low")
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_a_groq_model_without_reasoning_is_sent_no_reasoning_effort(self):
+        # Groq answers 400 for the parameter on a non-reasoning model.
+        self.assertNotIn("reasoning_effort", self._sent_body(GroqClient(model="allam-2-7b")))
+
+    @mock.patch.dict(os.environ, {"GROQ_API_KEY": "test-key"})
+    def test_reasoning_effort_none_sends_nothing(self):
+        self.assertNotIn("reasoning_effort", self._sent_body(GroqClient(reasoning_effort=None)))
+
+    @mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    def test_reasoning_effort_does_not_leak_into_another_provider(self):
+        self.assertNotIn("reasoning_effort", self._sent_body(ChatGPTClient()))
 
 
 # ---------------------------------------------------------------------------

@@ -74,6 +74,8 @@ OUTREACH_BACKOFF_MULTIPLIER = _env_float("OUTREACH_BACKOFF_MULTIPLIER", 2.0)
 # Two nested deadlines: one HTTP attempt, and the whole retry loop for one lead.
 OUTREACH_REQUEST_TIMEOUT_S = _env_float("OUTREACH_REQUEST_TIMEOUT_S", 60.0)
 OUTREACH_PER_LEAD_TIMEOUT_S = _env_float("OUTREACH_PER_LEAD_TIMEOUT_S", 150.0)
+# Token budget for one copy call; a reasoning model's hidden reasoning is billed against it.
+OUTREACH_MAX_COPY_TOKENS = _env_int("OUTREACH_MAX_COPY_TOKENS", 1000)
 
 
 # SECURITY WARNING: keep the secret key used in production secret!
