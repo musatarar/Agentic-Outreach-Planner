@@ -104,11 +104,20 @@ class OpenAICompatibleClient(LLMClient):
             "json": body,
         }
 
+    def _request_extras(self) -> dict[str, object]:
+        """Provider-specific body fields, merged into every request shape.
+
+        Empty here: a field one provider rejects must not ride along onto
+        another (Groq's ``reasoning_effort`` is a 400 on OpenAI).
+        """
+        return {}
+
     def _request(self, prompt, max_tokens, response_format=None):
         body = {
             "model": self.model,
             "max_tokens": max_tokens or self.default_max_tokens,
             "messages": [{"role": "user", "content": prompt}],
+            **self._request_extras(),
         }
         if response_format:
             body["response_format"] = response_format
@@ -121,6 +130,7 @@ class OpenAICompatibleClient(LLMClient):
             "model": self.model,
             "max_tokens": max_tokens or self.default_max_tokens,
             "messages": [_wire_chat_message(m) for m in messages],
+            **self._request_extras(),
         }
         if response_format:
             body["response_format"] = response_format
