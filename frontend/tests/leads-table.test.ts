@@ -19,6 +19,7 @@ import { test } from 'node:test';
 
 import {
   DEFAULT_SORT,
+  isRowBackgroundClick,
   openLeadIds,
   proposalsByLead,
   sortLeads,
@@ -210,4 +211,29 @@ test('the newest decision wins when a lead has been judged more than once', () =
 
 test('no proposals at all is an empty map, not a crash', () => {
   assert.equal(proposalsByLead([]).size, 0);
+});
+
+/** A click target that reports what it sits inside, as `Element.closest` does. */
+const clickedOn = (ancestor: string | null) => ({
+  closest: (selector: string) =>
+    ancestor !== null && selector.includes(ancestor) ? {} : null,
+});
+
+test('a click on the row itself opens the lead', () => {
+  assert.equal(isRowBackgroundClick(clickedOn(null)), true);
+});
+
+// Both would otherwise fire: the mail client opens AND the row expands.
+test('a click on the contact email belongs to the link', () => {
+  assert.equal(isRowBackgroundClick(clickedOn('a')), false);
+});
+
+// The button toggles on its own; letting the row toggle too cancels it out and
+// the one control built for keyboards looks broken.
+test('a click on the disclosure button belongs to the button', () => {
+  assert.equal(isRowBackgroundClick(clickedOn('button')), false);
+});
+
+test('a click with no target opens nothing', () => {
+  assert.equal(isRowBackgroundClick(null), false);
 });

@@ -129,6 +129,12 @@
   border-bottom: 0;
 }
 
+/* The whole row opens the lead, so the whole row says it is clickable. The
+   panel below it is not a lead and does not. */
+.leads-table tbody tr:not(.leads-table__detail) {
+  cursor: pointer;
+}
+
 .leads-table tbody tr:hover {
   background: var(--color-surface-hover);
 }

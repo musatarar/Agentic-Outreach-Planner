@@ -96,3 +96,21 @@ export function proposalsByLead(
   }
   return byLead;
 }
+
+/** Anything in a row that answers a click itself: the email link, the toggle. */
+interface ClickTarget {
+  closest(selector: string): unknown;
+}
+
+/**
+ * Whether a click on a row was meant for the row.
+ *
+ * The whole row opens the lead, but it carries controls of its own — the
+ * contact's mailto link, and the disclosure button that already toggles. A
+ * click landing on one of those belongs to it: without this the email link
+ * would open a mail client *and* expand the row, and the button would toggle
+ * twice and appear dead.
+ */
+export function isRowBackgroundClick(target: ClickTarget | null): boolean {
+  return target !== null && target.closest('a, button') === null;
+}

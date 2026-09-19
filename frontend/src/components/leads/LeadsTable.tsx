@@ -2,6 +2,7 @@ import { Badge, Button } from '../ui';
 import type { LeadRecord, ProposedAction } from '../../api/types';
 import { formatDateOnly, formatStage, formatTimestamp, formatUsdCompact } from '../../util/labels';
 import { canGenerate, isAwaitingReview, urgencyTone } from './proposals';
+import { isRowBackgroundClick } from './leadTable';
 import type { SortDirection, SortKey, SortState } from './leadTable';
 
 interface Column {
@@ -159,11 +160,17 @@ export function LeadsTable({
             const proposal = proposals.get(lead.id);
             const isOpen = expanded === lead.id;
             return [
-              <tr key={lead.id} className={isOpen ? 'leads-table__row--open' : undefined}>
+              <tr
+                key={lead.id}
+                className={isOpen ? 'leads-table__row--open' : undefined}
+                onClick={(event) => {
+                  if (isRowBackgroundClick(event.target as Element | null)) onToggle(lead.id);
+                }}
+              >
                 <td>
-                  {/* The row's own control rather than a click handler on the
-                      <tr>: a button is what a keyboard and a screen reader can
-                      both reach. */}
+                  {/* A real button as well as the row handler: the row is the
+                      mouse target, and this is what a keyboard and a screen
+                      reader can reach. */}
                   <button
                     type="button"
                     className="leads-table__expand"
