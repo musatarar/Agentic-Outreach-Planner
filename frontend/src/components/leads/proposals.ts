@@ -1,11 +1,13 @@
 /**
  * The expanded row's decisions, kept out of the JSX.
  *
- * Two of them matter. Whether a proposal can still be drafted decides what the
- * button does, and getting it wrong spends a provider call that can only answer
- * 409. Recording the draft a click produced decides whether the row updates
- * without a refetch — an array mutated in place looks identical and re-renders
- * nothing. See `tests/leads-proposals.test.ts`.
+ * Three of them matter. Whether a proposal can still be drafted decides what
+ * the button does, and getting it wrong spends a provider call that can only
+ * answer 409. Recording the draft a click produced decides whether the row
+ * updates without a refetch — an array mutated in place looks identical and
+ * re-renders nothing. And what the column says is the next thing to do with the
+ * lead, which stops being the action once an email exists.
+ * See `tests/leads-proposals.test.ts`.
  */
 import type { BadgeTone } from '../ui';
 import type { ProposedAction, Urgency } from '../../api/types';
@@ -41,4 +43,20 @@ export function withDraft(
 export function urgencyTone(urgency: Urgency): BadgeTone {
   if (urgency === 'high') return 'p1';
   return urgency === 'medium' ? 'p2' : 'p3';
+}
+
+/**
+ * A lead whose email is already drafted and waiting on a human. The column
+ * shows that instead of the action, because reviewing the draft is what the
+ * lead needs next — generating again is exactly what it does not need.
+ *
+ * Either source counts. `draft_id` is this proposal's own open draft; the inbox
+ * flag also catches a draft made for some other action on the same lead, which
+ * is still an email waiting to be reviewed.
+ */
+export function isAwaitingReview(
+  proposal: ProposedAction | undefined,
+  hasOpenItem: boolean,
+): boolean {
+  return hasOpenItem || (proposal !== undefined && proposal.draft_id !== null);
 }

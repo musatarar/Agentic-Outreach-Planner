@@ -163,7 +163,7 @@ export function LeadsPage() {
           <>
             <p className="leads-count">
               {ordered.length} leads · {byLead.size} with a proposed action · {open.size}{' '}
-              awaiting review
+              with an email in review
             </p>
             <LeadsTable
               leads={ordered}

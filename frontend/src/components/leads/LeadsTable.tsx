@@ -1,7 +1,7 @@
 import { Badge, Button } from '../ui';
 import type { LeadRecord, ProposedAction } from '../../api/types';
 import { formatDateOnly, formatStage, formatTimestamp, formatUsdCompact } from '../../util/labels';
-import { canGenerate, urgencyTone } from './proposals';
+import { canGenerate, isAwaitingReview, urgencyTone } from './proposals';
 import type { SortDirection, SortKey, SortState } from './leadTable';
 
 interface Column {
@@ -19,8 +19,8 @@ const COLUMNS: Column[] = [
   { key: 'last_contacted_date', label: 'Last contacted', numeric: true },
 ];
 
-/** Sortable columns, plus proposed action and status. */
-const COLUMN_COUNT = COLUMNS.length + 2;
+/** Sortable columns, plus proposed action. */
+const COLUMN_COUNT = COLUMNS.length + 1;
 
 /** `aria-sort` carries a direction only on the column actually sorted. */
 function ariaSort(active: boolean, direction: SortDirection) {
@@ -84,7 +84,7 @@ interface Props {
   leads: LeadRecord[];
   sort: SortState;
   onSort: (key: SortKey) => void;
-  /** Lead ids with an item still awaiting review — see `openLeadIds`. */
+  /** Lead ids with an email already drafted — see `openLeadIds`. */
   open: Set<string>;
   /** What the engine chose, per lead — see `proposalsByLead`. */
   proposals: Map<string, ProposedAction>;
@@ -100,6 +100,9 @@ interface Props {
  * The book, as a table. Presentational only: ordering, the review flags and
  * each row's proposal arrive already resolved, so this file holds no logic
  * worth testing and the logic that matters is tested without a DOM.
+ *
+ * One column carries the whole state of a lead: the action the engine chose,
+ * or — once that action has produced an email — the review it is waiting on.
  *
  * One row expands at a time. The decision panel is long enough that two open at
  * once pushes the rest of the book off the screen.
@@ -149,7 +152,6 @@ export function LeadsTable({
               );
             })}
             <th scope="col">Proposed action</th>
-            <th scope="col">Status</th>
           </tr>
         </thead>
         <tbody>
@@ -191,17 +193,12 @@ export function LeadsTable({
                 </td>
                 <td className="leads-table__num">{formatDateOnly(lead.last_contacted_date)}</td>
                 <td className="leads-table__proposal">
-                  {proposal ? (
+                  {isAwaitingReview(proposal, open.has(lead.id)) ? (
+                    <Badge tone="pending">Reviewing the email</Badge>
+                  ) : proposal ? (
                     <Badge tone={urgencyTone(proposal.action.urgency)}>
                       {proposal.action.label}
                     </Badge>
-                  ) : (
-                    <span className="leads-table__idle">—</span>
-                  )}
-                </td>
-                <td>
-                  {open.has(lead.id) ? (
-                    <Badge tone="pending">Awaiting review</Badge>
                   ) : (
                     <span className="leads-table__idle">—</span>
                   )}
