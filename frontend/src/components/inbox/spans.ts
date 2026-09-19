@@ -31,6 +31,20 @@ export interface DraftParts {
 
 export const SUBJECT_PREFIX = 'Subject:';
 
+/**
+ * The draft a pair composes to, for the CLIPBOARD ONLY -- what a reviewer
+ * copies should be what is on screen, and on screen it is two fields.
+ *
+ * The server owns the composition that is stored and verified
+ * (`compose_email`); this never decides either, so if the two ever drifted the
+ * symptom would be a pasted string differing from the stored one, never a draft
+ * stored or approved against the wrong text. Approval is gated on a report that
+ * describes the pair exactly, where this and `report.copy` agree by definition.
+ */
+export function composeDraft(pair: { subject: string; body: string }): string {
+  return `${SUBJECT_PREFIX} ${pair.subject.split(/\s+/).filter(Boolean).join(' ')}\n\n${pair.body.trim()}`;
+}
+
 /** The blank line the composer puts between the subject and the body. */
 const SEPARATOR = '\n\n';
 

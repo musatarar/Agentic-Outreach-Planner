@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { VerificationClaim, VerificationReport } from '../src/api/types.ts';
-import { draftBounds, splitDraftSegments } from '../src/components/inbox/spans.ts';
+import { composeDraft, draftBounds, splitDraftSegments } from '../src/components/inbox/spans.ts';
 
 function claim(overrides: Partial<VerificationClaim>): VerificationClaim {
   return {
@@ -98,4 +98,31 @@ test('an emoji in the subject does not move the boundary off by a unit', () => {
 
   const parts = splitDraftSegments(report(copy));
   assert.equal(parts.body.map((s) => s.text).join(''), 'You closed 6 deals.');
+});
+
+/*
+ * `composeDraft` is clipboard-only, but it has to agree with the server's
+ * `compose_email`. These literals are asserted on both sides -- see
+ * tests_generated_copy_parts.py::ComposeEmailTests -- so a drift in either
+ * composer fails a test rather than showing up in a reviewer's paste.
+ */
+test('a pair composes to the draft the server would store', () => {
+  assert.equal(
+    composeDraft({ subject: 'Six closed deals', body: 'You closed 6 deals this quarter.' }),
+    DRAFT,
+  );
+});
+
+test('composing flattens a multi-line subject, as the server does', () => {
+  assert.equal(
+    composeDraft({ subject: 'Two\n\nlines', body: 'The body.' }),
+    'Subject: Two lines\n\nThe body.',
+  );
+});
+
+test('a composed pair splits back into the pair it came from', () => {
+  const pair = { subject: 'Six closed deals', body: 'You closed 6 deals this quarter.' };
+  const parts = splitDraftSegments(report(composeDraft(pair)));
+  assert.equal(parts.subject.map((s) => s.text).join(''), pair.subject);
+  assert.equal(parts.body.map((s) => s.text).join(''), pair.body);
 });

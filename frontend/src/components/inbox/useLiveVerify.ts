@@ -57,7 +57,14 @@ export function useLiveVerify(
   const untouched = samePair(draft, committed);
 
   useEffect(() => {
-    if (!active || itemId === null || committedReport === null) return;
+    if (!active) {
+      // The editor closed with nothing pending: the dry run it produced
+      // describes text no longer on screen, so it must not be rendered.
+      setLive(null);
+      setError(null);
+      return;
+    }
+    if (itemId === null || committedReport === null) return;
     if (untouched) {
       // Back to what the server last verified — nothing to ask.
       setLive(null);

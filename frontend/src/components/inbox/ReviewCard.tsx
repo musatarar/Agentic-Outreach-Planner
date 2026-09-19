@@ -11,6 +11,7 @@ import { ActionBar } from './ActionBar';
 import { DraftEditor } from './DraftEditor';
 import { LeadCard } from './LeadCard';
 import { writeToClipboard } from './clipboard';
+import { composeDraft } from './spans';
 import { samePair, useLiveVerify } from './useLiveVerify';
 
 export interface ReviewCardProps {
@@ -79,9 +80,8 @@ export function ReviewCard({ item, onReplace, onToast }: ReviewCardProps) {
    * it must run in the click's user-gesture task or Safari revokes permission.
    */
   const approve = () => {
-    // The composed draft is what leaves via the clipboard; the server owns the
-    // composition, so this is the last report's copy, not a rebuild of it.
-    const clipboardWrite = writeToClipboard(live.aligned ? report.copy : item.effective_copy);
+    // Approval is gated on an aligned report, so this equals `report.copy`.
+    const clipboardWrite = writeToClipboard(composeDraft(pair));
     return run(async () => {
       // Approve uses the *stored* copy, so an uncommitted edit must land first.
       if (hasPendingEdit) await editCopy(item.id, pair);
@@ -146,15 +146,17 @@ export function ReviewCard({ item, onReplace, onToast }: ReviewCardProps) {
             itemId={item.id}
             report={report}
             status={item.status}
-            // Live edits gate on the dry-run report, not the stale server verdict.
-            canApprove={live.isLive ? report.can_approve : item.can_approve}
+            // Live edits gate on the dry-run report, not the stale server
+            // verdict -- and never on a report describing older text than the
+            // reviewer is looking at.
+            canApprove={live.aligned && (live.isLive ? report.can_approve : item.can_approve)}
             busy={busy}
             onApprove={() => void approve()}
             onEdit={() => setEditing(true)}
             onRevert={() => void revert()}
             onDismiss={(reason) => void dismiss(reason)}
             onReopen={() => void reopen()}
-            copyText={live.aligned ? report.copy : item.effective_copy}
+            copyText={composeDraft(pair)}
             editing={open}
             isEdited={item.is_edited}
             hasPendingEdit={hasPendingEdit}

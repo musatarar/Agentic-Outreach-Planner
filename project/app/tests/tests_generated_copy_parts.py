@@ -42,6 +42,23 @@ def make_row(**overrides):
     return OutreachGeneratedCopy.objects.create(**defaults)
 
 
+class ComposeEmailTests(TestCase):
+    """The literals here are asserted in frontend/tests/draft-split.test.ts too,
+    against its clipboard-only twin of this composer."""
+
+    def test_a_pair_composes_to_the_draft_that_is_stored(self):
+        self.assertEqual(
+            compose_email("Six closed deals", "You closed 6 deals this quarter."),
+            "Subject: Six closed deals\n\nYou closed 6 deals this quarter.",
+        )
+
+    def test_composing_flattens_a_multi_line_subject(self):
+        self.assertEqual(
+            compose_email("Two\n\nlines", "The body."),
+            "Subject: Two lines\n\nThe body.",
+        )
+
+
 class SplitEmailTests(TestCase):
     def test_a_composed_draft_splits_back_into_the_pair_it_came_from(self):
         subject, body = split_email(DRAFT)

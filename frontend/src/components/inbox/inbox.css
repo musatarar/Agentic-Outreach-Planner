@@ -302,9 +302,8 @@
   background: var(--color-surface-sunken);
 }
 
-/* Each field owns a stack; the editor stacks the fields the same way the
-   read-only view does, so opening it moves nothing. */
-.draft-edit .draft-fields,
+/* Each field owns a stack; the editor spaces them the way .draft-fields spaces
+   the read-only pair, so opening it moves nothing. */
 .draft-edit > .draft-field + .draft-field { margin-top: var(--space-4); }
 
 .draft-edit__stack { display: grid; }
