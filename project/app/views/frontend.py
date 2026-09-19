@@ -28,3 +28,9 @@ def auth_consume(request):
 def inbox(request):
     """Render the review inbox shell. Access control is the client-side guard."""
     return render(request, "app/inbox.html")
+
+
+@ensure_csrf_cookie
+def actions(request):
+    """Render the proposed-actions shell. Access control is the client-side guard."""
+    return render(request, "app/actions.html")
