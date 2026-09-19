@@ -12,6 +12,8 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from project.app.services import actions, sanitize, verify
 from project.app.services.llm import (
     LLMAuthError,
@@ -30,6 +32,12 @@ from project.app.services.llm.retry import acall_with_retry
 
 # Fallback for OUTREACH_MAX_COPY_TOKENS, whose default settings.py restates.
 MAX_COPY_TOKENS = 1000
+
+# Cap on the generated subject line; a paragraph is not a subject.
+MAX_SUBJECT_CHARS = 120
+
+# The label `render_email` writes and the frontend splits the draft on.
+SUBJECT_PREFIX = "Subject:"
 
 # Phrases (lowercase) suggesting the lead asked to be contacted later — a "hold".
 HOLD_PHRASES = [
@@ -437,12 +445,35 @@ Trusted lead record (system fields — safe to rely on):
 Planned action: {action_type} ({meta.get("label", action_type)}, urgency: {meta.get("urgency", "medium")})
 Why now: {reason}
 
-Write the email now. Requirements:
-- Include a Subject line, then the body (about 120 words).
+Write the email now. Return two fields:
+- subject: the subject line on its own, at most {MAX_SUBJECT_CHARS} characters, with no "Subject:" prefix.
+- body: the email body, about 120 words, with no subject line and no sign-off — the sender's name is added afterwards.
+
+Requirements:
 - Warm, specific, and personal — reference the concrete details above (their numbers, their words, their clients) rather than generic praise.
 - Voice of a Locked In AE: helpful peer, not salesy.
 - Exactly one clear call to action that matches the planned action.
-- Output only the email (subject + body), no commentary."""
+- No commentary or preamble in either field: they are the email itself."""
+
+
+class OutreachCopy(BaseModel):
+    """The two fields the provider is constrained to return for one email.
+
+    Blank is invalid rather than merely ugly: an empty field would render a
+    draft with nothing in it, and the reviewer needs the failure instead.
+    """
+
+    subject: str = Field(min_length=1, max_length=MAX_SUBJECT_CHARS)
+    body: str = Field(min_length=1)
+
+
+def render_email(copy):
+    """The stored draft for one :class:`OutreachCopy`.
+
+    Every span offset the verifier computes indexes this exact string, and the
+    frontend splits it on :data:`SUBJECT_PREFIX`.
+    """
+    return f"{SUBJECT_PREFIX} {copy.subject.strip()}\n\n{copy.body.strip()}"
 
 
 def max_copy_tokens():
@@ -462,7 +493,10 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     """Generate a personalized outreach email via the configured LLM provider.
 
     The provider is selected by ``LLM_PROVIDER``; see
-    :mod:`project.app.services.llm`. Returns the text.
+    :mod:`project.app.services.llm`. Returns an :class:`OutreachCopy` — the call
+    is schema-constrained, so a completion that is not the two fields raises
+    :class:`~.llm.errors.LLMMalformedResponseError` rather than reaching a
+    reviewer. :func:`render_email` turns it into the stored draft.
 
     ``prompt``/``client`` let the planner pass pre-built values so its phase 3
     never touches the ORM; omitted, both are resolved here (the single-lead
@@ -471,7 +505,7 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     prompt = _prompt_for(lead, action_type, reason, prompt)
     if client is None:
         client = get_llm_client()
-    return client.complete(prompt, max_tokens=max_copy_tokens())
+    return client.generate_structured(prompt, OutreachCopy, max_tokens=max_copy_tokens()).parsed
 
 
 class CopyGenerationGaveUp(RuntimeError):
@@ -489,7 +523,8 @@ async def agenerate_copy(
     lead, action_type, reason, *, prompt=None, client=None, retry=None, timeouts=None
 ):
     """Async twin of :func:`generate_copy`, and the planner's path: it awaits
-    the provider and — unlike the sync twin — **it retries**.
+    the provider and — unlike the sync twin — **it retries**. Returns an
+    :class:`OutreachCopy`.
 
     **Pass ``client``**: the fallback resolution is an ORM read, which inside a
     running loop is a ``SynchronousOnlyOperation``. ``retry``/``timeouts``
@@ -514,9 +549,11 @@ async def agenerate_copy(
         nonlocal attempts, last_error
         attempts += 1
         try:
-            # `agenerate`, not `acomplete`: the caller needs the full LLMResult,
-            # not just its text.
-            return await client.agenerate(prompt, max_tokens=max_tokens, timeout=timeouts.request_s)
+            # Structured, so the two fields are the provider's contract rather
+            # than something parsed back out of prose.
+            return await client.agenerate_structured(
+                prompt, OutreachCopy, max_tokens=max_tokens, timeout=timeouts.request_s
+            )
         except LLMError as exc:
             # Remembered: the per-lead budget expiring discards the in-flight
             # exception, and the reviewer's message is built from this.
@@ -529,7 +566,7 @@ async def agenerate_copy(
         # so a CancelledError from somewhere else still reads as a cancellation.
         async with asyncio.timeout(timeouts.per_lead_s) as budget:
             result = await acall_with_retry(attempt, policy=retry)
-            return result.text
+            return result.parsed
     except LLMError as exc:
         raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
     except TimeoutError as exc:
@@ -602,15 +639,10 @@ def validate_copy(email):
     if not email or not email.strip():
         return ["Generated copy is empty."]
 
+    # `subject` and `no_preamble` are not gated: `render_email` writes the
+    # Subject line itself, so neither check can fail on a rendered draft.
     results = copy_checks.run_all(email)
     problems = []
-    if not results["subject"]:
-        problems.append("No 'Subject:' line found in the generated email.")
-    if not results["no_preamble"]:
-        problems.append(
-            "Generated copy opens with commentary/preamble instead of the email "
-            "itself (a sign the model was steered off-task)."
-        )
     if not results["single_cta"]:
         count = results["detail_cta_count"]
         problems.append(
@@ -802,14 +834,16 @@ async def _agenerate_for(item, client, runtime, client_error=None):
         # Normalized here because `suggested_copy` is immutable after this point
         # and every span offset computed later indexes it.
         text = queue_copy.normalize_copy(
-            await agenerate_copy(
-                None,
-                item.action_type,
-                item.reason,
-                prompt=item.prompt,
-                client=client,
-                retry=runtime.retry,
-                timeouts=runtime.timeouts,
+            render_email(
+                await agenerate_copy(
+                    None,
+                    item.action_type,
+                    item.reason,
+                    prompt=item.prompt,
+                    client=client,
+                    retry=runtime.retry,
+                    timeouts=runtime.timeouts,
+                )
             )
         )
     except CopyGenerationGaveUp as exc:

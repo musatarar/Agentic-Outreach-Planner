@@ -14,7 +14,7 @@ from rest_framework import status
 from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import actions
 from project.app.services import dedupe as dedupe_service
-from project.app.services.outreach import plan_outreach
+from project.app.services.outreach import OutreachCopy, plan_outreach
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
@@ -54,18 +54,20 @@ def _unmatched_lead(lead_id="lead_nomatch"):
 
 
 def _copy_for(agency):
-    """A well-shaped email naming its own lead, so a mix-up is visible."""
-    return (
-        f"Subject: A quick idea for {agency}\n\n"
-        "Hi there,\n\n"
-        f"{agency} has been working steadily through the portal, and I wanted to "
-        "share one small change that usually helps agencies of this size get more "
-        "quotes over the line. It takes about fifteen minutes to walk through, and "
-        "your producers can start using it the same day. I would rather show you "
-        "than write it all out here, since the useful part is seeing it against "
-        "your own book of business. Would you have time for a short call this "
-        "week?\n\n"
-        "Best,\nDana"
+    """Well-shaped copy naming its own lead, so a mix-up is visible."""
+    return OutreachCopy(
+        subject=f"A quick idea for {agency}",
+        body=(
+            "Hi there,\n"
+            "\n"
+            f"{agency} has been working steadily through the portal, and I wanted to "
+            "share one small change that usually helps agencies of this size get more "
+            "quotes over the line. It takes about fifteen minutes to walk through, and "
+            "your producers can start using it the same day. I would rather show you "
+            "than write it all out here, since the useful part is seeing it against "
+            "your own book of business. Would you have time for a short call this "
+            "week?"
+        ),
     )
 
 

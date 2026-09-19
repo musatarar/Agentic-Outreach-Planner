@@ -18,6 +18,7 @@ from project.app.models import ActionType, DismissedOutreachKey, Lead, OutreachA
 from project.app.rules.utils import _all_of, _cond
 from project.app.services import dedupe
 from project.app.services.llm import LLMClient, LLMResult, LLMTimeoutError
+from project.app.services.llm.structured import StructuredResult
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 ACTIONS_URL = "/api/actions/"
@@ -51,10 +52,20 @@ class _ProviderStub(LLMClient):
         self.prompts = []
 
     def generate(self, prompt, max_tokens=None, timeout=None):
-        self.prompts.append(prompt)
+        raise AssertionError("copy generation must take the structured path")
+
+    def generate_structured(self, input, schema_model, *, max_tokens=None, timeout=None):
+        self.prompts.append(input)
         if self.error is not None:
             raise self.error
-        return LLMResult(text=self.text, provider=self.provider_name, model=self.model)
+        subject, _, body = self.text.partition("\n\n")
+        parsed = schema_model(subject=subject.removeprefix("Subject: "), body=body)
+        return StructuredResult(
+            parsed=parsed,
+            result=LLMResult(
+                text=parsed.model_dump_json(), provider=self.provider_name, model=self.model
+            ),
+        )
 
 
 class ProposedActionsTestCase(AuthenticatedAPITestCase):

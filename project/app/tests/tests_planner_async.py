@@ -14,6 +14,7 @@ from django.test import TestCase, override_settings
 from project.app.models import Lead, OutreachAction
 from project.app.services import outreach
 from project.app.services.llm import LLMClient, LLMResult
+from project.app.services.llm.structured import StructuredResult
 from project.app.services.outreach import plan_outreach
 
 # Phase 3 is handed no lead object, so the prompt is the only channel a stub
@@ -30,18 +31,20 @@ def _agency_of(prompt):
 
 
 def _copy_for(agency):
-    """A well-shaped email naming its own lead, so a mix-up is visible."""
-    return (
-        f"Subject: A quick idea for {agency}\n\n"
-        "Hi there,\n\n"
-        f"{agency} has been working steadily through the portal, and I wanted to "
-        "share one small change that usually helps agencies of this size get more "
-        "quotes over the line. It takes about fifteen minutes to walk through, and "
-        "your producers can start using it the same day. I would rather show you "
-        "than write it all out here, since the useful part is seeing it against "
-        "your own book of business. Would you have time for a short call this "
-        "week?\n\n"
-        "Best,\nDana"
+    """Well-shaped copy naming its own lead, so a mix-up is visible."""
+    return outreach.OutreachCopy(
+        subject=f"A quick idea for {agency}",
+        body=(
+            "Hi there,\n"
+            "\n"
+            f"{agency} has been working steadily through the portal, and I wanted to "
+            "share one small change that usually helps agencies of this size get more "
+            "quotes over the line. It takes about fifteen minutes to walk through, and "
+            "your producers can start using it the same day. I would rather show you "
+            "than write it all out here, since the useful part is seeing it against "
+            "your own book of business. Would you have time for a short call this "
+            "week?"
+        ),
     )
 
 
@@ -333,13 +336,17 @@ class _FakeClient(LLMClient):
         self.sync_calls.append(prompt)
         return self.text
 
-    async def agenerate(self, prompt, max_tokens=None, timeout=None):
-        # `acomplete` is inherited (it awaits this and takes `.text`), so one
-        # recording covers whichever async entry point the caller picks.
-        self.async_calls.append({"prompt": prompt, "max_tokens": max_tokens})
+    async def agenerate_structured(self, input, schema_model, *, max_tokens=None, timeout=None):
+        self.async_calls.append({"prompt": input, "max_tokens": max_tokens})
         if self.error is not None:
             raise self.error
-        return LLMResult(text=self.text, provider=self.provider_name, model=self.model)
+        parsed = schema_model(subject="A quick note", body=self.text or "Body text.")
+        return StructuredResult(
+            parsed=parsed,
+            result=LLMResult(
+                text=parsed.model_dump_json(), provider=self.provider_name, model=self.model
+            ),
+        )
 
     async def aclose(self):
         self.closed += 1
@@ -356,7 +363,7 @@ class AgenerateCopyTests(TestCase):
             outreach.agenerate_copy(None, "nudge_usage", "reason", prompt="a prompt", client=client)
         )
 
-        self.assertEqual(result, "drafted")
+        self.assertEqual(result.body, "drafted")
         self.assertEqual(
             client.async_calls,
             [{"prompt": "a prompt", "max_tokens": outreach.MAX_COPY_TOKENS}],

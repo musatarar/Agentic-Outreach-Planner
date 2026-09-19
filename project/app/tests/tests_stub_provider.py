@@ -14,9 +14,15 @@ from project.app.services.llm.stub import (
     PROVIDER_NAME,
     StubClient,
     StubLLMNotAllowed,
+    canned_copy,
     canned_email,
 )
-from project.app.services.outreach import _build_copy_prompt, validate_copy
+from project.app.services.outreach import (
+    OutreachCopy,
+    _build_copy_prompt,
+    render_email,
+    validate_copy,
+)
 
 
 def _allowed():
@@ -210,3 +216,56 @@ class StubBehaviourTests(SimpleTestCase):
         elapsed = asyncio.run(two_at_once())
 
         self.assertLess(elapsed, 0.28, "agenerate appears to block the event loop")
+
+
+class StubStructuredOutputTests(TestCase):
+    """The planner asks for copy through the structured seam, so the stub has
+    to answer there too or it can no longer exercise the planner."""
+
+    def setUp(self):
+        super().setUp()
+        self.prompt = _build_copy_prompt(
+            Lead.objects.create(
+                id="synth_0002",
+                agency_name="Summit Risk Advisors",
+                contact_name="Priya Nair",
+                contact_email="priya.nair@summitrisk.com",
+                contact_phone="555-0000",
+                state="CO",
+                num_producers=4,
+                years_in_business=12,
+                estimated_book_size_usd=5_000_000,
+                stage="demo_completed",
+                signed_up_date=None,
+            ),
+            "complete_onboarding",
+            "reason",
+        )
+
+    def _client(self):
+        with _allowed():
+            return StubClient(latency_mean_s=0.0, latency_stddev_s=0.0)
+
+    def test_it_returns_the_two_fields_for_the_lead_in_the_prompt(self):
+        parsed = self._client().generate_structured(self.prompt, OutreachCopy).parsed
+
+        self.assertIn("Summit Risk Advisors", parsed.subject)
+        self.assertIn("Priya Nair", parsed.body)
+
+    def test_the_async_path_answers_with_the_same_pair(self):
+        import asyncio
+
+        client = self._client()
+        parsed = asyncio.run(client.agenerate_structured(self.prompt, OutreachCopy)).parsed
+
+        self.assertEqual((parsed.subject, parsed.body), canned_copy(self.prompt))
+
+    def test_the_canned_body_carries_no_sign_off(self):
+        _subject, body = canned_copy(self.prompt)
+
+        self.assertNotIn("Best,", body)
+
+    def test_rendering_the_pair_reproduces_the_canned_email(self):
+        parsed = self._client().generate_structured(self.prompt, OutreachCopy).parsed
+
+        self.assertEqual(render_email(parsed), canned_email(self.prompt))

@@ -22,6 +22,7 @@ from project.app.services.llm import (
     LLMTransientError,
 )
 from project.app.services.llm.runtime import RetryPolicy, Timeouts
+from project.app.services.llm.structured import StructuredResult
 from project.app.services.outreach import plan_outreach
 
 GOOD_COPY = (
@@ -36,6 +37,17 @@ GOOD_COPY = (
     "you have time for a short call this week?\n\n"
     "Best,\nDana"
 )
+
+
+def _structured(email):
+    """A rendered draft, back in the shape `agenerate_copy` now awaits."""
+    subject, _, body = email.partition("\n\n")
+    parsed = outreach.OutreachCopy(subject=subject.removeprefix("Subject: "), body=body)
+    return StructuredResult(
+        parsed=parsed,
+        result=LLMResult(text=parsed.model_dump_json(), provider="groq", model="scripted-model"),
+    )
+
 
 # Backoff switched off, not shortened: `initial_backoff_s=0` makes every jitter
 # draw 0, so these tests pin the retry *count* without sleeping. The schedule
@@ -54,13 +66,13 @@ class _ScriptedClient:
         self.then = then
         self.attempts = 0
 
-    async def agenerate(self, prompt, max_tokens=None, timeout=None):
+    async def agenerate_structured(self, input, schema_model, *, max_tokens=None, timeout=None):
         self.attempts += 1
         if self.script:
             raise self.script.pop(0)
         if isinstance(self.then, BaseException):
             raise self.then
-        return LLMResult(text=self.then, provider=self.provider_name, model="scripted-model")
+        return _structured(self.then)
 
     async def aclose(self):
         return None
@@ -79,7 +91,7 @@ class _HangingClient:
     def __init__(self):
         self.attempts = 0
 
-    async def agenerate(self, prompt, max_tokens=None, timeout=None):
+    async def agenerate_structured(self, input, schema_model, *, max_tokens=None, timeout=None):
         self.attempts += 1
         await asyncio.sleep(self.HANG_S)
 
@@ -334,9 +346,13 @@ class PerLeadBudgetTests(TestCase):
         class _Router:
             provider_name = "groq"
 
-            async def agenerate(self, prompt, max_tokens=None, timeout=None):
-                key = "lead_slow" if "Summit Risk Advisors" in prompt else "lead_fine"
-                return await clients[key].agenerate(prompt, max_tokens, timeout)
+            async def agenerate_structured(
+                self, input, schema_model, *, max_tokens=None, timeout=None
+            ):
+                key = "lead_slow" if "Summit Risk Advisors" in input else "lead_fine"
+                return await clients[key].agenerate_structured(
+                    input, schema_model, max_tokens=max_tokens, timeout=timeout
+                )
 
             async def aclose(self):
                 return None
@@ -476,11 +492,13 @@ class AgenerateCopyRetryUnitTests(SimpleTestCase):
         class _Recorder:
             provider_name = "groq"
 
-            async def agenerate(self, prompt, max_tokens=None, timeout=None):
+            async def agenerate_structured(
+                self, input, schema_model, *, max_tokens=None, timeout=None
+            ):
                 seen.append(timeout)
                 if len(seen) < 3:
                     raise rate_limit()
-                return LLMResult(text=GOOD_COPY, provider="groq", model="recorder-model")
+                return _structured(GOOD_COPY)
 
             async def aclose(self):
                 return None
@@ -500,20 +518,20 @@ class AgenerateCopyRetryUnitTests(SimpleTestCase):
         # Every attempt, not just the first.
         self.assertEqual(seen, [7.5, 7.5, 7.5])
 
-    def test_a_successful_call_returns_the_text_unwrapped(self):
+    def test_a_successful_call_returns_the_parsed_copy_unwrapped(self):
         result = asyncio.run(
             outreach.agenerate_copy(
                 None,
                 actions.NUDGE_USAGE,
                 "reason",
                 prompt="a prompt",
-                client=_ScriptedClient(then="drafted"),
+                client=_ScriptedClient(then="Subject: Drafted\n\nDrafted body."),
                 retry=RetryPolicy(max_attempts=1),
                 timeouts=Timeouts(request_s=5.0, per_lead_s=5.0),
             )
         )
 
-        self.assertEqual(result, "drafted")
+        self.assertEqual((result.subject, result.body), ("Drafted", "Drafted body."))
 
 
 @override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
