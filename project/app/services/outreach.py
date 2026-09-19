@@ -483,8 +483,17 @@ def compose_email(subject, body):
     frontend splits it on :data:`SUBJECT_PREFIX`. The one composer: a reviewer's
     edited pair is rendered through it too, so a dry run and the row it becomes
     cannot disagree about the string.
+
+    The subject is flattened to one line, which is what makes the composition
+    reversible: a blank line inside it would become the separator
+    :func:`split_email` cuts on, and the halves would not come back.
     """
-    return f"{SUBJECT_PREFIX} {(subject or '').strip()}\n\n{(body or '').strip()}"
+    return f"{SUBJECT_PREFIX} {one_line(subject)}\n\n{(body or '').strip()}"
+
+
+def one_line(text):
+    """``text`` with every run of whitespace collapsed to a single space."""
+    return " ".join((text or "").split())
 
 
 def render_email(copy):
@@ -501,10 +510,7 @@ def _stored_pair(copy):
     """
     from project.app.services import queue_copy
 
-    return (
-        queue_copy.normalize_copy(copy.subject).strip(),
-        queue_copy.normalize_copy(copy.body).strip(),
-    )
+    return one_line(copy.subject), queue_copy.normalize_copy(copy.body).strip()
 
 
 def split_email(text):

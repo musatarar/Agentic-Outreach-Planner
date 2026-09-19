@@ -54,6 +54,11 @@ class SplitEmailTests(TestCase):
     def test_a_subject_line_with_nothing_under_it_has_no_body(self):
         self.assertEqual(split_email("Subject: Alone"), ("Alone", ""))
 
+    def test_a_subject_with_a_blank_line_in_it_still_round_trips(self):
+        # Unflattened, the subject's own blank line would become the separator.
+        draft = compose_email("Two\n\nlines", "The body.")
+        self.assertEqual(split_email(draft), ("Two lines", "The body."))
+
 
 class PartsPresentConstraintTests(TestCase):
     def test_a_row_with_no_copy_needs_no_parts(self):

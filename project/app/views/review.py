@@ -95,8 +95,9 @@ def candidate_copy(payload):
                 "`subject` and `body` must be strings.",
                 status.HTTP_400_BAD_REQUEST,
             )
-        # Normalized BEFORE composing, so every offset indexes what is stored.
-        subject = queue_copy.normalize_copy(subject).strip()
+        # Normalized BEFORE composing, so every offset indexes what is stored,
+        # and flattened the way the composer will flatten it.
+        subject = outreach.one_line(subject)
         body = queue_copy.normalize_copy(body).strip()
         if not subject or not body:
             return None, error(

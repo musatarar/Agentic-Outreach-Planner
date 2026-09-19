@@ -246,20 +246,29 @@ export interface ReviewItem {
   dedupe_key: string;
   lead: ReviewLead;
   suggested_copy: string;   // IMMUTABLE
+  subject: string;          // the two halves suggested_copy was composed from
+  body: string;
   edited_copy: string;      // "" when never edited
+  edited_subject: string;   // the edit's own halves; "" when never edited
+  edited_body: string;
   effective_copy: string;   // edited_copy || suggested_copy -- use THIS
+  effective_subject: string;
+  effective_body: string;
   is_edited: boolean;
   verification: VerificationReport;
   can_approve: boolean;
 }
 
-export interface EditCopyInput {
-  copy: string | null;   // null = revert to suggested_copy
+/** The two halves, which the server composes into the stored draft. */
+export interface CopyPair {
+  subject: string;
+  body: string;
 }
 
-export interface VerifyCopyInput {
-  copy: string;
-}
+/** `{copy: null}` reverts to suggested_copy; a pair replaces the draft. */
+export type EditCopyInput = { copy: string | null } | CopyPair;
+
+export type VerifyCopyInput = { copy: string } | CopyPair;
 
 export interface DismissInput {
   reason: DismissReason;

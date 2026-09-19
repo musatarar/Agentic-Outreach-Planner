@@ -1,5 +1,4 @@
 import type { VerificationClaim, VerificationReport } from '../../api/types';
-import { subjectLabelLength } from './draftText';
 
 /**
  * Turns a verification report into renderable runs of draft text. Pure, no JSX.
@@ -9,14 +8,70 @@ import { subjectLabelLength } from './draftText';
  * exact string the offsets index into.
  */
 
-export type SegmentRole = 'text' | 'subject-label';
-
 export interface DraftSegment {
   key: string;
   text: string;
   /** Non-null when this run is a claim and should carry an underline. */
   claim: VerificationClaim | null;
-  role: SegmentRole;
+}
+
+/** One report's segments, partitioned into the two fields the inbox renders. */
+export interface DraftParts {
+  /** Empty when the draft carries no `Subject:` line. */
+  subject: DraftSegment[];
+  body: DraftSegment[];
+}
+
+/* ----------------------------------------------------------------------
+   Where the subject ends and the body begins. The server composes every draft
+   as `Subject: <subject>\n\n<body>` (services/outreach.py `compose_email`) and
+   the verifier's offsets index that whole string, so rendering the two halves
+   separately means partitioning those offsets rather than asking for two sets.
+   ---------------------------------------------------------------------- */
+
+export const SUBJECT_PREFIX = 'Subject:';
+
+/** The blank line the composer puts between the subject and the body. */
+const SEPARATOR = '\n\n';
+
+export interface DraftBounds {
+  /** False when the draft has no `Subject:` line — then it is all body. */
+  hasSubject: boolean;
+  subjectStart: number;
+  subjectEnd: number;
+  bodyStart: number;
+}
+
+/**
+ * Offsets into `copy` in whichever scheme the claims use: pass `units` (the
+ * code-point array) when the report is not astral-safe, `null` otherwise. An
+ * emoji in the subject moves the separator by one UTF-16 unit but not by one
+ * code point, so searching the wrong sequence would cut the draft in the wrong
+ * place — the one difference between the two schemes that matters here.
+ */
+export function draftBounds(copy: string, units: string[] | null): DraftBounds {
+  const length = units ? units.length : copy.length;
+  if (!copy.startsWith(SUBJECT_PREFIX)) {
+    return { hasSubject: false, subjectStart: 0, subjectEnd: 0, bodyStart: 0 };
+  }
+  // The composer writes exactly one space after the label; the label itself is
+  // ASCII, so its length is the same in both schemes.
+  const subjectStart = SUBJECT_PREFIX.length + (copy[SUBJECT_PREFIX.length] === ' ' ? 1 : 0);
+  const separator = units
+    ? units.findIndex(
+        (unit, index) => index >= subjectStart && unit === '\n' && units[index + 1] === '\n',
+      )
+    : copy.indexOf(SEPARATOR, subjectStart);
+  if (separator === -1) {
+    // A subject line and nothing under it: no body to render.
+    return { hasSubject: true, subjectStart, subjectEnd: length, bodyStart: length };
+  }
+  return {
+    hasSubject: true,
+    subjectStart,
+    subjectEnd: separator,
+    bodyStart: separator + SEPARATOR.length,
+  };
 }
 
 /** A code-point-safe slicer over one report's copy. */
@@ -26,7 +81,7 @@ function sliceFor(report: VerificationReport) {
   const length = units ? units.length : report.copy.length;
   const cut = (start: number, end: number) =>
     units ? units.slice(start, end).join('') : report.copy.slice(start, end);
-  return { cut, length };
+  return { cut, length, units };
 }
 
 /** A claim with real offsets. Omission claims carry null and are excluded. */
@@ -41,55 +96,55 @@ function spannedClaims(report: VerificationReport): SpannedClaim[] {
 }
 
 /**
- * Split `report.copy` into runs, each either plain text or one claim.
- * Overlapping claims are dropped rather than nested.
+ * Split the window `[from, to)` of `report.copy` into runs, each either plain
+ * text or one claim. Overlapping claims are dropped rather than nested; a claim
+ * straddling the window's edge is clipped to it, so it stays underlined in both
+ * halves rather than vanishing from one.
  */
-export function buildDraftSegments(report: VerificationReport): DraftSegment[] {
-  const { cut, length } = sliceFor(report);
+export function segmentsIn(
+  report: VerificationReport,
+  from: number,
+  to: number,
+): DraftSegment[] {
+  const { cut } = sliceFor(report);
   const segments: DraftSegment[] = [];
-  let cursor = 0;
-
-  // "Subject:" prefix is ASCII-only, so its length matches in both index schemes.
-  const labelLength = subjectLabelLength(report.copy);
-  if (labelLength > 0 && labelLength <= length) {
-    segments.push({
-      key: 'subject-label',
-      text: cut(0, labelLength),
-      claim: null,
-      role: 'subject-label',
-    });
-    cursor = labelLength;
-  }
+  let cursor = from;
 
   for (const claim of spannedClaims(report)) {
-    if (claim.start < cursor || claim.end > length) continue;
-    if (claim.start > cursor) {
-      segments.push({
-        key: `text-${cursor}`,
-        text: cut(cursor, claim.start),
-        claim: null,
-        role: 'text',
-      });
+    const start = Math.max(claim.start, from);
+    const end = Math.min(claim.end, to);
+    if (end <= start || start < cursor) continue;
+    if (start > cursor) {
+      segments.push({ key: `text-${cursor}`, text: cut(cursor, start), claim: null });
     }
-    segments.push({
-      key: claim.id,
-      text: cut(claim.start, claim.end),
-      claim,
-      role: 'text',
-    });
-    cursor = claim.end;
+    segments.push({ key: `${claim.id}-${start}`, text: cut(start, end), claim });
+    cursor = end;
   }
 
-  if (cursor < length) {
-    segments.push({
-      key: `text-${cursor}`,
-      text: cut(cursor, length),
-      claim: null,
-      role: 'text',
-    });
+  if (cursor < to) {
+    segments.push({ key: `text-${cursor}`, text: cut(cursor, to), claim: null });
   }
-
   return segments;
+}
+
+/** Every run of `report.copy`, in one list. */
+export function buildDraftSegments(report: VerificationReport): DraftSegment[] {
+  const { length } = sliceFor(report);
+  return segmentsIn(report, 0, length);
+}
+
+/**
+ * The report's runs split at the composer's own boundary, so the subject and
+ * the body can be rendered as the two fields they are while their claims keep
+ * the offsets the verifier computed over the composed draft.
+ */
+export function splitDraftSegments(report: VerificationReport): DraftParts {
+  const { length, units } = sliceFor(report);
+  const bounds = draftBounds(report.copy, units);
+  return {
+    subject: bounds.hasSubject ? segmentsIn(report, bounds.subjectStart, bounds.subjectEnd) : [],
+    body: segmentsIn(report, bounds.bodyStart, length),
+  };
 }
 
 /** Self-check: every spanned claim must slice back to its own `text`. */
