@@ -1,10 +1,11 @@
 /**
- * Ordering and review-flagging for the leads table.
+ * Ordering, review-flagging and the proposal join for the leads table.
  *
- * These are pure functions on purpose. The table's two jobs before you have
- * selected anything — put the leads worth chasing at the top, and mark the ones
- * already awaiting review — are both decisions, and a decision buried in JSX is
- * a decision nobody can test.
+ * These are pure functions on purpose. The table's three jobs before you have
+ * opened anything — put the leads worth chasing at the top, mark the ones
+ * already awaiting review, and show each lead what the engine chose for it —
+ * are all decisions, and a decision buried in JSX is a decision nobody can
+ * test.
  *
  * The failure modes here are quiet rather than loud. A book-size column sorted
  * as text puts $900k above $2M and still looks like a sorted column. A sort
@@ -16,8 +17,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { DEFAULT_SORT, openLeadIds, sortLeads } from '../src/components/leads/leadTable.ts';
-import type { LeadRecord } from '../src/api/types.ts';
+import {
+  DEFAULT_SORT,
+  openLeadIds,
+  proposalsByLead,
+  sortLeads,
+} from '../src/components/leads/leadTable.ts';
+import type { LeadRecord, ProposedAction } from '../src/api/types.ts';
 
 /** A lead with every field defaulted, so each test states only what it varies. */
 function lead(overrides: Partial<LeadRecord> = {}): LeadRecord {
@@ -154,4 +160,54 @@ test('a decided item does not flag its lead', () => {
 
 test('an empty inbox flags nothing', () => {
   assert.equal(openLeadIds([]).size, 0);
+});
+
+/** A proposal with every field defaulted, so each test states only what it varies. */
+function proposal(leadId: string, overrides: Partial<ProposedAction> = {}): ProposedAction {
+  return {
+    id: 7,
+    lead: {
+      id: leadId,
+      agency_name: 'Acme Insurance',
+      contact_name: 'Dana Reed',
+      contact_email: 'dana@acme.example',
+    },
+    action: { key: 'reward_power_user', label: 'Reward power user', urgency: 'high' },
+    reasons: ['Closed 20+ deals'],
+    weight: 4,
+    decided_at: '2026-09-19T06:15:00Z',
+    draft_id: null,
+    ...overrides,
+  };
+}
+
+test('each lead finds its own proposal by id', () => {
+  const byLead = proposalsByLead([proposal('lead_002'), proposal('lead_005', { id: 8 })]);
+
+  assert.equal(byLead.get('lead_002')?.id, 7);
+  assert.equal(byLead.get('lead_005')?.id, 8);
+});
+
+// The column reads "—" for these, and the row still expands to say so. A lookup
+// that threw, or returned the wrong lead's decision, would be worse than blank.
+test('a lead the engine chose nothing for has no proposal', () => {
+  const byLead = proposalsByLead([proposal('lead_002')]);
+
+  assert.equal(byLead.get('lead_999'), undefined);
+  assert.equal(byLead.size, 1);
+});
+
+test('the newest decision wins when a lead has been judged more than once', () => {
+  // The list arrives newest-decision-first, so the later job must not overwrite
+  // the current one and show the row a decision the engine has moved past.
+  const byLead = proposalsByLead([
+    proposal('lead_002', { id: 9, decided_at: '2026-09-19T06:15:00Z' }),
+    proposal('lead_002', { id: 3, decided_at: '2026-09-01T06:15:00Z' }),
+  ]);
+
+  assert.equal(byLead.get('lead_002')?.id, 9);
+});
+
+test('no proposals at all is an empty map, not a crash', () => {
+  assert.equal(proposalsByLead([]).size, 0);
 });

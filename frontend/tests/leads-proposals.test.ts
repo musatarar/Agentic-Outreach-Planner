@@ -1,5 +1,5 @@
 /**
- * The proposals list's decisions.
+ * The expanded lead row's proposal decisions.
  *
  * The failure modes are quiet. A Generate button offered on a proposal that
  * already has a draft still looks like a button; it just spends a click on a
@@ -15,7 +15,7 @@ import {
   canGenerate,
   urgencyTone,
   withDraft,
-} from '../src/components/actions/proposals.ts';
+} from '../src/components/leads/proposals.ts';
 import type { ProposedAction } from '../src/api/types.ts';
 
 /** A proposal with every field defaulted, so each test states only what it varies. */

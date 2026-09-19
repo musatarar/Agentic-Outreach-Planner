@@ -1,11 +1,11 @@
 /**
- * The proposals list's decisions, kept out of the JSX.
+ * The expanded row's decisions, kept out of the JSX.
  *
  * Two of them matter. Whether a proposal can still be drafted decides what the
  * button does, and getting it wrong spends a provider call that can only answer
  * 409. Recording the draft a click produced decides whether the row updates
  * without a refetch — an array mutated in place looks identical and re-renders
- * nothing. See `tests/actions-proposals.test.ts`.
+ * nothing. See `tests/leads-proposals.test.ts`.
  */
 import type { BadgeTone } from '../ui';
 import type { ProposedAction, Urgency } from '../../api/types';

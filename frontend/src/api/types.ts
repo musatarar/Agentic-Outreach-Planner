@@ -42,19 +42,6 @@ export interface LeadRecord {
   hubspot_notes: string;
 }
 
-/** Mirrors `OutreachActionSerializer` — what the planner endpoints return. */
-export interface OutreachAction {
-  id: number;
-  lead: Lead;
-  priority: Priority;
-  action_type: string;
-  reason: string;
-  suggested_copy: string | null;
-  needs_human: boolean;
-  further_action: string | null;
-  created_at: string;
-}
-
 export type Urgency = 'low' | 'medium' | 'high';
 
 /** Mirrors `ProposedActionTypeSerializer` — the catalog action a rule chose. */

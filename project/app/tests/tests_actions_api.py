@@ -321,8 +321,3 @@ class GenerateCopyTests(ProposedActionsTestCase):
         self.assertEqual(draft.suggested_copy, "")
         self.assertTrue(draft.needs_human)
         self.assertIn("reward_power_user", draft.further_action)
-
-
-class ProposedActionsShellTests(ProposedActionsTestCase):
-    def test_the_page_shell_renders_so_a_hard_refresh_does_not_404(self):
-        self.assertEqual(self.client.get("/actions").status_code, 200)

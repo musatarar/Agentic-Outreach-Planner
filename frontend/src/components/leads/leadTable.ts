@@ -1,11 +1,11 @@
 /**
- * Ordering and review-flagging for the leads table.
+ * Ordering, review-flagging and the proposal join for the leads table.
  *
  * Kept apart from the JSX because both are decisions rather than presentation,
  * and a decision inside a render function is one nothing can test. See
  * `tests/leads-table.test.ts` for the behaviour each rule buys.
  */
-import type { LeadRecord } from '../../api/types';
+import type { LeadRecord, ProposedAction } from '../../api/types';
 
 export type SortKey =
   | 'agency_name'
@@ -76,4 +76,23 @@ export function openLeadIds(
   return new Set(
     items.filter((item) => item.status === 'pending').map((item) => item.lead.id),
   );
+}
+
+/**
+ * Each lead's proposal, keyed by lead id, so a row finds its decision without
+ * scanning the list once per render.
+ *
+ * A lead the engine has not chosen an action for is simply absent: the list
+ * only carries jobs that reached a decision, and "no action", "still queued"
+ * and "never judged" are all the same blank from here.
+ */
+export function proposalsByLead(
+  proposals: readonly ProposedAction[],
+): Map<string, ProposedAction> {
+  // Newest decision first, so the first proposal for a lead is the one to keep.
+  const byLead = new Map<string, ProposedAction>();
+  for (const proposal of proposals) {
+    if (!byLead.has(proposal.lead.id)) byLead.set(proposal.lead.id, proposal);
+  }
+  return byLead;
 }

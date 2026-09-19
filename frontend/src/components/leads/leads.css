@@ -14,8 +14,8 @@
   color: var(--color-text-muted);
 }
 
-/* Non-fatal: the leads loaded, the inbox did not. Amber rather than red —
-   nothing is broken, some badges are just missing. */
+/* Non-fatal: the leads loaded, a secondary read did not. Amber rather than
+   red — nothing is broken, a column or some badges are just missing. */
 .leads-warning {
   margin: 0 0 var(--space-4);
   padding: var(--space-3) var(--space-4);
@@ -27,7 +27,7 @@
 }
 
 /* What a Generate click did, including "nothing, and here is why" — the 409
-   the planner answers when a lead already has an open recommendation. */
+   the server answers for a proposal already drafted or dismissed. */
 .leads-notice {
   margin: 0 0 var(--space-4);
   padding: var(--space-3) var(--space-4);
@@ -163,4 +163,98 @@
 
 .leads-table__idle {
   color: var(--color-text-subtle);
+}
+
+/* The agency cell is the row's disclosure control: the whole name is the hit
+   target, not a separate caret beside it. No width: the button sizes to its
+   text, and stretching it makes the auto-layout column collapse to min-content
+   and wrap every agency name onto three lines. */
+.leads-table__expand {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* styles.css paints every button on hover; this one is a row label, and the
+   :not(:disabled) there outranks a plain class selector. */
+.leads-table__expand:hover:not(:disabled) {
+  background: none;
+}
+
+.leads-table__expand:hover .leads-table__agency {
+  color: var(--color-accent);
+}
+
+.leads-table__expand:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-sm);
+}
+
+.leads-table__chevron {
+  color: var(--color-text-subtle);
+}
+
+.leads-table__row--open {
+  background: var(--color-surface-hover);
+}
+
+/* The open row and its panel read as one block, so the border between them
+   would draw a line through the middle of a single thing. */
+.leads-table__row--open td {
+  border-bottom: 0;
+}
+
+.leads-table__detail td {
+  padding: 0 var(--space-4) var(--space-4) var(--space-7);
+  background: var(--color-surface-sunken);
+}
+
+/* Catalog labels are written by the user and run long. A nowrap chip widens
+   the whole table to fit the longest one, so this column's badge wraps. */
+.leads-table__proposal .ui-badge {
+  white-space: normal;
+  text-align: left;
+}
+
+/* The rules that fired, in the tally's order — the whole case for the row. */
+.lead-detail__reasons {
+  margin: 0;
+  padding: var(--space-3) 0 0 var(--space-5);
+  font-size: var(--text-sm);
+}
+
+/* Packed left rather than spread: the table scrolls sideways, and a button
+   pinned to the far edge of seven columns is a button off the screen. */
+.lead-detail__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.lead-detail__decided {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.lead-detail__drafted,
+.lead-detail__empty {
+  margin: 0;
+  padding-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.lead-detail__drafted {
+  padding-top: 0;
 }
