@@ -56,7 +56,9 @@ what it costs (a cron that spends on every decided lead is a spend change; a cli
 on one item is not). One of the flows must be the one where the new capability is a surface
 the user sees and acts on. Recommend one and say why, then give the mechanism for that one.
 If none of your flows shows the new thing to the user, you have designed around it rather
-than for it.
+than for it. When you can ask (an interactive session), put the flows to the user as a
+question before writing the design; when you cannot, write the design for the flow that shows
+the new thing and list the others as alternatives.
 
 Ask a blocking question only when two readings lead to materially different code and no
 sensible default exists. When you do ask, offer the concrete options, recommend one, and say
@@ -65,7 +67,7 @@ what you would build for each.
 If the user reaffirms the literal request after you have raised the concern, that is their
 decision. Say so once and build it as asked. The goal is to give them the choice, not to win.
 
-### Example
+### Example 1: a literal reading that misses the intent
 
 Request: "add a method into services that returns leads for the demo"
 
@@ -75,6 +77,37 @@ Strong response, said before coding: "I read this as a reusable selector over Le
 function containing demo rows. Demo data already lives in `raw_data/` and is loaded by the
 ingest command, so I'm adding a query function in services that takes the filter criteria as
 arguments, and leaving the data where it is. Say the word if you actually wanted a fixture."
+
+### The inversion to avoid
+
+The move above has a failure mode: deciding that the "intended" reading is the conventional
+one. A proposal inside a question ("should the FE pull the decisions from our API?") is
+evidence of the experience the user wants: they want to see the decisions. Reject the
+mechanism if it is wrong; keep the experience it implied. If your intended reading shows the
+user less of the new thing than their literal words did, you have inverted the tool. Three
+separate attempts at the case below did exactly this, each citing a convention ("a queue is
+not user-facing state", "the UI subscribes only to the terminal artifact") as if it were the
+user's decision.
+
+### Example 2: a design question where the code was treated as the spec
+
+Request: "The FE still uses the old plan_outreach pipeline. How should it interact with our
+actions queue? Should it pull the events from our API? Or do you have a better alternative?"
+
+Weak response: "The FE should not talk to the queue at all. Feed the cron's decisions into
+`plan_outreach` phase 2 behind the existing Run button; phases 3 to 5 and every frontend file
+stay untouched." The user's reply, verbatim: "that's exactly what I DON'T want. The user should
+open to a FE populated with the new actions list. Hitting generate now generates a copy for
+it, doesn't run the full outreach. We won't edit plan_outreach but add a new endpoint over it
+for generating a copy."
+
+Strong response, before any mechanism: "Two flows. A: the engine's decisions are invisible and
+the cron drafts copy for every decided lead automatically, which is a provider call per lead
+per day. B: the user opens to the list of decided actions with their reasons, and Generate
+makes copy for one of them on demand, which spends only on a click. Your question suggests B.
+I'd build B: `GET /api/actions/` over decided jobs, `POST /api/actions/{id}/generate/` calling
+the planner's existing gate functions, `plan_outreach` untouched, and the Run button retired
+or repointed, your call." Then the mechanism.
 
 ## Where things belong in this repo
 
