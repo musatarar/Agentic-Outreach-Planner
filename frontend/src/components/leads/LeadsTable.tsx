@@ -201,7 +201,7 @@ export function LeadsTable({
                 <td className="leads-table__num">{formatDateOnly(lead.last_contacted_date)}</td>
                 <td className="leads-table__proposal">
                   {isAwaitingReview(proposal, open.has(lead.id)) ? (
-                    <Badge tone="pending">Reviewing the email</Badge>
+                    <Badge tone="pending">Review drafted email</Badge>
                   ) : proposal ? (
                     <Badge tone={urgencyTone(proposal.action.urgency)}>
                       {proposal.action.label}
