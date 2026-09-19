@@ -14,7 +14,13 @@ from django.test import override_settings
 
 from project.app.actions import services
 from project.app.actions.models import ActionJob
-from project.app.models import ActionType, DismissedOutreachKey, Lead, OutreachAction, OutreachRule
+from project.app.models import (
+    ActionType,
+    DismissedOutreachKey,
+    Lead,
+    OutreachGeneratedCopy,
+    OutreachRule,
+)
 from project.app.rules.utils import _all_of, _cond
 from project.app.services import dedupe
 from project.app.services.llm import LLMClient, LLMResult, LLMTimeoutError
@@ -218,7 +224,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(len(self.stub.prompts), 1)
-        draft = OutreachAction.objects.get()
+        draft = OutreachGeneratedCopy.objects.get()
         self.assertEqual(draft.pk, response.json()["id"])
         self.assertEqual(draft.lead_id, self.lead.id)
         self.assertEqual(draft.action_type, "reward_power_user")
@@ -240,7 +246,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
 
         self._generate(job)
 
-        draft = OutreachAction.objects.get()
+        draft = OutreachGeneratedCopy.objects.get()
         self.assertEqual(draft.verification["copy"], draft.suggested_copy)
         self.assertEqual(draft.verification["version"], 1)
 
@@ -249,7 +255,35 @@ class GenerateCopyTests(ProposedActionsTestCase):
 
         self._generate(job)
 
-        self.assertEqual(OutreachAction.objects.get().priority, 3)
+        draft = OutreachGeneratedCopy.objects.get()
+        self.assertIsNone(draft.priority)
+        self.assertEqual(self.client.get(INBOX_URL).json()["results"][0]["priority"], 3)
+
+    def test_the_draft_points_at_the_catalog_action_it_was_generated_for(self):
+        job = self._proposal()
+
+        self._generate(job)
+
+        draft = OutreachGeneratedCopy.objects.get()
+        self.assertEqual(draft.action_id, self.action.pk)
+
+    def test_the_inbox_shows_the_owners_own_label_for_an_engine_draft(self):
+        job = self._proposal()
+
+        self._generate(job)
+
+        row = self.client.get(INBOX_URL).json()["results"][0]
+        self.assertEqual(row["action_label"], self.action.label)
+
+    def test_the_draft_stores_the_subject_and_body_the_provider_returned(self):
+        job = self._proposal()
+
+        self._generate(job)
+
+        draft = OutreachGeneratedCopy.objects.get()
+        self.assertEqual(draft.subject, "A quick idea for Summit Risk Advisors")
+        self.assertTrue(draft.body.startswith("Hi Priya,"))
+        self.assertEqual(draft.suggested_copy, COPY)
 
     def test_a_drafted_proposal_carries_its_draft_id_and_refuses_a_second_call(self):
         job = self._proposal()
@@ -262,7 +296,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
         self.assertEqual(again.status_code, 409)
         self.assertEqual(again.json()["code"], "no_new_recommendation")
         self.assertEqual(len(self.stub.prompts), 1)
-        self.assertEqual(OutreachAction.objects.count(), 1)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
 
     def test_a_dismissed_key_is_refused_before_the_provider_call(self):
         job = self._proposal()
@@ -277,7 +311,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["code"], "no_new_recommendation")
         self.assertEqual(self.stub.prompts, [])
-        self.assertFalse(OutreachAction.objects.exists())
+        self.assertFalse(OutreachGeneratedCopy.objects.exists())
 
     def test_someone_elses_proposal_reads_as_not_found(self):
         theirs = self._lead("lead_002", owner=self.other, agency_name="Harbor Insurance")
@@ -287,7 +321,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(self.stub.prompts, [])
-        self.assertFalse(OutreachAction.objects.exists())
+        self.assertFalse(OutreachGeneratedCopy.objects.exists())
 
     def test_a_job_that_chose_nothing_cannot_be_drafted(self):
         job = ActionJob.objects.create(lead=self.lead, status=ActionJob.STATUS_NO_ACTION)
@@ -295,7 +329,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
         response = self._generate(job)
 
         self.assertEqual(response.status_code, 404)
-        self.assertFalse(OutreachAction.objects.exists())
+        self.assertFalse(OutreachGeneratedCopy.objects.exists())
 
     def test_a_provider_failure_lands_as_a_row_a_reviewer_can_act_on(self):
         job = self._proposal()
@@ -304,7 +338,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
         response = self._generate(job)
 
         self.assertEqual(response.status_code, 201)
-        draft = OutreachAction.objects.get()
+        draft = OutreachGeneratedCopy.objects.get()
         self.assertEqual(draft.suggested_copy, "")
         self.assertTrue(draft.needs_human)
         self.assertIn("timeouts", draft.further_action)
@@ -318,7 +352,9 @@ class GenerateCopyTests(ProposedActionsTestCase):
         response = self._generate(job)
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(OutreachAction.objects.get(pk=response.json()["id"]).suggested_copy, COPY)
+        self.assertEqual(
+            OutreachGeneratedCopy.objects.get(pk=response.json()["id"]).suggested_copy, COPY
+        )
 
     def test_a_provider_bug_lands_as_a_row_too_rather_than_a_dead_endpoint(self):
         # Not an LLMError at all: the adapter itself misbehaved.
@@ -328,7 +364,7 @@ class GenerateCopyTests(ProposedActionsTestCase):
         response = self._generate(job)
 
         self.assertEqual(response.status_code, 201)
-        draft = OutreachAction.objects.get()
+        draft = OutreachGeneratedCopy.objects.get()
         self.assertEqual(draft.suggested_copy, "")
         self.assertTrue(draft.needs_human)
         self.assertIn("reward_power_user", draft.further_action)

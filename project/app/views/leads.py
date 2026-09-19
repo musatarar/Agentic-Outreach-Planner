@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from project.app.models import Lead
-from project.app.serializers import LeadSerializer, OutreachActionSerializer
+from project.app.serializers import LeadSerializer, OutreachGeneratedCopySerializer
 
 
 class LeadListView(APIView):
@@ -37,5 +37,5 @@ class LeadComposeView(APIView):
             return Response({"error": "no_new_recommendation"}, status=status.HTTP_409_CONFLICT)
 
         # At most one action per lead per run, and this run is one lead.
-        serializer = OutreachActionSerializer(planned[0])
+        serializer = OutreachGeneratedCopySerializer(planned[0])
         return Response(serializer.data, status=status.HTTP_200_OK)

@@ -7,8 +7,8 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils.timezone import is_aware
 
-from project.app.models import Event, Lead, OutreachAction
-from project.app.services.outreach import OutreachCopy, plan_outreach
+from project.app.models import Event, Lead, OutreachGeneratedCopy
+from project.app.services.outreach import OutreachCopy, compose_email, plan_outreach
 
 
 def _as_copy(email):
@@ -123,7 +123,7 @@ class ModelBasicsTests(TestCase):
             estimated_book_size_usd=1,
             stage="active_trial",
         )
-        action = OutreachAction.objects.create(
+        action = OutreachGeneratedCopy.objects.create(
             lead=lead,
             priority=1,
             action_type="nudge_usage",
@@ -165,7 +165,7 @@ class PlanOutreachGroundingTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 1)
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertTrue(action.needs_human)
         self.assertEqual(action.suggested_copy, bad_copy)  # draft is kept, not blanked
         self.assertIn("47 closed deals", action.further_action)
@@ -191,10 +191,24 @@ class PlanOutreachGroundingTests(TestCase):
         ):
             plan_outreach()
 
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertFalse(action.needs_human)
         self.assertEqual(action.suggested_copy, good_copy)
         self.assertEqual(action.further_action, "")
+
+    def test_a_planner_row_stores_the_pair_behind_its_draft(self):
+        self._make_lead()
+        copy = OutreachCopy(subject="Let's finish setting up", body="Hi Priya,\n\nBest,\nDana")
+        with patch("project.app.services.outreach.agenerate_copy", return_value=copy):
+            plan_outreach()
+
+        action = OutreachGeneratedCopy.objects.get()
+        self.assertEqual(action.subject, "Let's finish setting up")
+        self.assertEqual(action.body, "Hi Priya,\n\nBest,\nDana")
+        # The composed draft is what the pair renders to, exactly.
+        self.assertEqual(action.suggested_copy, compose_email(action.subject, action.body))
+        # A planner row has no catalog action behind it.
+        self.assertIsNone(action.action_id)
 
     @override_settings(COPY_VERIFY_LEVEL="off")
     def test_verification_can_be_disabled_via_setting(self):
@@ -216,7 +230,7 @@ class PlanOutreachGroundingTests(TestCase):
         with patch("project.app.services.outreach.agenerate_copy", return_value=_as_copy(bad_copy)):
             plan_outreach()
 
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertFalse(action.needs_human)
         self.assertEqual(action.further_action, "")
 
@@ -279,7 +293,7 @@ class PlanOutreachFailurePathTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 2)
-        failed = OutreachAction.objects.get(lead_id="lead_fails")
+        failed = OutreachGeneratedCopy.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
         # Wrapped as LLMUnexpectedError: named non-retryable, not an
@@ -300,7 +314,7 @@ class PlanOutreachFailurePathTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 2)
-        failed = OutreachAction.objects.get(lead_id="lead_fails")
+        failed = OutreachGeneratedCopy.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertIn("Copy generation failed (unrenderable lead)", failed.further_action)
 
@@ -316,14 +330,14 @@ class PlanOutreachFailurePathTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 2)
-        failed = OutreachAction.objects.get(lead_id="lead_fails")
+        failed = OutreachGeneratedCopy.objects.get(lead_id="lead_fails")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
         # `_resolve_client` wraps the ValueError as configuration-shaped.
         self.assertIn("Copy generation failed and was not retryable", failed.further_action)
         self.assertIn("Unknown LLM provider 'bogus'.", failed.further_action)
         # The unmatched lead is untouched by a provider problem it never needed.
-        unmatched = OutreachAction.objects.get(lead_id="lead_unknown")
+        unmatched = OutreachGeneratedCopy.objects.get(lead_id="lead_unknown")
         self.assertIn("no automated outreach pattern matched", unmatched.further_action)
 
     def test_a_run_with_nothing_to_generate_never_resolves_a_provider(self):

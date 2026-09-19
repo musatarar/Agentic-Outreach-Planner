@@ -9,7 +9,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from project.app import checks
-from project.app.models import Event, Lead, OutreachAction
+from project.app.models import Event, Lead, OutreachGeneratedCopy
 from project.app.services.outreach import OutreachCopy, plan_outreach
 
 GOOD_COPY = (
@@ -50,9 +50,9 @@ PLANNER_INSERT_FIELDS = 13
 
 
 def _expected_inserts(rows):
-    from project.app.models import OutreachAction
+    from project.app.models import OutreachGeneratedCopy
 
-    fields = [f for f in OutreachAction._meta.concrete_fields if not f.primary_key]
+    fields = [f for f in OutreachGeneratedCopy._meta.concrete_fields if not f.primary_key]
     batch = connection.ops.bulk_batch_size(fields, range(rows))
     return math.ceil(rows / batch) if batch else 1
 
@@ -138,7 +138,7 @@ class PlannerQueryCountTests(TestCase):
 
         # Clear the run so the second one has work to do: an open recommendation
         # suppresses a re-run.
-        OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
+        OutreachGeneratedCopy.objects.update(status=OutreachGeneratedCopy.STATUS_APPROVED)
         _make_leads(77, offset=3)  # 80 leads -- past SQLite's 76-row batch
 
         with _stub():
@@ -188,7 +188,7 @@ class BulkCreateTests(TestCase):
         for action in planned:
             self.assertIsNotNone(action.created_at)
         # And the value reached the database, not just the in-memory instance.
-        self.assertEqual(OutreachAction.objects.filter(created_at__isnull=True).count(), 0)
+        self.assertEqual(OutreachGeneratedCopy.objects.filter(created_at__isnull=True).count(), 0)
 
     def test_the_rows_actually_land_in_the_database_with_their_fields(self):
         _make_leads(2)
@@ -196,8 +196,8 @@ class BulkCreateTests(TestCase):
         with _stub():
             plan_outreach()
 
-        self.assertEqual(OutreachAction.objects.count(), 2)
-        stored = OutreachAction.objects.get(lead_id="lead_000")
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 2)
+        stored = OutreachGeneratedCopy.objects.get(lead_id="lead_000")
         self.assertEqual(stored.suggested_copy, GOOD_COPY)
         self.assertEqual(stored.action_type, "complete_onboarding")
         self.assertNotEqual(stored.dedupe_key, "")
@@ -220,8 +220,8 @@ class BulkCreateTests(TestCase):
         self.assertGreater(len(set(priorities)), 1)  # a flat list sorts trivially
 
     def test_the_write_is_one_statement_per_batch(self):
-        """One statement per batch -- SQLite caps a batch at 76 rows for this
-        model's 13 insertable fields, Postgres does not cap at all."""
+        """One statement per batch -- SQLite caps a batch by this model's
+        insertable field count, Postgres does not cap at all."""
         from django.test.utils import CaptureQueriesContext
 
         rows = 80  # past SQLite's boundary, so the two backends genuinely differ
@@ -235,7 +235,7 @@ class BulkCreateTests(TestCase):
             query["sql"]
             for query in captured.captured_queries
             if query["sql"].lstrip().upper().startswith("INSERT INTO")
-            and "outreachaction" in query["sql"].lower()
+            and "outreachgeneratedcopy" in query["sql"].lower()
         ]
         self.assertEqual(len(inserts), _expected_inserts(rows))
         # And whatever the batching, it is never one statement per lead.
@@ -257,7 +257,7 @@ class BulkCreateTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(planned, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 0)
 
 
 class BulkCreatePkBootCheckTests(SimpleTestCase):

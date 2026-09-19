@@ -12,7 +12,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from project.app.services import actions, sanitize, verify
 from project.app.services.llm import (
@@ -461,19 +461,69 @@ class OutreachCopy(BaseModel):
 
     Blank is invalid rather than merely ugly: an empty field would render a
     draft with nothing in it, and the reviewer needs the failure instead.
+    Stripped on the way in, so what validated is what is stored and rendered.
     """
 
     subject: str = Field(min_length=1, max_length=MAX_SUBJECT_CHARS)
     body: str = Field(min_length=1)
 
+    @field_validator("subject", "body")
+    @classmethod
+    def _stripped_and_present(cls, value):
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
 
-def render_email(copy):
-    """The stored draft for one :class:`OutreachCopy`.
+
+def compose_email(subject, body):
+    """The stored draft for one subject/body pair.
 
     Every span offset the verifier computes indexes this exact string, and the
-    frontend splits it on :data:`SUBJECT_PREFIX`.
+    frontend splits it on :data:`SUBJECT_PREFIX`. The one composer: a reviewer's
+    edited pair is rendered through it too, so a dry run and the row it becomes
+    cannot disagree about the string.
     """
-    return f"{SUBJECT_PREFIX} {copy.subject.strip()}\n\n{copy.body.strip()}"
+    return f"{SUBJECT_PREFIX} {(subject or '').strip()}\n\n{(body or '').strip()}"
+
+
+def render_email(copy):
+    """:func:`compose_email` for one :class:`OutreachCopy`."""
+    return compose_email(copy.subject, copy.body)
+
+
+def _stored_pair(copy):
+    """One :class:`OutreachCopy` as it is stored: normalized, then stripped.
+
+    Normalizing each field rather than the composed draft keeps
+    ``compose_email(subject, body)`` equal to the stored ``suggested_copy``,
+    which is the string every span offset indexes.
+    """
+    from project.app.services import queue_copy
+
+    return (
+        queue_copy.normalize_copy(copy.subject).strip(),
+        queue_copy.normalize_copy(copy.body).strip(),
+    )
+
+
+def split_email(text):
+    """``(subject, body)`` for a draft :func:`render_email` wrote.
+
+    The inverse of the composer, for a stored string whose parts were never
+    recorded (see the ``backfill_generated_copy_parts`` command) and for a
+    reviewer's edit sent as one string. Text with no ``Subject:`` line is all
+    body: a reviewer may legitimately write one, so this reports what is there
+    rather than inventing a subject.
+    """
+    text = (text or "").strip()
+    if not text.startswith(SUBJECT_PREFIX):
+        return "", text
+    subject, separator, body = text[len(SUBJECT_PREFIX) :].partition("\n\n")
+    if not separator:
+        # A subject line and nothing under it.
+        return subject.strip(), ""
+    return subject.strip(), body.strip()
 
 
 def max_copy_tokens():
@@ -700,11 +750,12 @@ class WorkItem:
     ``prompt`` is ``None`` when there is no copy to generate: ``UNKNOWN``
     (straight to a human), or the build failed — ``prompt_error`` says which.
     ``dedupe_key`` is computed with the classification and carried through: the
-    key is the identity of the recommendation.
+    key is the identity of the recommendation. ``priority`` is ``None`` on an
+    engine draft, which derives it from its catalog action instead.
     """
 
     lead: Any
-    priority: int
+    priority: int | None
     action_type: str
     reason: str
     dedupe_key: str
@@ -719,9 +770,13 @@ class CopyOutcome:
     The exception is carried rather than raised so one lead's dead API call
     cannot sink the run. ``attempts``/``elapsed_s`` are meaningful only on
     failure — phase 4's "gave up after 4 attempts over 31s".
+    ``subject``/``body`` are the pair ``text`` was composed from, carried so
+    phase 5 stores what the provider returned rather than re-splitting it.
     """
 
     text: str = ""
+    subject: str = ""
+    body: str = ""
     # Narrower than BaseException on purpose: KeyboardInterrupt/SystemExit
     # abort the run instead of landing here.
     error: Exception | None = None
@@ -731,7 +786,7 @@ class CopyOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReviewOutcome:
-    """The three fields phase 4 decides and phase 5 writes, plus its workings.
+    """The fields phase 4 decides and phase 5 writes, plus its workings.
 
     The counts are carried rather than recomputed: a second run of a
     fail-closed gate is a second chance to disagree with the decision made.
@@ -740,6 +795,8 @@ class ReviewOutcome:
     suggested_copy: str
     needs_human: bool
     further_action: str
+    subject: str = ""
+    body: str = ""
     shape_problem_count: int = 0
     violation_count: int = 0
 
@@ -823,7 +880,6 @@ async def _agenerate_for(item, client, runtime, client_error=None):
     must hold no ORM handle, since a lazy query inside the gather raises Django's
     ``SynchronousOnlyOperation``.
     """
-    from project.app.services import queue_copy
 
     # Re-checked so this function is correct called standalone; `bounded` checks
     # the same thing ahead of the semaphore.
@@ -833,17 +889,15 @@ async def _agenerate_for(item, client, runtime, client_error=None):
     try:
         # Normalized here because `suggested_copy` is immutable after this point
         # and every span offset computed later indexes it.
-        text = queue_copy.normalize_copy(
-            render_email(
-                await agenerate_copy(
-                    None,
-                    item.action_type,
-                    item.reason,
-                    prompt=item.prompt,
-                    client=client,
-                    retry=runtime.retry,
-                    timeouts=runtime.timeouts,
-                )
+        subject, body = _stored_pair(
+            await agenerate_copy(
+                None,
+                item.action_type,
+                item.reason,
+                prompt=item.prompt,
+                client=client,
+                retry=runtime.retry,
+                timeouts=runtime.timeouts,
             )
         )
     except CopyGenerationGaveUp as exc:
@@ -855,7 +909,7 @@ async def _agenerate_for(item, client, runtime, client_error=None):
     except Exception as exc:  # don't let one lead's bug sink the run
         # Wrapped so the caller has one exception family to reason about.
         return CopyOutcome(error=wrap_unexpected(exc))
-    return CopyOutcome(text=text)
+    return CopyOutcome(text=compose_email(subject, body), subject=subject, body=body)
 
 
 async def _agenerate_all(work, client, client_error, runtime):
@@ -1123,7 +1177,13 @@ def _review(item, outcome, level, today):
         item.lead, outcome.text, item.action_type, level=level, today=today
     )
     if not (shape_problems or violations):
-        return ReviewOutcome(suggested_copy=outcome.text, needs_human=False, further_action="")
+        return ReviewOutcome(
+            suggested_copy=outcome.text,
+            needs_human=False,
+            further_action="",
+            subject=outcome.subject,
+            body=outcome.body,
+        )
 
     messages = []
     if shape_problems:
@@ -1134,6 +1194,8 @@ def _review(item, outcome, level, today):
         suggested_copy=outcome.text,
         needs_human=True,
         further_action="\n\n".join(messages),
+        subject=outcome.subject,
+        body=outcome.body,
         shape_problem_count=len(shape_problems),
         violation_count=len(violations),
     )
@@ -1141,7 +1203,7 @@ def _review(item, outcome, level, today):
 
 def plan_outreach(lead_ids: Collection[str] | None = None):
     """Plan outreach for every lead: decide priority + action, generate copy,
-    persist OutreachAction rows, and return them sorted by priority.
+    persist OutreachGeneratedCopy rows, and return them sorted by priority.
 
     ``lead_ids`` narrows the run to the named clients; ``None`` plans
     the whole book. A scoped run still *reads* every lead on purpose: the read is
@@ -1151,7 +1213,7 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
     from django.conf import settings
     from django.db import transaction
 
-    from project.app.models import DismissedOutreachKey, Lead, OutreachAction
+    from project.app.models import DismissedOutreachKey, Lead, OutreachGeneratedCopy
     from project.app.services import queue_copy
 
     # Resolved once so a mid-run configuration change cannot make half a run
@@ -1173,7 +1235,7 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
         )
     )
     open_keys = set(
-        OutreachAction.objects.filter(status=OutreachAction.STATUS_PENDING)
+        OutreachGeneratedCopy.objects.filter(status=OutreachGeneratedCopy.STATUS_PENDING)
         .exclude(dedupe_key="")
         # A failed-generation row is not a recommendation, so it must not hold
         # the dedupe slot; phase 5 supersedes it.
@@ -1227,12 +1289,14 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
         for item, review in zip(work, reviews, strict=True)
     ]
     rows = [
-        OutreachAction(
+        OutreachGeneratedCopy(
             lead=item.lead,
             priority=item.priority,
             action_type=item.action_type,
             reason=item.reason,
             suggested_copy=review.suggested_copy,
+            subject=review.subject,
+            body=review.body,
             needs_human=review.needs_human,
             further_action=review.further_action,
             dedupe_key=item.dedupe_key,
@@ -1246,16 +1310,16 @@ def plan_outreach(lead_ids: Collection[str] | None = None):
         # Monday and succeeded Tuesday does not show both. Deleted rather
         # than marked: a failed attempt carries no draft, so there is nothing
         # a reviewer decided about it.
-        OutreachAction.objects.filter(
+        OutreachGeneratedCopy.objects.filter(
             dedupe_key__in=[item.dedupe_key for item in work],
-            status=OutreachAction.STATUS_PENDING,
+            status=OutreachGeneratedCopy.STATUS_PENDING,
         ).filter(failed_generation_filter()).delete()
 
         # `bulk_create` skips `save()` and its signals (unused here) and must
         # return pk-populated objects, since the serializer emits `id` —
         # pinned by tests_planner_perf and, on deploys CI never sees, by
         # checks.bulk_create_pk_check (app.E003).
-        planned = OutreachAction.objects.bulk_create(rows)
+        planned = OutreachGeneratedCopy.objects.bulk_create(rows)
 
     planned.sort(key=lambda a: a.priority)
     return planned

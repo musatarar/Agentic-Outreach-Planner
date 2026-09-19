@@ -11,10 +11,10 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework import status
 
-from project.app.models import DismissedOutreachKey, Lead, OutreachAction
+from project.app.models import DismissedOutreachKey, Lead, OutreachGeneratedCopy
 from project.app.services import actions
 from project.app.services import dedupe as dedupe_service
-from project.app.services.outreach import OutreachCopy, plan_outreach
+from project.app.services.outreach import OutreachCopy, compose_email, plan_outreach
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
@@ -115,8 +115,8 @@ class ScopedPlanOutreachTests(TestCase):
 
         self.assertEqual(len(planned), 1)
         self.assertEqual(planned[0].lead_id, self.bravo.id)
-        self.assertEqual(OutreachAction.objects.count(), 1)
-        self.assertEqual(OutreachAction.objects.get().lead_id, self.bravo.id)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
+        self.assertEqual(OutreachGeneratedCopy.objects.get().lead_id, self.bravo.id)
 
     def test_scoping_to_one_lead_sends_exactly_one_prompt_to_the_provider(self):
         stub = _ProviderStub()
@@ -143,13 +143,15 @@ class ScopedPlanOutreachTests(TestCase):
 
     def test_an_open_recommendation_suppresses_the_scoped_run(self):
         # The suppression rule is consulted before the prompt is built.
-        OutreachAction.objects.create(
+        OutreachGeneratedCopy.objects.create(
             lead=self.bravo,
             priority=2,
             action_type=actions.COMPLETE_ONBOARDING,
             reason="already queued",
-            suggested_copy="an existing draft",
-            status=OutreachAction.STATUS_PENDING,
+            subject="Queued",
+            body="an existing draft",
+            suggested_copy=compose_email("Queued", "an existing draft"),
+            status=OutreachGeneratedCopy.STATUS_PENDING,
             dedupe_key=dedupe_service.dedupe_key(self.bravo.id, actions.COMPLETE_ONBOARDING),
         )
 
@@ -159,7 +161,7 @@ class ScopedPlanOutreachTests(TestCase):
 
         self.assertEqual(planned, [])
         self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 1)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
 
     def test_a_dismissed_recommendation_suppresses_the_scoped_run(self):
         DismissedOutreachKey.objects.create(
@@ -175,7 +177,7 @@ class ScopedPlanOutreachTests(TestCase):
 
         self.assertEqual(planned, [])
         self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 0)
 
     def test_an_unknown_lead_id_plans_nothing_and_calls_nothing(self):
         stub = _ProviderStub()
@@ -184,7 +186,7 @@ class ScopedPlanOutreachTests(TestCase):
 
         self.assertEqual(planned, [])
         self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 0)
 
     def test_the_whole_book_run_is_unchanged_when_no_scope_is_given(self):
         stub = _ProviderStub()
@@ -197,7 +199,7 @@ class ScopedPlanOutreachTests(TestCase):
             stub.agencies_called([self.alpha, self.bravo, self.charlie]),
             {"Alpha Agency", "Bravo Agency", "Charlie Agency"},
         )
-        self.assertEqual(OutreachAction.objects.count(), 3)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +225,7 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
             resp = self.client.post(self.url_for(self.bravo.id))
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        # The same shape OutreachActionSerializer emits everywhere else.
+        # The same shape OutreachGeneratedCopySerializer emits everywhere else.
         self.assertEqual(
             set(resp.data.keys()),
             {
@@ -250,7 +252,7 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
         self.assertEqual(len(stub.prompts), 1)
         self.assertEqual(stub.agencies_called([self.alpha, self.bravo]), {"Bravo Agency"})
         self.assertEqual(
-            list(OutreachAction.objects.values_list("lead_id", flat=True)), [self.bravo.id]
+            list(OutreachGeneratedCopy.objects.values_list("lead_id", flat=True)), [self.bravo.id]
         )
 
     def test_an_unknown_client_is_a_404_and_writes_nothing(self):
@@ -261,16 +263,18 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(resp.data["error"], "unknown_lead")
         self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 0)
 
     def test_a_client_with_an_open_recommendation_is_a_409_and_costs_nothing(self):
-        OutreachAction.objects.create(
+        OutreachGeneratedCopy.objects.create(
             lead=self.bravo,
             priority=2,
             action_type=actions.COMPLETE_ONBOARDING,
             reason="already queued",
-            suggested_copy="an existing draft",
-            status=OutreachAction.STATUS_PENDING,
+            subject="Queued",
+            body="an existing draft",
+            suggested_copy=compose_email("Queued", "an existing draft"),
+            status=OutreachGeneratedCopy.STATUS_PENDING,
             dedupe_key=dedupe_service.dedupe_key(self.bravo.id, actions.COMPLETE_ONBOARDING),
         )
 
@@ -281,7 +285,7 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(resp.data["error"], "no_new_recommendation")
         self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 1)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
 
     def test_a_dismissed_recommendation_is_a_409_and_costs_nothing(self):
         DismissedOutreachKey.objects.create(
@@ -298,7 +302,7 @@ class ComposeForLeadViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(resp.data["error"], "no_new_recommendation")
         self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 0)
 
     def test_an_unmatched_client_still_gets_a_row_routed_to_a_human(self):
         nomatch = _unmatched_lead()

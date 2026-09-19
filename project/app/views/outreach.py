@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from project.app.serializers import OutreachActionSerializer
+from project.app.serializers import OutreachGeneratedCopySerializer
 
 
 class OutreachRunView(APIView):
@@ -17,5 +17,5 @@ class OutreachRunView(APIView):
 
         actions = plan_outreach()
         actions = sorted(actions, key=lambda a: (a.priority, a.lead_id))
-        serializer = OutreachActionSerializer(actions, many=True)
+        serializer = OutreachGeneratedCopySerializer(actions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

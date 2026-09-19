@@ -167,7 +167,7 @@ def wrap_unexpected(exc: BaseException, provider: str | None = None) -> LLMError
     """Return ``exc`` if it is already typed, else wrap it.
 
     The message stays the original's, undecorated: it ends up in
-    ``OutreachAction.further_action`` for a human reader. The classification
+    ``OutreachGeneratedCopy.further_action`` for a human reader. The classification
     lives in :attr:`failure_kind` (span attribute ``outreach.failure.kind``).
     """
     if isinstance(exc, LLMError):

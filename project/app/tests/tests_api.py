@@ -6,8 +6,9 @@ from rest_framework import status
 
 from project.app.models import (
     Lead,
-    OutreachAction,
+    OutreachGeneratedCopy,
 )
+from project.app.services.outreach import compose_email
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
@@ -71,22 +72,26 @@ class OutreachListViewTests(AuthenticatedAPITestCase):
         cls.lead2 = make_lead("lead_002")
 
         # Two actions for lead1 — only the most recent should appear.
-        cls.old = OutreachAction.objects.create(
+        cls.old = OutreachGeneratedCopy.objects.create(
             lead=cls.lead1,
             priority=1,
             action_type="nudge_usage",
             reason="old reason",
-            suggested_copy="old copy",
+            subject="Old",
+            body="old copy",
+            suggested_copy=compose_email("Old", "old copy"),
         )
-        cls.recent = OutreachAction.objects.create(
+        cls.recent = OutreachGeneratedCopy.objects.create(
             lead=cls.lead1,
             priority=3,
             action_type="reengage_dormant",
             reason="recent reason",
-            suggested_copy="recent copy",
+            subject="Recent",
+            body="recent copy",
+            suggested_copy=compose_email("Recent", "recent copy"),
         )
         # Single action for lead2 at higher priority (lower number).
-        cls.action2 = OutreachAction.objects.create(
+        cls.action2 = OutreachGeneratedCopy.objects.create(
             lead=cls.lead2,
             priority=2,
             action_type="complete_onboarding",
@@ -136,8 +141,14 @@ class OutreachListViewTests(AuthenticatedAPITestCase):
                 "dedupe_key",
                 "lead",
                 "suggested_copy",
+                "subject",
+                "body",
                 "edited_copy",
+                "edited_subject",
+                "edited_body",
                 "effective_copy",
+                "effective_subject",
+                "effective_body",
                 "is_edited",
                 "verification",
                 "can_approve",
@@ -173,19 +184,23 @@ class OutreachRunViewTests(AuthenticatedAPITestCase):
 
     def test_run_serializes_planned_actions_ordered_by_priority(self):
         # plan_outreach returns persisted actions; build them here and mock it.
-        a_low = OutreachAction.objects.create(
+        a_low = OutreachGeneratedCopy.objects.create(
             lead=self.lead2,
             priority=3,
             action_type="nudge_usage",
             reason="low priority",
-            suggested_copy="copy 2",
+            subject="Low",
+            body="copy 2",
+            suggested_copy=compose_email("Low", "copy 2"),
         )
-        a_high = OutreachAction.objects.create(
+        a_high = OutreachGeneratedCopy.objects.create(
             lead=self.lead1,
             priority=1,
             action_type="follow_up_after_hold",
             reason="high priority",
-            suggested_copy="copy 1",
+            subject="High",
+            body="copy 1",
+            suggested_copy=compose_email("High", "copy 1"),
         )
 
         # The view imports plan_outreach inside the method from this path.

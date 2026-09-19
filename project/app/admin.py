@@ -5,7 +5,7 @@ from project.app.models import (
     ActionType,
     Event,
     Lead,
-    OutreachAction,
+    OutreachGeneratedCopy,
     OutreachRule,
 )
 
@@ -37,8 +37,8 @@ class EventAdmin(admin.ModelAdmin):
     date_hierarchy = "timestamp"
 
 
-@admin.register(OutreachAction)
-class OutreachActionAdmin(admin.ModelAdmin):
+@admin.register(OutreachGeneratedCopy)
+class OutreachGeneratedCopyAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "lead",

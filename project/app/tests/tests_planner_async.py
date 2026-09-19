@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
-from project.app.models import Lead, OutreachAction
+from project.app.models import Lead, OutreachGeneratedCopy
 from project.app.services import outreach
 from project.app.services.llm import LLMClient, LLMResult
 from project.app.services.llm.structured import StructuredResult
@@ -241,9 +241,9 @@ class OutOfOrderCompletionTests(TestCase):
         with _stub(reversed_latency):
             plan_outreach()
 
-        self.assertEqual(OutreachAction.objects.count(), len(leads))
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), len(leads))
         for lead in leads:
-            action = OutreachAction.objects.get(lead_id=lead.id)
+            action = OutreachGeneratedCopy.objects.get(lead_id=lead.id)
             self.assertIn(
                 lead.agency_name,
                 action.suggested_copy,
@@ -265,11 +265,11 @@ class OutOfOrderCompletionTests(TestCase):
 
         # `return_exceptions=True` on the gather: one dead lead, not a dead run.
         self.assertEqual(len(planned), 6)
-        failed = OutreachAction.objects.get(lead_id="lead_003")
+        failed = OutreachGeneratedCopy.objects.get(lead_id="lead_003")
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
         for lead_id in ("lead_000", "lead_001", "lead_002", "lead_004", "lead_005"):
-            survivor = OutreachAction.objects.get(lead_id=lead_id)
+            survivor = OutreachGeneratedCopy.objects.get(lead_id=lead_id)
             self.assertNotEqual(survivor.suggested_copy, "")
 
 
@@ -285,7 +285,7 @@ class RepeatedRunTests(TestCase):
             first = plan_outreach()
             # An open recommendation suppresses a re-run, so the second run
             # would otherwise find nothing to do.
-            OutreachAction.objects.update(status=OutreachAction.STATUS_APPROVED)
+            OutreachGeneratedCopy.objects.update(status=OutreachGeneratedCopy.STATUS_APPROVED)
             second = plan_outreach()
 
         self.assertEqual(len(first), 3)

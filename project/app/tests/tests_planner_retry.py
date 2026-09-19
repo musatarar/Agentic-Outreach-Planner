@@ -9,7 +9,7 @@ import re
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from project.app.models import Lead, OutreachAction
+from project.app.models import Lead, OutreachGeneratedCopy
 from project.app.services import actions, outreach
 from project.app.services.llm import (
     LLMAuthError,
@@ -161,7 +161,7 @@ class RateLimitIsRetriedTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 1)
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertFalse(action.needs_human)
         self.assertEqual(action.suggested_copy, GOOD_COPY)
         self.assertEqual(action.further_action, "")
@@ -176,7 +176,7 @@ class RateLimitIsRetriedTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        self.assertFalse(OutreachAction.objects.get().needs_human)
+        self.assertFalse(OutreachGeneratedCopy.objects.get().needs_human)
         self.assertEqual(client.attempts, 2)
 
     def test_a_hostile_retry_after_header_cannot_park_the_run(self):
@@ -188,7 +188,7 @@ class RateLimitIsRetriedTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        self.assertFalse(OutreachAction.objects.get().needs_human)
+        self.assertFalse(OutreachGeneratedCopy.objects.get().needs_human)
         self.assertEqual(client.attempts, 2)
 
 
@@ -204,7 +204,7 @@ class ExhaustedRetriesTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertEqual(client.attempts, 3)
         self.assertTrue(action.needs_human)
         self.assertEqual(action.suggested_copy, "")
@@ -233,12 +233,14 @@ class ExhaustedRetriesTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        further = OutreachAction.objects.get().further_action
+        further = OutreachGeneratedCopy.objects.get().further_action
         self.assertIn("not a problem with this lead", further)
         self.assertIn("Re-run the planner", further)
         # The classification survives in the row itself, not just in the prose.
-        self.assertEqual(OutreachAction.objects.get().action_type, actions.COMPLETE_ONBOARDING)
-        self.assertNotEqual(OutreachAction.objects.get().reason, "")
+        self.assertEqual(
+            OutreachGeneratedCopy.objects.get().action_type, actions.COMPLETE_ONBOARDING
+        )
+        self.assertNotEqual(OutreachGeneratedCopy.objects.get().reason, "")
 
     @override_settings(OUTREACH_MAX_ATTEMPTS=4)
     def test_the_attempt_count_in_the_message_is_the_real_one(self):
@@ -259,7 +261,7 @@ class ExhaustedRetriesTests(TestCase):
                 detail="",
                 action_type="",
             ).split(" over ")[0],
-            OutreachAction.objects.get().further_action,
+            OutreachGeneratedCopy.objects.get().further_action,
         )
 
 
@@ -279,7 +281,7 @@ class NonRetryableFailureTests(TestCase):
 
         # Exactly one attempt: retrying a bad key earns a longer lockout.
         self.assertEqual(client.attempts, 1)
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertTrue(action.needs_human)
         self.assertIn("was not retryable", action.further_action)
         self.assertIn(outreach.FAILURE_KINDS[LLMAuthError], action.further_action)
@@ -296,7 +298,8 @@ class NonRetryableFailureTests(TestCase):
 
         self.assertEqual(client.attempts, 1)
         self.assertIn(
-            outreach.FAILURE_KINDS[LLMBadRequestError], OutreachAction.objects.get().further_action
+            outreach.FAILURE_KINDS[LLMBadRequestError],
+            OutreachGeneratedCopy.objects.get().further_action,
         )
 
     def test_the_two_failure_messages_are_visibly_different(self):
@@ -324,7 +327,7 @@ class PerLeadBudgetTests(TestCase):
 
         # The run finished at all: without the outer deadline it would hang.
         self.assertEqual(len(planned), 1)
-        action = OutreachAction.objects.get()
+        action = OutreachGeneratedCopy.objects.get()
         self.assertTrue(action.needs_human)
         self.assertIn(outreach.FAILURE_KINDS[LLMTimeoutError], action.further_action)
         self.assertIn("OUTREACH_PER_LEAD_TIMEOUT_S", action.further_action)
@@ -365,8 +368,10 @@ class PerLeadBudgetTests(TestCase):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 2)
-        self.assertNotEqual(OutreachAction.objects.get(lead_id="lead_fine").suggested_copy, "")
-        self.assertTrue(OutreachAction.objects.get(lead_id="lead_slow").needs_human)
+        self.assertNotEqual(
+            OutreachGeneratedCopy.objects.get(lead_id="lead_fine").suggested_copy, ""
+        )
+        self.assertTrue(OutreachGeneratedCopy.objects.get(lead_id="lead_slow").needs_human)
 
 
 @override_settings(COPY_VERIFY_LEVEL="off", **NO_SLEEP)
@@ -397,8 +402,8 @@ class MessagesStayDistinctTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        throttled = OutreachAction.objects.get(lead_id="lead_throttled").further_action
-        unmatched = OutreachAction.objects.get(lead_id="lead_nothing_matched").further_action
+        throttled = OutreachGeneratedCopy.objects.get(lead_id="lead_throttled").further_action
+        unmatched = OutreachGeneratedCopy.objects.get(lead_id="lead_nothing_matched").further_action
 
         self.assertNotEqual(throttled, unmatched)
         self.assertIn("transient provider failure", throttled)
@@ -420,7 +425,7 @@ class MessagesStayDistinctTests(TestCase):
             plan_outreach()
 
         self.assertEqual(
-            OutreachAction.objects.get().further_action,
+            OutreachGeneratedCopy.objects.get().further_action,
             outreach.COPY_FAILED_UNEXPECTEDLY.format(
                 error="unrenderable lead", action_type=actions.COMPLETE_ONBOARDING
             ),
@@ -546,7 +551,7 @@ class ReRunActuallyWorksTests(TestCase):
         with _with_client(throttled):
             plan_outreach()
 
-        failed = OutreachAction.objects.get()
+        failed = OutreachGeneratedCopy.objects.get()
         self.assertTrue(failed.needs_human)
         self.assertEqual(failed.suggested_copy, "")
         self.assertIn("Re-run the planner", failed.further_action)
@@ -568,8 +573,8 @@ class ReRunActuallyWorksTests(TestCase):
         with _with_client(_ScriptedClient()):
             plan_outreach()
 
-        self.assertEqual(OutreachAction.objects.count(), 1)
-        self.assertEqual(OutreachAction.objects.get().suggested_copy, GOOD_COPY)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
+        self.assertEqual(OutreachGeneratedCopy.objects.get().suggested_copy, GOOD_COPY)
 
     def test_an_unmatched_lead_still_suppresses_its_re_plan(self):
         """Why this is not just `.exclude(copy="")`: the exclusion distinguishes
@@ -581,7 +586,7 @@ class ReRunActuallyWorksTests(TestCase):
 
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
-        self.assertEqual(OutreachAction.objects.count(), 1)
+        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
 
     def test_a_flagged_draft_still_suppresses_its_re_plan(self):
         # A generation that succeeded but failed a gate keeps its draft, so it
@@ -590,7 +595,7 @@ class ReRunActuallyWorksTests(TestCase):
         with _with_client(_ScriptedClient(then="Subject: too short\n\nHi.")):
             plan_outreach()
 
-        flagged = OutreachAction.objects.get()
+        flagged = OutreachGeneratedCopy.objects.get()
         self.assertTrue(flagged.needs_human)
         self.assertNotEqual(flagged.suggested_copy, "")
 
@@ -620,7 +625,7 @@ class BudgetExpiryReportsTheRealCauseTests(TestCase):
             with _with_client(client):
                 plan_outreach()
 
-        further = OutreachAction.objects.get().further_action
+        further = OutreachGeneratedCopy.objects.get().further_action
         self.assertIn(outreach.FAILURE_KINDS[LLMRateLimitError], further)
         self.assertNotIn(outreach.FAILURE_KINDS[LLMTimeoutError], further)
         # ...and the budget is still named, because that is the knob to turn.
@@ -633,7 +638,7 @@ class BudgetExpiryReportsTheRealCauseTests(TestCase):
         with _with_client(_HangingClient()):
             plan_outreach()
 
-        further = OutreachAction.objects.get().further_action
+        further = OutreachGeneratedCopy.objects.get().further_action
         self.assertIn(outreach.FAILURE_KINDS[LLMTimeoutError], further)
         self.assertIn("did not answer", further)
 
@@ -652,7 +657,7 @@ class ForeignTimeoutTests(TestCase):
         with _with_client(client):
             plan_outreach()
 
-        further = OutreachAction.objects.get().further_action
+        further = OutreachGeneratedCopy.objects.get().further_action
         self.assertIn("Operation timed out", further)
         self.assertNotIn("OUTREACH_PER_LEAD_TIMEOUT_S", further)
 
