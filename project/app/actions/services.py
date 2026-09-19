@@ -5,8 +5,8 @@ the deterministic pass (pure Python, no tokens), the inference pass for what is
 left (:mod:`project.app.rules.inference`, one provider call unless the run is
 dry), then the weight tally the rules entity already owns
 (``rules.services.select_action``). The chosen
-action and the tally's workings land on the job; generating copy for it is the
-planner's job, not this one.
+action and the tally's workings land on the job; the copy for one is drafted
+later, on demand (:func:`compose`), through the planner's own machinery.
 
 Every status write is a conditional UPDATE from the status it expects, so two
 crons running the same batch cannot both process a job.
@@ -14,6 +14,7 @@ crons running the same batch cannot both process a job.
 
 import datetime
 import logging
+import time
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -23,10 +24,12 @@ from django.utils import timezone
 from project.app.actions import evaluate
 from project.app.actions.models import ActionJob
 from project.app.models.lead import Event, Lead
+from project.app.models.outreach import DismissedOutreachKey, OutreachAction
 from project.app.rules import inference, schema
 from project.app.rules import services as rules_services
-from project.app.rules.models import OutreachRule
-from project.app.services import outreach
+from project.app.rules.models import ActionType, OutreachRule
+from project.app.services import dedupe, outreach, queue_copy, verify
+from project.app.services.llm import LLMError, wrap_unexpected
 
 logger = logging.getLogger(__name__)
 
@@ -320,3 +323,179 @@ def run_queue(limit=DEFAULT_BATCH_SIZE, *, today=None):
         .order_by("created_at", "id")[:limit]
     )
     return [run_job(job, today=today) for job in queued if claim(job)]
+
+
+# --------------------------------------------------------------------------
+# the decided proposals, and generating copy for one
+# --------------------------------------------------------------------------
+
+
+class NothingToCompose(Exception):
+    """This proposal has nothing left to draft, decided before any provider call."""
+
+
+# Statuses that chose an action. `no_action` and `failed` are decisions too, so
+# they are not `DECIDED_STATUSES`: nothing is ever drafted by fallback.
+PROPOSING_STATUSES = (
+    ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN,
+    ActionJob.STATUS_INFERRED_ACTION_CHOSEN,
+)
+
+# The inbox sorts on priority; a proposal's is the urgency its owner declared on
+# the catalog action, not the heuristic planner's score for the lead.
+PRIORITY_BY_URGENCY = {
+    ActionType.URGENCY_HIGH: 1,
+    ActionType.URGENCY_MEDIUM: 2,
+    ActionType.URGENCY_LOW: 3,
+}
+
+ALREADY_DRAFTED = "This proposal already has a draft awaiting review."
+DISMISSED = "This recommendation was dismissed, so it is not drafted again."
+
+
+def proposals_for(user):
+    """The actions the engine chose for one user's leads, newest decision first.
+
+    Scoped to ``lead__owner``: a job runs the catalog of the lead's owner, so
+    that is whose proposal it is.
+    """
+    return (
+        ActionJob.objects.filter(
+            status__in=PROPOSING_STATUSES,
+            selected_action__isnull=False,
+            lead__owner=user,
+        )
+        .select_related("lead", "selected_action")
+        .order_by("-finished_at", "-id")
+    )
+
+
+def proposal_for(user, pk):
+    """One owned proposal, or ``None`` — someone else's id is indistinguishable
+    from a missing one, as in the rules catalog."""
+    return proposals_for(user).filter(pk=pk).first()
+
+
+def selected_of(job):
+    """The tally's verdict as the job recorded it: the chosen key, its weight
+    and the names of the rules that fired."""
+    return (job.decision or {}).get("selected") or {}
+
+
+def dedupe_key_of(job):
+    return dedupe.dedupe_key(job.lead_id, job.selected_action.key)
+
+
+def _open_drafts(keys):
+    """Each key's open draft, by the planner's own open-item rule — so this
+    surface and a run refuse exactly the same recommendations.
+
+    A failed-generation row is not a draft, so it holds no key: the retry this
+    surface offers must not be a no-op.
+    """
+    rows = (
+        OutreachAction.objects.filter(
+            dedupe_key__in=list(keys), status=OutreachAction.STATUS_PENDING
+        )
+        .exclude(outreach.failed_generation_filter())
+        .order_by("-created_at", "-id")
+        .values_list("dedupe_key", "id")
+    )
+    drafts = {}
+    for key, pk in rows:
+        # Newest first, so the first row seen for a key is the one that holds it.
+        drafts.setdefault(key, pk)
+    return drafts
+
+
+def open_draft_ids(jobs):
+    """``{job id: draft id}`` for the jobs already drafted — one query for the
+    whole page, since the key is a hash the database cannot compute."""
+    keys = {job.pk: dedupe_key_of(job) for job in jobs}
+    drafts = _open_drafts(set(keys.values()))
+    return {pk: drafts[key] for pk, key in keys.items() if key in drafts}
+
+
+def _refuse_settled(key):
+    """The two reasons there is nothing to draft, both read before the call."""
+    if key in _open_drafts({key}):
+        raise NothingToCompose(ALREADY_DRAFTED)
+    if DismissedOutreachKey.objects.filter(dedupe_key=key, revoked_at__isnull=True).exists():
+        raise NothingToCompose(DISMISSED)
+
+
+def _reason(job):
+    """Why this lead, why now: the names of the rules that fired, as the tally
+    recorded them."""
+    reasons = selected_of(job).get("reasons") or []
+    return "; ".join(reasons) or job.selected_action.label
+
+
+def _copy_outcome(item):
+    """Phase 3 for one proposal: the provider call, and nothing else.
+
+    The failure is carried rather than raised, exactly as the planner carries
+    it, so a dead provider produces the row a reviewer can act on instead of a
+    500 they cannot.
+    """
+    started = time.monotonic()
+    try:
+        # No lead: the prompt is already built, as in the planner's phase 3.
+        text = queue_copy.normalize_copy(
+            outreach.generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
+        )
+    except LLMError as exc:
+        return outreach.CopyOutcome(error=exc, attempts=1, elapsed_s=time.monotonic() - started)
+    except Exception as exc:
+        return outreach.CopyOutcome(
+            error=wrap_unexpected(exc), attempts=1, elapsed_s=time.monotonic() - started
+        )
+    return outreach.CopyOutcome(text=text)
+
+
+def compose(job):
+    """Draft the copy for one decided proposal and write its inbox row.
+
+    The planner's own machinery throughout -- its prompt, its provider call,
+    both its fail-closed output gates and its verification snapshot -- so a
+    draft made here is a draft made there, and the approval gate has one
+    producer to trust rather than two. Raises :class:`NothingToCompose` when
+    the key is already drafted or dismissed, before any provider call.
+
+    KNOWN GAP, shared with ``plan_outreach``: the two refusals are a
+    read-then-write with no lock, so two clicks at once can both draft.
+    """
+    action, lead = job.selected_action, job.lead
+    key = dedupe_key_of(job)
+    _refuse_settled(key)
+
+    today = datetime.date.today()
+    level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
+    reason = _reason(job)
+    item = outreach.WorkItem(
+        lead=lead,
+        priority=PRIORITY_BY_URGENCY[action.urgency],
+        action_type=action.key,
+        reason=reason,
+        dedupe_key=key,
+        prompt=outreach._build_copy_prompt(lead, action.key, reason),
+    )
+
+    outcome = _copy_outcome(item)
+    review = outreach._review(item, outcome, level, today)
+    verification = queue_copy.build_verification(
+        lead, review.suggested_copy, item.action_type, level=level, today=today
+    )
+    # Only the write is transactional; the provider call is already behind us.
+    with transaction.atomic():
+        return OutreachAction.objects.create(
+            lead=lead,
+            priority=item.priority,
+            action_type=item.action_type,
+            reason=item.reason,
+            suggested_copy=review.suggested_copy,
+            needs_human=review.needs_human,
+            further_action=review.further_action,
+            dedupe_key=key,
+            verification=verification,
+        )

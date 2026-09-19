@@ -55,6 +55,34 @@ export interface OutreachAction {
   created_at: string;
 }
 
+export type Urgency = 'low' | 'medium' | 'high';
+
+/** Mirrors `ProposedActionTypeSerializer` — the catalog action a rule chose. */
+export interface ProposedActionType {
+  key: string;
+  label: string;
+  urgency: Urgency;
+}
+
+/**
+ * Mirrors `ProposedActionSerializer` — one action the engine already chose,
+ * before any copy exists for it.
+ *
+ * `reasons` is the names of the rules that fired, flattened by the server: the
+ * raw decision payload (rule ids, inference verdicts) never crosses the wire.
+ * `draft_id` is the draft this proposal has already produced, or null while it
+ * has none — generating for a proposal that has one answers 409.
+ */
+export interface ProposedAction {
+  id: number;
+  lead: Lead;
+  action: ProposedActionType;
+  reasons: string[];
+  weight: number | null;
+  decided_at: string | null;
+  draft_id: number | null;
+}
+
 /** DRF's `PageNumberPagination` envelope. */
 export interface Paginated<T> {
   count: number;
@@ -110,6 +138,7 @@ export type ApiErrorCode =
   | 'not_found'
   | 'method_not_allowed'
   | 'invalid_transition'
+  | 'no_new_recommendation'
   | 'unverified_claims'
   | 'rate_limited';
 

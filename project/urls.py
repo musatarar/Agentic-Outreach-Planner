@@ -5,6 +5,7 @@ from django.urls import include, path
 from django.views.generic.base import RedirectView
 
 from project.app.views.frontend import (
+    actions,
     auth_consume,
     inbox,
     leads,
@@ -19,6 +20,7 @@ urlpatterns = [
     path("", RedirectView.as_view(url="/leads/", permanent=False)),
     path("signin", signin),
     path("auth/consume", auth_consume),
+    path("actions", actions),
     path("inbox", inbox),
     path("leads/", leads),
     path("admin/", admin.site.urls),

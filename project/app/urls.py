@@ -1,5 +1,6 @@
 from django.urls import path
 
+from project.app.actions import routes as actions_routes
 from project.app.rules import routes as rules_routes
 from project.app.views.auth import (
     AuthConsumeView,
@@ -40,4 +41,6 @@ urlpatterns = [
     path("outreach/<int:pk>/reopen/", ReviewReopenView.as_view(), name="outreach-reopen"),
     # --- user-defined rules catalog ---
     *rules_routes.urlpatterns,
+    # --- what the actions engine chose, and copy for one on demand ---
+    *actions_routes.urlpatterns,
 ]
