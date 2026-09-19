@@ -49,6 +49,20 @@
         "No migration is written without that sign-off"
       ],
       "files": []
+    },
+    {
+      "id": 5,
+      "name": "code-as-spec",
+      "prompt": "The FE still uses the old plan_outreach pipeline. How should it interact with our actions queue? Should it pull the events from our API? Or do you have a better alternative/standard? Give me the design, don't build it yet.",
+      "expected_output": "The user-facing flow first (open to a list of decided actions, Generate makes copy for one), then a first-class surface: a read endpoint over decided jobs and a per-proposal generate endpoint that calls the existing gate functions. Does not route decisions through plan_outreach behind the Run button, does not count 'no FE changes' or 'phases untouched' as merits, and asks whether the Run button stays rather than defaulting to keeping it.",
+      "assertions": [
+        "Describes the user-facing flow before the mechanism",
+        "Proposes a read surface over the engine's decisions that the frontend renders (the decisions are visible to the user)",
+        "Does not propose passing decisions into plan_outreach via an optional parameter or override map with a fallback to determine_action",
+        "Asks or states what happens to the existing Run button rather than keeping it unchanged by default",
+        "Does not present 'no frontend changes' or 'phases untouched' as a merit"
+      ],
+      "files": []
     }
   ]
 }

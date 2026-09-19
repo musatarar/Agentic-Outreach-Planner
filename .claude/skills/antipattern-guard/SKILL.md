@@ -1,6 +1,6 @@
 ---
 name: antipattern-guard
-description: Catch antipatterns in a coding request or in your own implementation plan and push back before writing them, instead of coding a literal reading of the ask. Use this whenever asked to add, change, or move code in this repo — especially when the request names a location ("add a method to services", "put this in the view", "just hardcode it for now", "make the test pass", "skip the check when testing"), when it builds on an existing field or table ("leads carry a tenant string, add the lookup", "wire X to Y", "add a mapping table"), when the fastest way to satisfy the words would put fixture data, test shortcuts, placeholders, or duplicated logic into production modules, or when a shorthand request seems to conflict with what the target module is for. Trigger even when the request looks simple; the failure mode this guards against is doing exactly what was said when it is not what was meant, or designing around a placeholder nobody meant to keep.
+description: Catch antipatterns in a coding request or in your own implementation plan and push back before writing them, instead of coding a literal reading of the ask. Use this whenever asked to add, change, or move code in this repo — especially when the request names a location ("add a method to services", "put this in the view", "just hardcode it for now", "make the test pass", "skip the check when testing"), when it builds on an existing field or table ("leads carry a tenant string, add the lookup", "wire X to Y", "add a mapping table"), when a new capability has to meet existing code or UI ("the FE still uses the old pipeline, how should it interact with the queue", "adjust plan_outreach for the new experience", "now that the cron decides"), when the fastest way to satisfy the words would put fixture data, test shortcuts, placeholders, or duplicated logic into production modules, or when a shorthand request seems to conflict with what the target module is for. Trigger even when the request looks simple; the failure mode this guards against is doing exactly what was said when it is not what was meant, designing around a placeholder nobody meant to keep, or treating the existing code as the spec when the ask is to change what the user experiences.
 ---
 
 # Antipattern guard
@@ -11,7 +11,7 @@ and satisfying the literal words with a function that returns hardcoded rows is 
 though it "does what was asked". This skill is about noticing that gap and naming it before any
 code exists, so the user reviews a decision rather than a diff they have to throw away.
 
-## The two-step check, before writing code
+## The checks, before writing code
 
 1. **Read the request through the target's role.** Every module here has a job (table below).
    Ask: does the literal ask fit that job? If not, the user almost certainly meant the version
@@ -24,6 +24,11 @@ code exists, so the user reviews a decision rather than a diff they have to thro
    are placeholders, and a placeholder is a decision nobody made. If your design only works by
    adding a structure around one, the question to raise is whether the placeholder should be
    fixed instead, and the first fix you offer is the smallest one that makes it real.
+4. **Read the request as the spec.** The code is the current state, not the authority. When
+   the ask is a new experience ("the user should open to the actions list"), the experience is
+   fixed and the code moves to serve it. If your plan's merits are "untouched", "unchanged",
+   "behaves exactly as now", or "no frontend changes", check whether the user asked for any of
+   that. Usually they asked for the opposite.
 
 If either step finds something, push back (next section). If neither does, just build it; this
 skill is a gate, not a tax on ordinary work.
@@ -37,6 +42,12 @@ unless the readings diverge so far that building the wrong one wastes the work. 
   and what you believe was meant.
 - **Build the version that fits**, under that stated assumption, in the place it belongs.
 - **Flag it at the top of your final message** so the user sees the decision first.
+
+For a design question ("how should X interact with Y", "what's the standard here"), say the
+user-facing flow first, in two or three plain sentences: what the user opens, what they see,
+what a click does. Then the mechanism. If the flow you wrote has the new capability invisible
+to the user, you have designed around it rather than for it; start again from the flow the
+user described.
 
 Ask a blocking question only when two readings lead to materially different code and no
 sensible default exists. When you do ask, offer the concrete options, recommend one, and say
@@ -176,6 +187,29 @@ it yet. The placeholder's name is not a requirement either: a column called `ten
 mean a `Tenant` model is wanted. That fix is usually a migration, which is human-gated here,
 so it is a decision to raise, not a reason to route around it silently. Building the wrapper
 is the fallback after a human chooses it.
+
+### Existing code treated as the spec
+Looks like: a new capability routed through the old entry point so the old surface "keeps
+working exactly as today"; an optional parameter that defaults to the old behaviour
+(`plan_outreach(chosen=None)`); an override map with a fallback to the old derivation; the
+user-visible half of the ask deferred as "frontend only" or "would change every draft"; a test
+or query budget cited as a reason not to change behaviour; "no FE file changes at all" offered
+as a merit.
+Why: it answers "how do I add this without disturbing anything" when the user asked "how
+should this work now". The actions engine started deciding each lead's action on a cron. Asked
+how the frontend should meet the queue, the plan fed the decisions into `plan_outreach` phase
+2 behind the existing Run button, left phases 3 to 5 and every frontend file untouched, and
+dropped the actions list, catalog urgency, and draft provenance as out of scope. The user's
+answer was "that is exactly what I don't want": open to the list of decided actions, and
+Generate makes copy for one of them without running the whole planner. The fallback also hid
+a conflict, since a lead the rules said needed nothing would still be drafted by the old path.
+Instead: write the user-facing flow first and check it against the ask. Make the new thing a
+first-class surface (a read endpoint over the decisions, a generate endpoint that calls the
+existing gate functions) rather than a parameter on the old one. Say which current behaviour
+the change retires, and ask whether it stays instead of defaulting to keeping it. Tests and
+budgets pin the old behaviour on purpose; changing them with sign-off is the expected cost of
+a behaviour change, not a reason to avoid it. Minimal scope trims inferred extras, never the
+requested change itself.
 
 ### Configuration in the wrong place
 Looks like: a literal timeout or model name at the call site; a default restated in
