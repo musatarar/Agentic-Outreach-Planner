@@ -442,7 +442,9 @@ def _copy_outcome(item):
     try:
         # No lead: the prompt is already built, as in the planner's phase 3.
         text = queue_copy.normalize_copy(
-            outreach.generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
+            outreach.render_email(
+                outreach.generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
+            )
         )
     except LLMError as exc:
         return outreach.CopyOutcome(error=exc, attempts=1, elapsed_s=time.monotonic() - started)

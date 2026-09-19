@@ -10,6 +10,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from pydantic import ValidationError
+
 from project.app.services import actions, outreach
 
 # Frozen "today" so the date-based rules are deterministic.
@@ -379,20 +381,29 @@ class DetermineActionTests(unittest.TestCase):
 # provider; the provider adapters themselves are tested in tests_llm.py.
 
 
+def _structured_client(subject="Volume pricing", body="Hi Priya, ..."):
+    """A client whose structured call returns ``subject``/``body``."""
+    client = mock.Mock()
+    client.generate_structured.return_value = mock.Mock(
+        parsed=outreach.OutreachCopy(subject=subject, body=body)
+    )
+    return client
+
+
 class GenerateCopyTests(unittest.TestCase):
     def test_generate_copy_builds_prompt_with_lead_context_and_delegates(self):
         lead = priya()
-        fake_client = mock.Mock()
-        fake_client.complete.return_value = "Subject: Volume pricing\n\nHi Priya, ..."
+        fake_client = _structured_client()
 
         with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
             result = outreach.generate_copy(
                 lead, actions.POWER_USER_REWARD, "Priya is 14 deals from her milestone."
             )
 
-        self.assertEqual(result, "Subject: Volume pricing\n\nHi Priya, ...")
-        # generate_copy passes the prompt positionally and the token cap by name.
-        args, kwargs = fake_client.complete.call_args
+        self.assertEqual((result.subject, result.body), ("Volume pricing", "Hi Priya, ..."))
+        # generate_copy passes the prompt and schema positionally, the cap by name.
+        args, kwargs = fake_client.generate_structured.call_args
+        self.assertIs(args[1], outreach.OutreachCopy)
         self.assertEqual(kwargs["max_tokens"], outreach.MAX_COPY_TOKENS)
         prompt = args[0]
         self.assertIn(lead.hubspot_notes, prompt)  # notes in prompt
@@ -404,31 +415,95 @@ class GenerateCopyTests(unittest.TestCase):
 
     def test_generate_copy_accepts_a_prebuilt_prompt_and_skips_the_lead(self):
         # Planner path: the prompt is built a phase earlier, so no lead is passed.
-        fake_client = mock.Mock()
-        fake_client.complete.return_value = "Subject: Prebuilt\n\nBody"
+        fake_client = _structured_client(subject="Prebuilt", body="Body")
 
         with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
             result = outreach.generate_copy(
                 None, actions.NUDGE_USAGE, "reason", prompt="a prebuilt prompt"
             )
 
-        self.assertEqual(result, "Subject: Prebuilt\n\nBody")
-        self.assertEqual(fake_client.complete.call_args.args[0], "a prebuilt prompt")
+        self.assertEqual((result.subject, result.body), ("Prebuilt", "Body"))
+        self.assertEqual(fake_client.generate_structured.call_args.args[0], "a prebuilt prompt")
 
     def test_generate_copy_without_a_lead_or_a_prompt_is_a_loud_error(self):
         # getattr defaults mean a None lead would render a prompt full of blanks.
         with self.assertRaises(ValueError):
             outreach.generate_copy(None, actions.NUDGE_USAGE, "reason")
 
-    def test_generate_copy_returns_client_text(self):
+    def test_generate_copy_returns_the_parsed_copy(self):
         lead = tom()
-        fake_client = mock.Mock()
-        fake_client.complete.return_value = "Subject: Budget approved!\n\nHi Tom, ..."
+        fake_client = _structured_client(subject="Budget approved!", body="Hi Tom, ...")
 
         with mock.patch.object(outreach, "get_llm_client", return_value=fake_client):
             result = outreach.generate_copy(lead, actions.FOLLOW_UP_AFTER_HOLD, "hold passed")
 
-        self.assertEqual(result, "Subject: Budget approved!\n\nHi Tom, ...")
+        self.assertEqual((result.subject, result.body), ("Budget approved!", "Hi Tom, ..."))
+
+
+class CopyPromptAsksForTheTwoFieldsTests(unittest.TestCase):
+    def test_the_prompt_names_both_fields_and_forbids_a_sign_off(self):
+        prompt = outreach._build_copy_prompt(priya(), actions.NUDGE_USAGE, "reason")
+
+        self.assertIn("subject:", prompt)
+        self.assertIn("body:", prompt)
+        self.assertIn("no sign-off", prompt)
+
+    def test_the_prompt_states_the_subject_cap_the_schema_enforces(self):
+        prompt = outreach._build_copy_prompt(priya(), actions.NUDGE_USAGE, "reason")
+
+        self.assertIn(str(outreach.MAX_SUBJECT_CHARS), prompt)
+
+    def test_it_no_longer_asks_for_a_subject_line_inside_the_text(self):
+        prompt = outreach._build_copy_prompt(priya(), actions.NUDGE_USAGE, "reason")
+
+        self.assertNotIn("Include a Subject line", prompt)
+
+
+class OutreachCopySchemaTests(unittest.TestCase):
+    def test_a_blank_field_is_refused_rather_than_rendered_empty(self):
+        for field in ("subject", "body"):
+            with self.subTest(field=field):
+                fields = {"subject": "Hello", "body": "Some body text."} | {field: ""}
+                with self.assertRaises(ValidationError):
+                    outreach.OutreachCopy(**fields)
+
+    def test_a_subject_longer_than_the_cap_is_refused(self):
+        with self.assertRaises(ValidationError):
+            outreach.OutreachCopy(
+                subject="x" * (outreach.MAX_SUBJECT_CHARS + 1), body="Some body text."
+            )
+
+
+class RenderEmailTests(unittest.TestCase):
+    def test_it_writes_the_subject_label_the_frontend_splits_on(self):
+        copy = outreach.OutreachCopy(subject="Volume pricing", body="Hi Priya,\n\nSome news.")
+
+        rendered = outreach.render_email(copy)
+
+        self.assertTrue(rendered.startswith(f"{outreach.SUBJECT_PREFIX} Volume pricing\n\n"))
+        self.assertEqual(rendered.split("\n\n", 1)[1], "Hi Priya,\n\nSome news.")
+
+    def test_stray_whitespace_does_not_reach_the_stored_draft(self):
+        copy = outreach.OutreachCopy(subject="  Spaced  ", body="\n  Body text.  \n")
+
+        self.assertEqual(outreach.render_email(copy), "Subject: Spaced\n\nBody text.")
+
+    def test_a_rendered_draft_clears_the_shape_gate(self):
+        # The gate no longer checks the subject or the preamble, because
+        # `render_email` writes the label itself -- but the body still counts.
+        body = (
+            "Hi Priya,\n\n" + "Your team has been working steadily through the portal and there is "
+            "one small change that usually helps agencies of your size get more of "
+            "their quotes over the line. It takes about fifteen minutes to walk "
+            "through, and your producers can start using it the same day without "
+            "changing how they already work. I would rather show you than write it "
+            "all out here, since the useful part is seeing it against your own book "
+            "of business rather than a generic example. "
+            "Would you have time for a short call this week?"
+        )
+        copy = outreach.OutreachCopy(subject="A quick thought", body=body)
+
+        self.assertEqual(outreach.validate_copy(outreach.render_email(copy)), [])
 
 
 if __name__ == "__main__":

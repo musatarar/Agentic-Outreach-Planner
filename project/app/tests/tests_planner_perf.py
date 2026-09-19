@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from project.app import checks
 from project.app.models import Event, Lead, OutreachAction
-from project.app.services.outreach import plan_outreach
+from project.app.services.outreach import OutreachCopy, plan_outreach
 
 GOOD_COPY = (
     "Subject: A quick idea for your team\n\n"
@@ -91,8 +91,14 @@ def _make_leads(count, events_each=3, offset=0):
     return leads
 
 
+def _as_copy(email):
+    """A rendered draft as the pair `agenerate_copy` now returns."""
+    subject, _, body = email.partition("\n\n")
+    return OutreachCopy(subject=subject.removeprefix("Subject: "), body=body)
+
+
 def _stub(copy=GOOD_COPY):
-    return patch("project.app.services.outreach.agenerate_copy", return_value=copy)
+    return patch("project.app.services.outreach.agenerate_copy", return_value=_as_copy(copy))
 
 
 @override_settings(COPY_VERIFY_LEVEL="off")

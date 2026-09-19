@@ -18,9 +18,16 @@ from rest_framework.throttling import SimpleRateThrottle
 
 from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import dedupe
-from project.app.services.outreach import plan_outreach
+from project.app.services.outreach import OutreachCopy, plan_outreach
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.views.review import ReviewListView, ReviewVerifyView
+
+
+def _as_copy(email):
+    """A rendered draft as the pair `agenerate_copy` now returns."""
+    subject, _, body = email.partition("\n\n")
+    return OutreachCopy(subject=subject.removeprefix("Subject: "), body=body)
+
 
 # A lead and a draft that between them exercise every grounded claim kind the
 # verifier checks: contact name, deal count, quote count and dollar amount.
@@ -441,12 +448,16 @@ class SuppressionAndThePlannerTests(ReviewAPITestCase):
     def setUp(self):
         super().setUp()
         self.lead = make_lead()
-        with patch("project.app.services.outreach.agenerate_copy", return_value=GROUNDED_COPY):
+        with patch(
+            "project.app.services.outreach.agenerate_copy", return_value=_as_copy(GROUNDED_COPY)
+        ):
             plan_outreach()
         self.action = OutreachAction.objects.get()
 
     def _run_planner(self):
-        with patch("project.app.services.outreach.agenerate_copy", return_value=GROUNDED_COPY):
+        with patch(
+            "project.app.services.outreach.agenerate_copy", return_value=_as_copy(GROUNDED_COPY)
+        ):
             return plan_outreach()
 
     def test_a_dismissed_recommendation_is_not_offered_again(self):

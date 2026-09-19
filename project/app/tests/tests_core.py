@@ -8,7 +8,13 @@ from django.test import TestCase, override_settings
 from django.utils.timezone import is_aware
 
 from project.app.models import Event, Lead, OutreachAction
-from project.app.services.outreach import plan_outreach
+from project.app.services.outreach import OutreachCopy, plan_outreach
+
+
+def _as_copy(email):
+    """A rendered draft as the pair `agenerate_copy` now returns."""
+    subject, _, body = email.partition("\n\n")
+    return OutreachCopy(subject=subject.removeprefix("Subject: "), body=body)
 
 
 def _raw_json(name):
@@ -155,7 +161,7 @@ class PlanOutreachGroundingTests(TestCase):
     def test_contradicted_copy_is_flagged_and_draft_kept(self):
         self._make_lead(deals_closed=4)
         bad_copy = "Subject: Amazing work\n\nHi Priya,\n\nCongrats on your 47 closed deals!\n\nBest,\nThe Locked In team"
-        with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=_as_copy(bad_copy)):
             planned = plan_outreach()
 
         self.assertEqual(len(planned), 1)
@@ -180,7 +186,9 @@ class PlanOutreachGroundingTests(TestCase):
             "this week to wrap up onboarding?\n\n"
             "Best,\nThe Locked In team"
         )
-        with patch("project.app.services.outreach.agenerate_copy", return_value=good_copy):
+        with patch(
+            "project.app.services.outreach.agenerate_copy", return_value=_as_copy(good_copy)
+        ):
             plan_outreach()
 
         action = OutreachAction.objects.get()
@@ -205,7 +213,7 @@ class PlanOutreachGroundingTests(TestCase):
             "week to talk through what is ahead?\n\n"
             "Best,\nThe Locked In team"
         )
-        with patch("project.app.services.outreach.agenerate_copy", return_value=bad_copy):
+        with patch("project.app.services.outreach.agenerate_copy", return_value=_as_copy(bad_copy)):
             plan_outreach()
 
         action = OutreachAction.objects.get()

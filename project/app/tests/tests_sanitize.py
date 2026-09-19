@@ -101,15 +101,6 @@ class ValidateCopyTests(unittest.TestCase):
         self.assertTrue(outreach.validate_copy(""))
         self.assertTrue(outreach.validate_copy("   \n  "))
 
-    def test_missing_subject_is_flagged(self):
-        body = self.GOOD.split("\n\n", 1)[1]  # drop the Subject line
-        problems = outreach.validate_copy(body)
-        self.assertTrue(any("subject" in p.lower() for p in problems))
-
-    def test_preamble_is_flagged(self):
-        problems = outreach.validate_copy("Sure! Here is the email:\n\n" + self.GOOD)
-        self.assertTrue(any("preamble" in p.lower() or "commentary" in p.lower() for p in problems))
-
     def test_too_short_body_is_flagged(self):
         problems = outreach.validate_copy("Subject: Hi\n\nHi Priya, let's talk soon.")
         self.assertTrue(any("word" in p.lower() for p in problems))

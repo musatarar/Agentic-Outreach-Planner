@@ -12,6 +12,7 @@ real adapters' interface.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import re
@@ -21,6 +22,8 @@ from collections.abc import Sequence
 from .base import FINISH_STOP, FINISH_TOOL_CALLS, LLMClient, LLMResult
 from .chat_types import Message, ToolCallRequest, ToolSpec
 from .errors import LLMRateLimitError, LLMTransientError
+from .structured import ModelT, StructuredResult
+from .structured import parse as parse_structured
 
 # The gate. An environment variable rather than a Django setting, which would
 # advertise itself in `.env.example` and the README configuration table.
@@ -121,7 +124,7 @@ class StubClient(LLMClient):
         latency_s = self._next_latency()
         self._maybe_fail()
         await asyncio.sleep(latency_s)
-        prompt = next((m.content for m in messages if m.role == "user"), "")
+        prompt = _user_message(messages)
         if tools and not any(m.role == "tool_result" for m in messages):
             spec = tools[0]
             return LLMResult(
@@ -138,7 +141,52 @@ class StubClient(LLMClient):
             )
         return self._result(prompt, latency_s)
 
+    # -- structured outputs -------------------------------------------------
+
+    def generate_structured(
+        self,
+        input: str | Sequence[Message],
+        schema_model: type[ModelT],
+        *,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> StructuredResult[ModelT]:
+        latency_s = self._next_latency()
+        self._maybe_fail()
+        time.sleep(latency_s)
+        return self._structured_result(input, schema_model, latency_s)
+
+    async def agenerate_structured(
+        self,
+        input: str | Sequence[Message],
+        schema_model: type[ModelT],
+        *,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> StructuredResult[ModelT]:
+        latency_s = self._next_latency()
+        self._maybe_fail()
+        await asyncio.sleep(latency_s)
+        return self._structured_result(input, schema_model, latency_s)
+
     # -- internals ----------------------------------------------------------
+
+    def _structured_result(self, input, schema_model, latency_s) -> StructuredResult:
+        """The canned email as JSON, validated like a real completion.
+
+        Only the planner's ``subject``/``body`` shape is faked, so another
+        schema raises the malformed-response error a real provider ignoring the
+        format would.
+        """
+        prompt = input if isinstance(input, str) else _user_message(input)
+        subject, body = canned_copy(prompt)
+        text = json.dumps({"subject": subject, "body": body})
+        return StructuredResult(
+            parsed=parse_structured(
+                schema_model, text, provider=self.provider_name, label="The stub provider"
+            ),
+            result=self._result(prompt, latency_s, text=text),
+        )
 
     def _next_latency(self):
         self.calls += 1
@@ -162,8 +210,8 @@ class StubClient(LLMClient):
                 status_code=503,
             )
 
-    def _result(self, prompt, latency_s) -> LLMResult:
-        text = canned_email(prompt)
+    def _result(self, prompt, latency_s, text=None) -> LLMResult:
+        text = canned_email(prompt) if text is None else text
         return LLMResult(
             text=text,
             provider=self.provider_name,
@@ -179,18 +227,17 @@ class StubClient(LLMClient):
         )
 
 
-def canned_email(prompt):
-    """A well-formed, grounded outreach email for the lead named in ``prompt``.
+def canned_copy(prompt):
+    """``(subject, body)`` for the lead named in ``prompt``.
 
-    Worded to pass the planner's two output gates: a ``Subject:`` line with no
-    preamble, exactly one call-to-action sentence and a 60-200 word body (shape
-    gate), and no numeric claim at all (grounding gate).
+    Worded to pass the planner's two output gates: exactly one call-to-action
+    sentence and a 60-200 word body (shape gate), and no numeric claim at all
+    (grounding gate). No sign-off, matching what the real prompt asks for.
     """
     contact = _first_group(_CONTACT_RE, prompt, "there")
     agency = _first_group(_AGENCY_RE, prompt, "your agency")
-    return (
-        f"Subject: A quick thought for {agency}\n"
-        "\n"
+    subject = f"A quick thought for {agency}"
+    body = (
         f"Hi {contact},\n"
         "\n"
         f"I have been looking at how {agency} is working through the portal, and "
@@ -200,12 +247,20 @@ def canned_email(prompt):
         "any change to how they already work. I would rather show you than write "
         "it all out here, since the useful part is seeing it against your own book "
         "of business rather than a generic example. Would you have time for a "
-        "short call this week?\n"
-        "\n"
-        "Best,\n"
-        "Dana\n"
-        "Locked In"
+        "short call this week?"
     )
+    return subject, body
+
+
+def canned_email(prompt):
+    """:func:`canned_copy` rendered the way the planner stores a draft."""
+    subject, body = canned_copy(prompt)
+    return f"Subject: {subject}\n\n{body}"
+
+
+def _user_message(messages):
+    """The prompt inside a transcript — the stub only ever reads the user turn."""
+    return next((m.content for m in messages if m.role == "user"), "")
 
 
 def _first_group(pattern, text, fallback):
@@ -220,5 +275,6 @@ __all__ = [
     "StubLLMNotAllowed",
     "ALLOW_ENV_VAR",
     "PROVIDER_NAME",
+    "canned_copy",
     "canned_email",
 ]
