@@ -36,6 +36,33 @@
         "A test was added in an existing tests_*.py module using a behavioral test name"
       ],
       "files": []
+    },
+    {
+      "id": 4,
+      "name": "wrong-foundation",
+      "prompt": "the actions engine needs to know whose rules catalog to evaluate for a lead. leads carry a tenant string and rules are owned by a user. add the lookup in services so a job can get the enabled rules for its lead's tenant.",
+      "expected_output": "Pushback before code: Lead.tenant is a placeholder (blank everywhere, no reader) and cannot reach a User; the direct fix is an owner foreign key on Lead, which is a migration and therefore a human decision. No mapping table or tenant lookup is built unasked.",
+      "assertions": [
+        "No new model or table mapping tenant strings to users is added",
+        "The final message identifies Lead.tenant as a placeholder that cannot express ownership",
+        "The final message proposes a foreign key from Lead to the user as the direct fix and flags it as a migration needing human sign-off",
+        "No migration is written without that sign-off"
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "code-as-spec",
+      "prompt": "The FE still uses the old plan_outreach pipeline. How should it interact with our actions queue? Should it pull the events from our API? Or do you have a better alternative/standard? Give me the design, don't build it yet.",
+      "expected_output": "The user-facing flow first (open to a list of decided actions, Generate makes copy for one), then a first-class surface: a read endpoint over decided jobs and a per-proposal generate endpoint that calls the existing gate functions. Does not route decisions through plan_outreach behind the Run button, does not count 'no FE changes' or 'phases untouched' as merits, and asks whether the Run button stays rather than defaulting to keeping it.",
+      "assertions": [
+        "Describes the user-facing flow before the mechanism",
+        "Proposes a read surface over the engine's decisions that the frontend renders (the decisions are visible to the user)",
+        "Does not propose passing decisions into plan_outreach via an optional parameter or override map with a fallback to determine_action",
+        "Asks or states what happens to the existing Run button rather than keeping it unchanged by default",
+        "Does not present 'no frontend changes' or 'phases untouched' as a merit"
+      ],
+      "files": []
     }
   ]
 }

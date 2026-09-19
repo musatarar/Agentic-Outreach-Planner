@@ -1,6 +1,6 @@
 ---
 name: antipattern-guard
-description: Catch antipatterns in a coding request or in your own implementation plan and push back before writing them, instead of coding a literal reading of the ask. Use this whenever asked to add, change, or move code in this repo — especially when the request names a location ("add a method to services", "put this in the view", "just hardcode it for now", "make the test pass", "skip the check when testing"), when the fastest way to satisfy the words would put fixture data, test shortcuts, placeholders, or duplicated logic into production modules, or when a shorthand request seems to conflict with what the target module is for. Trigger even when the request looks simple; the failure mode this guards against is doing exactly what was said when it is not what was meant.
+description: Catch antipatterns in a coding request or in your own implementation plan and push back before writing them, instead of coding a literal reading of the ask. Use this whenever asked to add, change, or move code in this repo — especially when the request names a location ("add a method to services", "put this in the view", "just hardcode it for now", "make the test pass", "skip the check when testing"), when it builds on an existing field or table ("leads carry a tenant string, add the lookup", "wire X to Y", "add a mapping table"), when a new capability has to meet existing code or UI ("the FE still uses the old pipeline, how should it interact with the queue", "adjust plan_outreach for the new experience", "now that the cron decides"), when the fastest way to satisfy the words would put fixture data, test shortcuts, placeholders, or duplicated logic into production modules, or when a shorthand request seems to conflict with what the target module is for. Trigger even when the request looks simple; the failure mode this guards against is doing exactly what was said when it is not what was meant, designing around a placeholder nobody meant to keep, or treating the existing code as the spec when the ask is to change what the user experiences.
 ---
 
 # Antipattern guard
@@ -11,7 +11,7 @@ and satisfying the literal words with a function that returns hardcoded rows is 
 though it "does what was asked". This skill is about noticing that gap and naming it before any
 code exists, so the user reviews a decision rather than a diff they have to throw away.
 
-## The two-step check, before writing code
+## The checks, before writing code
 
 1. **Read the request through the target's role.** Every module here has a job (table below).
    Ask: does the literal ask fit that job? If not, the user almost certainly meant the version
@@ -19,6 +19,22 @@ code exists, so the user reviews a decision rather than a diff they have to thro
 2. **Read your own plan for antipatterns.** Before the first edit, look at what you are about to
    write and check it against the catalog below. The catalog exists because these are the
    shortcuts that feel like progress and cost a review cycle to remove.
+3. **Read what you are building on.** Existing code is not automatically a constraint. A column
+   that is blank on every row, a field nothing reads, a `# not used yet` comment, a TODO: these
+   are placeholders, and a placeholder is a decision nobody made. If your design only works by
+   adding a structure around one, the question to raise is whether the placeholder should be
+   fixed instead, and the first fix you offer is the smallest one that makes it real.
+4. **Read the request as the spec.** The code is the current state, not the authority. When
+   the ask is a new experience ("the user should open to the actions list"), the experience is
+   fixed and the code moves to serve it. If your plan's merits are "untouched", "unchanged",
+   "behaves exactly as now", or "no frontend changes", check whether the user asked for any of
+   that. Usually they asked for the opposite.
+5. **Do not pick the experience yourself.** On a design question about a new capability, the
+   mechanism is your call and the experience is the user's. Conventions about mechanism ("a
+   queue is not user-facing state", "the standard is a queue behind a resource") say nothing
+   about what the user wants to see. If you catch yourself explaining why the user should not
+   see the new thing, stop: that is the existing surface deciding, not the user. Offer the
+   flows instead (next section).
 
 If either step finds something, push back (next section). If neither does, just build it; this
 skill is a gate, not a tax on ordinary work.
@@ -33,6 +49,17 @@ unless the readings diverge so far that building the wrong one wastes the work. 
 - **Build the version that fits**, under that stated assumption, in the place it belongs.
 - **Flag it at the top of your final message** so the user sees the decision first.
 
+For a design question ("how should X interact with Y", "what's the standard here"), lead with
+the experience as a choice, not the mechanism as an answer. Write two or three candidate
+flows, each in plain sentences: what the user opens, what they see, what a click does, and
+what it costs (a cron that spends on every decided lead is a spend change; a click that spends
+on one item is not). One of the flows must be the one where the new capability is a surface
+the user sees and acts on. Recommend one and say why, then give the mechanism for that one.
+If none of your flows shows the new thing to the user, you have designed around it rather
+than for it. When you can ask (an interactive session), put the flows to the user as a
+question before writing the design; when you cannot, write the design for the flow that shows
+the new thing and list the others as alternatives.
+
 Ask a blocking question only when two readings lead to materially different code and no
 sensible default exists. When you do ask, offer the concrete options, recommend one, and say
 what you would build for each.
@@ -40,7 +67,7 @@ what you would build for each.
 If the user reaffirms the literal request after you have raised the concern, that is their
 decision. Say so once and build it as asked. The goal is to give them the choice, not to win.
 
-### Example
+### Example 1: a literal reading that misses the intent
 
 Request: "add a method into services that returns leads for the demo"
 
@@ -51,6 +78,37 @@ function containing demo rows. Demo data already lives in `raw_data/` and is loa
 ingest command, so I'm adding a query function in services that takes the filter criteria as
 arguments, and leaving the data where it is. Say the word if you actually wanted a fixture."
 
+### The inversion to avoid
+
+The move above has a failure mode: deciding that the "intended" reading is the conventional
+one. A proposal inside a question ("should the FE pull the decisions from our API?") is
+evidence of the experience the user wants: they want to see the decisions. Reject the
+mechanism if it is wrong; keep the experience it implied. If your intended reading shows the
+user less of the new thing than their literal words did, you have inverted the tool. Three
+separate attempts at the case below did exactly this, each citing a convention ("a queue is
+not user-facing state", "the UI subscribes only to the terminal artifact") as if it were the
+user's decision.
+
+### Example 2: a design question where the code was treated as the spec
+
+Request: "The FE still uses the old plan_outreach pipeline. How should it interact with our
+actions queue? Should it pull the events from our API? Or do you have a better alternative?"
+
+Weak response: "The FE should not talk to the queue at all. Feed the cron's decisions into
+`plan_outreach` phase 2 behind the existing Run button; phases 3 to 5 and every frontend file
+stay untouched." The user's reply, verbatim: "that's exactly what I DON'T want. The user should
+open to a FE populated with the new actions list. Hitting generate now generates a copy for
+it, doesn't run the full outreach. We won't edit plan_outreach but add a new endpoint over it
+for generating a copy."
+
+Strong response, before any mechanism: "Two flows. A: the engine's decisions are invisible and
+the cron drafts copy for every decided lead automatically, which is a provider call per lead
+per day. B: the user opens to the list of decided actions with their reasons, and Generate
+makes copy for one of them on demand, which spends only on a click. Your question suggests B.
+I'd build B: `GET /api/actions/` over decided jobs, `POST /api/actions/{id}/generate/` calling
+the planner's existing gate functions, `plan_outreach` untouched, and the Run button retired
+or repointed, your call." Then the mechanism.
+
 ## Where things belong in this repo
 
 | Concern | Home | Not here |
@@ -59,6 +117,7 @@ arguments, and leaving the data where it is. Say the word if you actually wanted
 | HTTP shape: auth, pagination, throttling, status codes | `project/app/views/`, `serializers/` | services |
 | Test data | factory helpers in the test module (`make_lead`, `_lead`) or `tests/fixtures/` | any production module |
 | Demo or seed data | `raw_data/*.json` via the `ingest_data` management command | services, migrations, settings |
+| Which user a row belongs to | a `ForeignKey` on that model (`OutreachRule.owner`) | an opaque string plus a table that maps it |
 | Constants and enums | `services/actions.py`, module-level constants | inline magic strings |
 | Configuration | environment variables read in `settings.py` with the `_env_*` helpers | hardcoded literals, database rows, API-editable fields |
 | Provider selection and retry | `services/llm/config.py`, `errors.py` | call sites |
@@ -140,6 +199,60 @@ Why: the first breaks every environment that already applied it; the others stal
 require a rewrite. All migrations are human-reviewed.
 Instead: additive follow-up migration; nullable-or-default first, backfill via management
 command, constrain after; concurrent index with `atomic = False`.
+
+### Placeholder column or field "for later"
+Looks like: a new model field with no reader ("nothing filters on it yet"), an opaque string
+id where the thing it identifies is already a model, a nullable column added so a future
+feature has somewhere to put data.
+Why: it looks like progress and costs nothing today, so it lands. Then the next feature treats
+it as a given and designs around its shape. `Lead.tenant` was a 64-character string, blank on
+every row, that nothing read; it could not say whose rules to run for a lead, because the
+rules were owned by a `User` and a string cannot point at a row.
+Instead: add a field when its first reader arrives, and make it the real relation. A foreign
+key to the model that already exists answers the question directly; an identifier that needs
+a lookup table to mean anything is not an identifier yet.
+
+### Compensating structure around a wrong foundation
+Looks like: a mapping table, adapter, or lookup that exists only to connect something the
+schema should have connected; a docstring that says "nothing joined the two, so this is that
+join"; a snapshot of a field copied onto a second model so a job can carry it.
+Why: the placeholder's cost was deferred, and this is where it comes due. The actions engine
+grew a `TenantCatalog` table, a `rules_for_tenant` lookup, and a `tenant` column on
+`ActionJob`, all so an opaque string could reach the user who owned the rules. Replacing the
+string with `Lead.owner`, one foreign key, deleted all three.
+Instead: when a design only works by wrapping an existing field, stop and say so: name the
+field, why it cannot express what you need, and the one-step fix. Offer the smallest true
+relation first: the question was "which user's rules", and a `User` already existed, so the
+first option is `Lead.owner` as a foreign key to it. A richer model (a workspace with members,
+a membership table) is a separate ask; a placeholder nobody used is evidence nobody has needed
+it yet. The placeholder's name is not a requirement either: a column called `tenant` does not
+mean a `Tenant` model is wanted. That fix is usually a migration, which is human-gated here,
+so it is a decision to raise, not a reason to route around it silently. Building the wrapper
+is the fallback after a human chooses it.
+
+### Existing code treated as the spec
+Looks like: a new capability routed through the old entry point so the old surface "keeps
+working exactly as today"; an optional parameter that defaults to the old behaviour
+(`plan_outreach(chosen=None)`); an override map with a fallback to the old derivation; the
+user-visible half of the ask deferred as "frontend only" or "would change every draft"; a test
+or query budget cited as a reason not to change behaviour; "no FE file changes at all" offered
+as a merit.
+Why: it answers "how do I add this without disturbing anything" when the user asked "how
+should this work now". The actions engine started deciding each lead's action on a cron. Asked
+how the frontend should meet the queue, the plan fed the decisions into `plan_outreach` phase
+2 behind the existing Run button, left phases 3 to 5 and every frontend file untouched, and
+dropped the actions list, catalog urgency, and draft provenance as out of scope. The user's
+answer was "that is exactly what I don't want": open to the list of decided actions, and
+Generate makes copy for one of them without running the whole planner. The fallback also hid
+a conflict, since a lead the rules said needed nothing would still be drafted by the old path.
+Instead: offer the flows and let the user pick; "the queue is not user-facing" is your
+assumption, and the decisions the user's own rules made are exactly what they want to see.
+Make the new thing a first-class surface (a read endpoint over the decisions, a generate
+endpoint that calls the existing gate functions) rather than a parameter on the old one. Say which current behaviour
+the change retires, and ask whether it stays instead of defaulting to keeping it. Tests and
+budgets pin the old behaviour on purpose; changing them with sign-off is the expected cost of
+a behaviour change, not a reason to avoid it. Minimal scope trims inferred extras, never the
+requested change itself.
 
 ### Configuration in the wrong place
 Looks like: a literal timeout or model name at the call site; a default restated in
