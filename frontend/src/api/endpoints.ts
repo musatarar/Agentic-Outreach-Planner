@@ -8,7 +8,6 @@ import type {
   DismissInput,
   EditCopyInput,
   LeadRecord,
-  OutreachAction,
   Paginated,
   ProposedAction,
   ReviewItem,
@@ -21,18 +20,25 @@ import type {
 /** Every lead in the book, full records (`LeadSerializer`). */
 export const fetchLeads = () => getJson<LeadRecord[]>('/api/leads/');
 
-/** Plan the whole book. */
-export const runOutreachPlan = () => postJson<OutreachAction[]>('/api/outreach/run/', {});
-
-/** Plan one client. 409 when there is nothing new to recommend. */
-export const composeForLead = (leadId: string) =>
-  postJson<OutreachAction>(`/api/leads/${leadId}/compose/`, {});
-
 // ===== the actions the engine chose ================================
 
 /** What the engine decided for this user's leads, paginated. */
 export const fetchProposals = (page?: number) =>
   getJson<Paginated<ProposedAction>>(page ? `/api/actions/?page=${page}` : '/api/actions/');
+
+/**
+ * Every proposal, not just the first page. The leads list is unpaginated and
+ * each row wants its own decision, so a single page would leave the column
+ * blank below lead 25 with nothing on screen saying why.
+ */
+export async function fetchAllProposals(): Promise<ProposedAction[]> {
+  const all: ProposedAction[] = [];
+  for (let page = 1; ; page += 1) {
+    const chunk = await fetchProposals(page);
+    all.push(...chunk.results);
+    if (!chunk.next) return all;
+  }
+}
 
 /** Draft the copy for ONE proposal. 409 when it is already drafted or dismissed. */
 export const generateFromProposal = (id: number) =>
