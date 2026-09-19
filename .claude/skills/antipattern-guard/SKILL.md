@@ -29,6 +29,12 @@ code exists, so the user reviews a decision rather than a diff they have to thro
    fixed and the code moves to serve it. If your plan's merits are "untouched", "unchanged",
    "behaves exactly as now", or "no frontend changes", check whether the user asked for any of
    that. Usually they asked for the opposite.
+5. **Do not pick the experience yourself.** On a design question about a new capability, the
+   mechanism is your call and the experience is the user's. Conventions about mechanism ("a
+   queue is not user-facing state", "the standard is a queue behind a resource") say nothing
+   about what the user wants to see. If you catch yourself explaining why the user should not
+   see the new thing, stop: that is the existing surface deciding, not the user. Offer the
+   flows instead (next section).
 
 If either step finds something, push back (next section). If neither does, just build it; this
 skill is a gate, not a tax on ordinary work.
@@ -43,11 +49,14 @@ unless the readings diverge so far that building the wrong one wastes the work. 
 - **Build the version that fits**, under that stated assumption, in the place it belongs.
 - **Flag it at the top of your final message** so the user sees the decision first.
 
-For a design question ("how should X interact with Y", "what's the standard here"), say the
-user-facing flow first, in two or three plain sentences: what the user opens, what they see,
-what a click does. Then the mechanism. If the flow you wrote has the new capability invisible
-to the user, you have designed around it rather than for it; start again from the flow the
-user described.
+For a design question ("how should X interact with Y", "what's the standard here"), lead with
+the experience as a choice, not the mechanism as an answer. Write two or three candidate
+flows, each in plain sentences: what the user opens, what they see, what a click does, and
+what it costs (a cron that spends on every decided lead is a spend change; a click that spends
+on one item is not). One of the flows must be the one where the new capability is a surface
+the user sees and acts on. Recommend one and say why, then give the mechanism for that one.
+If none of your flows shows the new thing to the user, you have designed around it rather
+than for it.
 
 Ask a blocking question only when two readings lead to materially different code and no
 sensible default exists. When you do ask, offer the concrete options, recommend one, and say
@@ -203,9 +212,10 @@ dropped the actions list, catalog urgency, and draft provenance as out of scope.
 answer was "that is exactly what I don't want": open to the list of decided actions, and
 Generate makes copy for one of them without running the whole planner. The fallback also hid
 a conflict, since a lead the rules said needed nothing would still be drafted by the old path.
-Instead: write the user-facing flow first and check it against the ask. Make the new thing a
-first-class surface (a read endpoint over the decisions, a generate endpoint that calls the
-existing gate functions) rather than a parameter on the old one. Say which current behaviour
+Instead: offer the flows and let the user pick; "the queue is not user-facing" is your
+assumption, and the decisions the user's own rules made are exactly what they want to see.
+Make the new thing a first-class surface (a read endpoint over the decisions, a generate
+endpoint that calls the existing gate functions) rather than a parameter on the old one. Say which current behaviour
 the change retires, and ask whether it stays instead of defaulting to keeping it. Tests and
 budgets pin the old behaviour on purpose; changing them with sign-off is the expected cost of
 a behaviour change, not a reason to avoid it. Minimal scope trims inferred extras, never the
