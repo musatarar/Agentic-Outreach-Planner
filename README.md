@@ -43,9 +43,9 @@ Paste it into the browser. Links are single use. No SMTP is involved: delivery d
 `console`. An address not on the allowlist gets exactly the same response as one that is.
 
 The demo runs without an LLM key — you just cannot generate copy. For real drafts, set
-`LLM_PROVIDER` and that provider's key in `.env`, then use **Generate all**, or the per-lead
-generate button, on the leads page. `groq` is the default and has a free tier
-(https://console.groq.com).
+`LLM_PROVIDER` and that provider's key in `.env`, then open a lead on the leads page and use
+the **Generate email** button on the action the engine proposed for it. `groq` is the
+default and has a free tier (https://console.groq.com).
 
 ### Docker
 
