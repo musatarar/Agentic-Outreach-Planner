@@ -1,10 +1,12 @@
 /**
- * The proposals list's decisions.
+ * The expanded lead row's proposal decisions.
  *
  * The failure modes are quiet. A Generate button offered on a proposal that
  * already has a draft still looks like a button; it just spends a click on a
  * 409. A list updated in place still holds the right data; the row simply never
- * repaints, so the same proposal invites the same wasted call again.
+ * repaints, so the same proposal invites the same wasted call again. A column
+ * still naming the action after the email exists sends the reviewer to generate
+ * a second one instead of to the inbox.
  *
  * Run with `npm test`.
  */
@@ -13,9 +15,10 @@ import { test } from 'node:test';
 
 import {
   canGenerate,
+  isAwaitingReview,
   urgencyTone,
   withDraft,
-} from '../src/components/actions/proposals.ts';
+} from '../src/components/leads/proposals.ts';
 import type { ProposedAction } from '../src/api/types.ts';
 
 /** A proposal with every field defaulted, so each test states only what it varies. */
@@ -75,4 +78,26 @@ test('urgency reads on the same ramp as inbox priority', () => {
   assert.equal(urgencyTone('high'), 'p1');
   assert.equal(urgencyTone('medium'), 'p2');
   assert.equal(urgencyTone('low'), 'p3');
+});
+
+test('a proposal with a draft is awaiting review, not proposing an action', () => {
+  assert.equal(isAwaitingReview(proposal({ draft_id: 7 }), false), true);
+});
+
+test('a proposal with no draft still names its action', () => {
+  assert.equal(isAwaitingReview(proposal(), false), false);
+});
+
+// The draft may have come from another action on the same lead, which the
+// proposal's own draft_id knows nothing about. It is still an email in review.
+test('an inbox item counts even when this proposal has no draft', () => {
+  assert.equal(isAwaitingReview(proposal(), true), true);
+});
+
+test('a lead with no proposal and no draft is neither', () => {
+  assert.equal(isAwaitingReview(undefined, false), false);
+});
+
+test('a lead with no proposal but an email in review is awaiting review', () => {
+  assert.equal(isAwaitingReview(undefined, true), true);
 });
