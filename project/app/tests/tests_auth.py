@@ -659,7 +659,6 @@ class UnauthenticatedAccessTests(APITestCase):
     PREVIOUSLY_PUBLIC = [
         ("get", "/api/leads/"),
         ("get", "/api/outreach/"),
-        ("post", "/api/outreach/run/"),
         # The review surface: the permission check runs before the view, so an
         # id that does not exist still answers 401 rather than 404.
         ("post", "/api/outreach/1/edit/"),
@@ -725,8 +724,9 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
         fresh = client.cookies["csrftoken"].value
         self.assertNotEqual(fresh, stale)
 
+        # Any authenticated POST does: the CSRF check runs before the view.
         with_stale = client.post(
-            "/api/outreach/run/",
+            "/api/outreach/1/approve/",
             json.dumps({}),
             content_type="application/json",
             HTTP_X_CSRFTOKEN=stale,
@@ -735,7 +735,7 @@ class CsrfAcrossTheLoginBoundaryTests(TestCase):
         self.assertEqual(with_stale.json()["code"], "csrf_failed")
 
         with_fresh = client.post(
-            "/api/outreach/run/",
+            "/api/outreach/1/approve/",
             json.dumps({}),
             content_type="application/json",
             HTTP_X_CSRFTOKEN=fresh,

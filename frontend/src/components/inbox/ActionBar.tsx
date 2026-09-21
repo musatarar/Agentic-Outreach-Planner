@@ -16,7 +16,7 @@ const BLOCKER_BUTTON = {
   unknown: 'Blocked',
 } as const;
 
-/** Mirrors `OutreachAction.DISMISS_REASONS`; "" is the allowed no-reason. */
+/** Mirrors `OutreachGeneratedCopy.DISMISS_REASONS`; "" is the allowed no-reason. */
 const DISMISS_REASONS: { value: DismissReason; label: string }[] = [
   { value: '', label: 'No reason given' },
   { value: 'not_a_fit', label: 'Not a fit' },

@@ -1,5 +1,4 @@
 from datetime import date
-from unittest.mock import patch
 
 from django.urls import reverse
 from rest_framework import status
@@ -174,47 +173,3 @@ class OutreachListViewTests(AuthenticatedAPITestCase):
                 "recent_events",
             },
         )
-
-
-class OutreachRunViewTests(AuthenticatedAPITestCase):
-    @classmethod
-    def setUpTestData(cls):
-        cls.lead1 = make_lead("lead_001", agency_name="Alpha")
-        cls.lead2 = make_lead("lead_002", agency_name="Bravo")
-
-    def test_run_serializes_planned_actions_ordered_by_priority(self):
-        # plan_outreach returns persisted actions; build them here and mock it.
-        a_low = OutreachGeneratedCopy.objects.create(
-            lead=self.lead2,
-            priority=3,
-            action_type="nudge_usage",
-            reason="low priority",
-            subject="Low",
-            body="copy 2",
-            suggested_copy=compose_email("Low", "copy 2"),
-        )
-        a_high = OutreachGeneratedCopy.objects.create(
-            lead=self.lead1,
-            priority=1,
-            action_type="follow_up_after_hold",
-            reason="high priority",
-            subject="High",
-            body="copy 1",
-            suggested_copy=compose_email("High", "copy 1"),
-        )
-
-        # The view imports plan_outreach inside the method from this path.
-        with patch(
-            "project.app.services.outreach.plan_outreach",
-            return_value=[a_low, a_high],
-        ) as mock_plan:
-            resp = self.client.post(reverse("outreach-run"))
-
-        mock_plan.assert_called_once()
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 2)
-        self.assertEqual([row["priority"] for row in resp.data], [1, 3])
-        self.assertEqual(resp.data[0]["id"], a_high.id)
-        self.assertEqual(resp.data[1]["id"], a_low.id)
-        self.assertEqual(resp.data[0]["action_type"], "follow_up_after_hold")
-        self.assertEqual(resp.data[0]["lead"]["agency_name"], "Alpha")
