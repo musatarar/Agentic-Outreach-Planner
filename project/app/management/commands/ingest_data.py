@@ -1,5 +1,12 @@
+"""Load the raw lead and event files as they stand.
+
+Nothing here interprets a column: a lead row minus its id is the lead's blob,
+and an event's payload is flattened beside its own keys. What those keys mean
+is the owner's shape to say.
+"""
+
 import json
-from datetime import date, datetime
+from datetime import datetime
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -12,34 +19,11 @@ from project.app.models import Event, Lead
 DEFAULT_LEADS = "raw_data/leads.json"
 DEFAULT_EVENTS = "raw_data/events.json"
 
-# Lead fields parsed as dates (ISO YYYY-MM-DD, nullable)
-DATE_FIELDS = (
-    "signed_up_date",
-    "last_login_date",
-    "last_contacted_date",
-)
-
-LEAD_FIELDS = (
-    "agency_name",
-    "contact_name",
-    "contact_email",
-    "contact_phone",
-    "state",
-    "num_producers",
-    "years_in_business",
-    "estimated_book_size_usd",
-    "stage",
-    "quotes_created",
-    "quotes_submitted",
-    "deals_closed",
-    "hubspot_notes",
-)
-
-
-def _parse_date(value):
-    if not value:
-        return None
-    return date.fromisoformat(value)
+# The two structural keys: the lead's own id, and the event's timestamp plus
+# the nested payload that is flattened beside its siblings.
+LEAD_ID_KEY = "id"
+EVENT_TIMESTAMP_KEY = "timestamp"
+EVENT_META_KEY = "meta"
 
 
 def _parse_timestamp(value):
@@ -80,12 +64,8 @@ class Command(BaseCommand):
 
         lead_count = 0
         for row in leads_data:
-            defaults = {field: row.get(field) for field in LEAD_FIELDS}
-            for field in DATE_FIELDS:
-                defaults[field] = _parse_date(row.get(field))
-            if defaults.get("hubspot_notes") is None:
-                defaults["hubspot_notes"] = ""
-            Lead.objects.update_or_create(id=row["id"], defaults=defaults)
+            data = {key: value for key, value in row.items() if key != LEAD_ID_KEY}
+            Lead.objects.update_or_create(id=row[LEAD_ID_KEY], defaults={"data": data})
             lead_count += 1
 
         event_count = 0
@@ -94,11 +74,16 @@ class Command(BaseCommand):
             # Idempotent: clear and recreate events per lead.
             Event.objects.filter(lead_id=lead_id).delete()
             for ev in block.get("events", []):
+                data = {
+                    key: value
+                    for key, value in ev.items()
+                    if key not in (EVENT_TIMESTAMP_KEY, EVENT_META_KEY)
+                }
+                data.update(ev.get(EVENT_META_KEY) or {})
                 Event.objects.create(
                     lead_id=lead_id,
-                    type=ev["type"],
-                    timestamp=_parse_timestamp(ev["timestamp"]),
-                    meta=ev.get("meta", {}) or {},
+                    timestamp=_parse_timestamp(ev[EVENT_TIMESTAMP_KEY]),
+                    data=data,
                 )
                 event_count += 1
 

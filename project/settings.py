@@ -240,6 +240,8 @@ REST_FRAMEWORK = {
         "rules_catalog": "120/min",
         # The list of what the actions engine chose.
         "actions_list": "120/min",
+        # The caller's own lead/event shape.
+        "shape": "120/min",
     },
     # No list endpoint serializes an unbounded table: pagination is the
     # default, and the review list narrows it further with `?page_size=`.

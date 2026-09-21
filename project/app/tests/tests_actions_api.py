@@ -20,6 +20,7 @@ from project.app.services import dedupe
 from project.app.services.llm import LLMClient, LLMResult, LLMTimeoutError
 from project.app.services.llm.structured import StructuredResult
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_shape_utils import shape_for
 
 ACTIONS_URL = "/api/actions/"
 INBOX_URL = "/api/outreach/"
@@ -75,6 +76,8 @@ class ProposedActionsTestCase(AuthenticatedAPITestCase):
         super().setUp()
         cache.clear()
         self.other = get_user_model().objects.create_user(username="teammate@lockedin.example")
+        self.shape = shape_for(self.user)
+        self.other_shape = shape_for(self.other)
         self.lead = self._lead(owner=self.user)
         self.action = self._action()
         self.stub = _ProviderStub()
@@ -82,7 +85,7 @@ class ProposedActionsTestCase(AuthenticatedAPITestCase):
     def _lead(self, lead_id="lead_001", *, owner, **kwargs):
         """``owner`` is never defaulted: whose book the lead sits in is the
         thing these tests are about."""
-        fields = dict(
+        data = dict(
             agency_name="Summit Risk Advisors",
             contact_name="Priya Nair",
             contact_email="priya@summitrisk.example.com",
@@ -92,16 +95,16 @@ class ProposedActionsTestCase(AuthenticatedAPITestCase):
             years_in_business=9,
             estimated_book_size_usd=1_400_000,
             stage="active_trial",
-            signed_up_date=TODAY - datetime.timedelta(days=50),
-            last_login_date=TODAY - datetime.timedelta(days=2),
-            last_contacted_date=TODAY - datetime.timedelta(days=5),
+            signed_up_date=(TODAY - datetime.timedelta(days=50)).isoformat(),
+            last_login_date=(TODAY - datetime.timedelta(days=2)).isoformat(),
+            last_contacted_date=(TODAY - datetime.timedelta(days=5)).isoformat(),
             quotes_created=10,
             quotes_submitted=6,
             deals_closed=3,
             hubspot_notes="",
         )
-        fields.update(kwargs)
-        return Lead.objects.create(id=lead_id, owner=owner, **fields)
+        data.update(kwargs)
+        return Lead.objects.create(id=lead_id, owner=owner, data=data)
 
     def _action(self, owner=None, key="reward_power_user", urgency=ActionType.URGENCY_HIGH):
         return ActionType.objects.create(
@@ -153,7 +156,7 @@ class ProposedActionListTests(ProposedActionsTestCase):
         self.assertEqual([row["id"] for row in rows], [job.pk])
         row = rows[0]
         self.assertEqual(row["lead"]["id"], self.lead.id)
-        self.assertEqual(row["lead"]["agency_name"], "Summit Risk Advisors")
+        self.assertEqual(row["lead"]["data"]["agency_name"], "Summit Risk Advisors")
         self.assertEqual(
             row["action"],
             {"key": "reward_power_user", "label": "Reward power user", "urgency": "high"},

@@ -40,10 +40,11 @@ MIN_LATENCY_S = 0.01
 PROVIDER_NAME = "stub"
 DEFAULT_MODEL = "stub-1"
 
-# Pulled out of the prompt so the canned email is about the actual lead --
-# interpolating a name it had to *find* proves the prompt-building phase ran.
-_CONTACT_RE = re.compile(r"^- Contact: ([^(\n]+?)\s*\(", re.MULTILINE)
-_AGENCY_RE = re.compile(r"^- Agency: ([^(\n]+?)\s*\(", re.MULTILINE)
+# The planner's addressee line, pulled back out so the canned email is about the
+# actual lead -- a name it had to *find* proves the prompt-building phase ran.
+_ADDRESSEE_RE = re.compile(
+    r"^Write a short, personalized outreach email to (.+?) at (.+)\.$", re.MULTILINE
+)
 
 
 class StubLLMNotAllowed(RuntimeError):
@@ -234,8 +235,7 @@ def canned_copy(prompt):
     sentence and a 60-200 word body (shape gate), and no numeric claim at all
     (grounding gate). No sign-off, matching what the real prompt asks for.
     """
-    contact = _first_group(_CONTACT_RE, prompt, "there")
-    agency = _first_group(_AGENCY_RE, prompt, "your agency")
+    contact, agency = _addressee(prompt)
     subject = f"A quick thought for {agency}"
     body = (
         f"Hi {contact},\n"
@@ -263,11 +263,12 @@ def _user_message(messages):
     return next((m.content for m in messages if m.role == "user"), "")
 
 
-def _first_group(pattern, text, fallback):
-    match = pattern.search(text or "")
+def _addressee(prompt):
+    """The contact and agency the prompt addresses, or stand-ins for neither."""
+    match = _ADDRESSEE_RE.search(prompt or "")
     if match is None:
-        return fallback
-    return match.group(1).strip() or fallback
+        return "there", "your agency"
+    return (match.group(1).strip() or "there", match.group(2).strip() or "your agency")
 
 
 __all__ = [

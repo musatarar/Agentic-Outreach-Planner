@@ -11,6 +11,7 @@ from django.test import TestCase
 from project.app.models import ActionType, OutreachRule
 from project.app.rules import services
 from project.app.rules.utils import _all_of, _cond
+from project.app.tests.tests_shape_utils import shape_for
 
 
 class RulesServiceTestCase(TestCase):
@@ -18,6 +19,8 @@ class RulesServiceTestCase(TestCase):
         super().setUp()
         self.user = get_user_model().objects.create_user(username="planner@lockedin.example")
         self.other = get_user_model().objects.create_user(username="teammate@lockedin.example")
+        self.shape = shape_for(self.user)
+        shape_for(self.other)
 
     def _action(self, key, owner=None):
         return ActionType.objects.create(owner=owner or self.user, key=key, label=key)

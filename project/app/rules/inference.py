@@ -29,11 +29,7 @@ def build_prompt(candidates, lead, today):
 Today is {today}.
 
 Trusted lead record (system fields — safe to rely on):
-- Agency: {getattr(lead, "agency_name", "")} ({getattr(lead, "state", "")}, {getattr(lead, "num_producers", "?")} producers, {getattr(lead, "years_in_business", "?")} years in business)
-- Stage: {getattr(lead, "stage", "")}
-- Estimated book size: ${getattr(lead, "estimated_book_size_usd", 0) or 0:,.0f}
-- Signed up: {getattr(lead, "signed_up_date", None)} | Last login: {getattr(lead, "last_login_date", None)} | Last contacted: {getattr(lead, "last_contacted_date", None)}
-- Usage: {getattr(lead, "quotes_created", 0)} quotes created, {getattr(lead, "quotes_submitted", 0)} submitted, {getattr(lead, "deals_closed", 0)} deals closed
+{outreach.build_trusted_block(lead)}
 
 {outreach.UNTRUSTED_STANDING_INSTRUCTION}
 

@@ -1,5 +1,5 @@
 """The deterministic pass: a stored conditions payload against one lead. Pure
-Python, no Django -- leads are SimpleNamespace stubs."""
+Python -- leads are SimpleNamespace stubs carrying the demo shape."""
 
 import datetime
 import unittest
@@ -7,34 +7,39 @@ from types import SimpleNamespace
 
 from project.app.actions import evaluate
 from project.app.rules import utils
-from project.app.rules.utils import _all_of, _cond
+from project.app.rules.utils import _all_of
+from project.app.tests.tests_shape_utils import shape
 
 TODAY = datetime.date(2026, 6, 12)
+SHAPE = shape()
 
 
-def _event(type_, ts, **meta):
-    return SimpleNamespace(type=type_, timestamp=ts, meta=meta)
+def _cond(field, operator, threshold=None, source=None):
+    return utils._cond(field, operator, threshold, source=source, shape=SHAPE)
+
+
+def _event(type_, ts, **data):
+    return SimpleNamespace(timestamp=ts, data=dict(data, type=type_))
 
 
 def _lead(**kwargs):
-    defaults = dict(
-        id="lead_x",
+    events = kwargs.pop("events", [])
+    data = dict(
         stage="active_trial",
         state="CO",
         num_producers=4,
         years_in_business=9,
         estimated_book_size_usd=1_400_000,
-        signed_up_date=TODAY - datetime.timedelta(days=50),
-        last_login_date=TODAY - datetime.timedelta(days=2),
-        last_contacted_date=TODAY - datetime.timedelta(days=5),
+        signed_up_date=(TODAY - datetime.timedelta(days=50)).isoformat(),
+        last_login_date=(TODAY - datetime.timedelta(days=2)).isoformat(),
+        last_contacted_date=(TODAY - datetime.timedelta(days=5)).isoformat(),
         quotes_created=10,
         quotes_submitted=6,
         deals_closed=3,
         hubspot_notes="",
-        events=[],
     )
-    defaults.update(kwargs)
-    return SimpleNamespace(**defaults)
+    data.update(kwargs)
+    return SimpleNamespace(id="lead_x", data=data, shape=SHAPE, events=events)
 
 
 class LeadSourceTests(unittest.TestCase):
@@ -45,12 +50,8 @@ class LeadSourceTests(unittest.TestCase):
 
     def test_a_date_threshold_is_compared_as_a_date_not_a_string(self):
         payload = _all_of(_cond("signed_up_date", "<", "2026-01-01"))
-        self.assertTrue(
-            evaluate.matches(payload, _lead(signed_up_date=datetime.date(2025, 12, 31)), TODAY)
-        )
-        self.assertFalse(
-            evaluate.matches(payload, _lead(signed_up_date=datetime.date(2026, 1, 2)), TODAY)
-        )
+        self.assertTrue(evaluate.matches(payload, _lead(signed_up_date="2025-12-31"), TODAY))
+        self.assertFalse(evaluate.matches(payload, _lead(signed_up_date="2026-01-02"), TODAY))
 
     def test_exists_and_absent_split_on_a_null_field(self):
         exists = _all_of(_cond("signed_up_date", "exists"))
@@ -78,15 +79,19 @@ class LeadSourceTests(unittest.TestCase):
 
 class DerivedSourceTests(unittest.TestCase):
     def test_days_since_last_login_counts_from_the_run_date(self):
-        payload = _all_of(_cond("days_since_last_login", ">", 21, source="derived"))
+        payload = _all_of(_cond("days_since_last_login_date", ">", 21, source="derived"))
         self.assertTrue(
             evaluate.matches(
-                payload, _lead(last_login_date=TODAY - datetime.timedelta(days=22)), TODAY
+                payload,
+                _lead(last_login_date=(TODAY - datetime.timedelta(days=22)).isoformat()),
+                TODAY,
             )
         )
         self.assertFalse(
             evaluate.matches(
-                payload, _lead(last_login_date=TODAY - datetime.timedelta(days=21)), TODAY
+                payload,
+                _lead(last_login_date=(TODAY - datetime.timedelta(days=21)).isoformat()),
+                TODAY,
             )
         )
 
@@ -94,22 +99,24 @@ class DerivedSourceTests(unittest.TestCase):
 class DerivedDateTests(unittest.TestCase):
     def test_days_since_signup_and_last_contact_count_from_the_run_date(self):
         lead = _lead(
-            signed_up_date=TODAY - datetime.timedelta(days=40),
-            last_contacted_date=TODAY - datetime.timedelta(days=9),
+            signed_up_date=(TODAY - datetime.timedelta(days=40)).isoformat(),
+            last_contacted_date=(TODAY - datetime.timedelta(days=9)).isoformat(),
         )
         self.assertTrue(
             evaluate.matches(
-                _all_of(_cond("days_since_signup", ">", 30, source="derived")), lead, TODAY
+                _all_of(_cond("days_since_signed_up_date", ">", 30, source="derived")), lead, TODAY
             )
         )
         self.assertTrue(
             evaluate.matches(
-                _all_of(_cond("days_since_last_contact", "==", 9, source="derived")), lead, TODAY
+                _all_of(_cond("days_since_last_contacted_date", "==", 9, source="derived")),
+                lead,
+                TODAY,
             )
         )
 
     def test_a_never_contacted_lead_has_no_days_since_last_contact(self):
-        payload = _all_of(_cond("days_since_last_contact", ">", 0, source="derived"))
+        payload = _all_of(_cond("days_since_last_contacted_date", ">", 0, source="derived"))
         self.assertFalse(evaluate.matches(payload, _lead(last_contacted_date=None), TODAY))
 
 
@@ -120,10 +127,20 @@ class NotesSourceTests(unittest.TestCase):
             evaluate.matches(payload, _lead(hubspot_notes="Asked about VOLUME PRICING"), TODAY)
         )
 
-    def test_contains_also_reads_event_notes_not_just_the_crm_field(self):
+    def test_contains_reads_its_own_column_and_not_the_events(self):
+        # `notes` is one declared column; an event's text is the `events`
+        # source's, which nothing resolves yet.
         payload = _all_of(_cond("hubspot_notes", "contains", "circle back", source="notes"))
         lead = _lead(events=[_event("call_logged", TODAY, notes="asked us to circle back in Q3")])
-        self.assertTrue(evaluate.matches(payload, lead, TODAY))
+        self.assertFalse(evaluate.matches(payload, lead, TODAY))
+
+    def test_an_event_condition_is_refused_rather_than_silently_missing(self):
+        payload = _all_of(
+            _cond("deals_closed", ">", 0),
+            _cond("type", "==", "call_logged", source="events"),
+        )
+        with self.assertRaises(evaluate.ConditionError):
+            evaluate.matches(payload, _lead(), TODAY)
 
 
 class GroupTests(unittest.TestCase):
@@ -183,6 +200,12 @@ class GroupTests(unittest.TestCase):
         payload = _all_of(_cond("stage", "!=", "churned"))
         self.assertTrue(evaluate.matches(payload, _lead(), TODAY))
         self.assertFalse(evaluate.matches(payload, _lead(stage="churned"), TODAY))
+
+    def test_a_lead_whose_owner_declares_no_shape_has_no_verdict(self):
+        lead = _lead()
+        lead.shape = None
+        with self.assertRaises(evaluate.ConditionError):
+            evaluate.matches(_all_of(_cond("deals_closed", ">", 2)), lead, TODAY)
 
     def test_an_empty_payload_has_no_verdict(self):
         with self.assertRaises(evaluate.ConditionError):

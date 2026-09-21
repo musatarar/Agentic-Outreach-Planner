@@ -14,49 +14,21 @@ from project.app.services.actions import ACTION_META
 # The only event data the frontend gets -- the inbox needs no second request.
 RECENT_EVENT_LIMIT = 5
 
-# Rendered server-side so the surfaces that show activity cannot drift.
-EVENT_SUMMARIES = {
-    "login": "Portal login",
-    "quote_created": "Quote created",
-    "quote_submitted": "Quote submitted",
-    "deal_closed": "Deal closed",
-    "call_logged": "Call logged",
-    "email_sent": "Email sent",
-    "demo_completed": "Demo completed",
-    "onboarding_call": "Onboarding call",
-}
-
 _DATETIME = serializers.DateTimeField()
 
 
-def _event_summary(event):
-    return EVENT_SUMMARIES.get(event.type) or event.type.replace("_", " ").capitalize()
-
-
 class ReviewLeadSerializer(serializers.ModelSerializer):
-    """The lead as the review inbox needs it, with its recent activity."""
+    """The lead as the review inbox needs it, with its recent activity.
+
+    The blob goes over the wire whole; what its keys mean is the reader's
+    shape to say, not this serializer's.
+    """
 
     recent_events = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
-        fields = [
-            "id",
-            "agency_name",
-            "contact_name",
-            "contact_email",
-            "state",
-            "stage",
-            "num_producers",
-            "estimated_book_size_usd",
-            "quotes_created",
-            "quotes_submitted",
-            "deals_closed",
-            "signed_up_date",
-            "last_login_date",
-            "last_contacted_date",
-            "recent_events",
-        ]
+        fields = ["id", "data", "recent_events"]
 
     def get_recent_events(self, obj):
         # Sliced in Python off the prefetched queryset; slicing inside the
@@ -64,9 +36,8 @@ class ReviewLeadSerializer(serializers.ModelSerializer):
         events = list(obj.events.all())[:RECENT_EVENT_LIMIT]
         return [
             {
-                "type": event.type,
                 "timestamp": _DATETIME.to_representation(event.timestamp),
-                "summary": _event_summary(event),
+                "data": event.data,
             }
             for event in events
         ]

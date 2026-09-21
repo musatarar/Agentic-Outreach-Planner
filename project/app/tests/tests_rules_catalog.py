@@ -15,10 +15,14 @@ from django.db.models import RestrictedError
 from django.test import TestCase
 
 from project.app.models import ActionType, OutreachRule
+from project.app.tests.tests_shape_utils import shape_for
 
 
 def _user(username="planner@lockedin.example"):
-    return get_user_model().objects.create_user(username=username)
+    """With a shape: a rule's conditions are validated against its owner's."""
+    user = get_user_model().objects.create_user(username=username)
+    shape_for(user)
+    return user
 
 
 def _action(owner, key="reward_power_user", **kwargs):
@@ -239,6 +243,31 @@ class OutreachRuleTests(TestCase):
         self.assertIn("conditions", ctx.exception.message_dict)
         gated.conditions = _gate()
         gated.full_clean()
+
+    def test_an_owner_with_no_shape_has_no_vocabulary_to_write_conditions_against(self):
+        shapeless = get_user_model().objects.create_user(username="fresh@lockedin.example")
+        rule = OutreachRule(
+            owner=shapeless,
+            action=_action(shapeless),
+            name="named a column nobody declared",
+            kind=OutreachRule.KIND_DETERMINISTIC,
+            conditions=_deterministic_conditions(),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            rule.full_clean()
+        self.assertIn("conditions", ctx.exception.message_dict)
+
+    def test_a_rule_naming_a_column_the_shape_does_not_declare_is_refused(self):
+        rule = OutreachRule(
+            owner=self.user,
+            action=self.action,
+            name="reads a column that was renamed away",
+            kind=OutreachRule.KIND_DETERMINISTIC,
+            conditions=_deterministic_conditions(field="favourite_colour", threshold=1),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            rule.full_clean()
+        self.assertIn("conditions", ctx.exception.message_dict)
 
     def test_a_deterministic_rule_reading_only_the_notes_is_refused(self):
         notes_only = OutreachRule(

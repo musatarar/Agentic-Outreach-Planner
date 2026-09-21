@@ -72,6 +72,15 @@ def _days_since(value, today):
 # --------------------------------------------------------------------------
 
 
+# The addressee sentence, by the shape's two roles. A constant because the stub
+# provider reads the pair back out of a prompt it is handed.
+ADDRESSEE_LINE = "Write a short, personalized outreach email to {contact} at {agency}."
+
+# What a prompt block says when there is nothing declared to put in it.
+NO_SHAPE = "(this lead's owner has declared no shape)"
+NO_TRUSTED_COLUMNS = "(no trusted columns)"
+NO_EVENTS = "(no recorded events)"
+
 # Standing instruction placed immediately before the untrusted data block
 # ("spotlighting"): its contents are facts, never instructions. See SECURITY.md.
 UNTRUSTED_STANDING_INSTRUCTION = (
@@ -86,56 +95,101 @@ UNTRUSTED_STANDING_INSTRUCTION = (
 )
 
 
-def _format_events_for_prompt(lead, limit=6):
-    """Render recent events; free-text meta is attacker-controlled, so each such
-    field is sanitized and the caller fences the rendering in the untrusted block."""
+def _shape(lead):
+    return getattr(lead, "shape", None)
+
+
+def _rendered(value):
+    """One declared value as a prompt reads it: blank where nothing is stored."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value)
+
+
+def build_trusted_block(lead):
+    """The lead's trusted columns, one ``- name: value`` line each.
+
+    Read through the owner's shape, so a column it does not declare — and a
+    value that is not the declared type — never reaches the trusted region.
+    """
+    shape = _shape(lead)
+    if shape is None:
+        return NO_SHAPE
+    data = getattr(lead, "data", None)
+    lines = [
+        f"- {column['name']}: {_rendered(shape.value(data, column['name']))}"
+        for column in shape.trusted()
+    ]
+    return "\n".join(lines) if lines else NO_TRUSTED_COLUMNS
+
+
+def _format_events_for_prompt(lead, shape, limit=6):
+    """Render recent events, most recent first: the date, then each declared
+    column the event carries. Every value is attacker-controlled, so each is
+    sanitized and the caller fences the rendering in the untrusted block."""
     events = _events_list(lead)
     events = sorted(events, key=lambda e: getattr(e, "timestamp"), reverse=True)
     lines = []
     for event in events[:limit]:
         ts = getattr(event, "timestamp")
         ts_str = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)
-        meta = getattr(event, "meta", None) or {}
-        line = f"- {ts_str} {getattr(event, 'type', 'event')}"
-        if meta.get("notes"):
-            line += f": {sanitize.sanitize_untrusted(str(meta['notes']))}"
-        elif meta.get("subject"):
-            subject = sanitize.sanitize_untrusted(str(meta["subject"]))
-            outcome = sanitize.sanitize_untrusted(str(meta.get("outcome", "unknown")))
-            line += f': "{subject}" (outcome: {outcome})'
-        elif meta.get("client"):
-            client = sanitize.sanitize_untrusted(str(meta["client"]))
-            line += f" — client {client}, premium ${meta.get('premium', '?')}"
-        lines.append(line)
-    return "\n".join(lines) if lines else "(no recorded events)"
+        data = getattr(event, "data", None)
+        pairs = []
+        for column in shape.columns(shape.EVENT):
+            value = shape.value(data, column["name"], shape.EVENT)
+            if value is None or value == "":
+                continue
+            pairs.append(f"{column['name']}: {sanitize.sanitize_untrusted(_rendered(value))}")
+        lines.append(f"- {ts_str} {', '.join(pairs)}".rstrip())
+    return "\n".join(lines) if lines else NO_EVENTS
 
 
 def build_untrusted_block(lead):
     """Assemble all attacker-controlled free-text into one sanitized, labeled
     block (see sanitize.wrap_untrusted / SECURITY.md)."""
-    notes = getattr(lead, "hubspot_notes", "") or ""
-    body = (
-        "HubSpot notes:\n"
-        f"{sanitize.sanitize_untrusted(notes) if notes else '(none)'}\n\n"
+    shape = _shape(lead)
+    if shape is None:
+        return sanitize.wrap_untrusted(NO_SHAPE)
+    data = getattr(lead, "data", None)
+    sections = []
+    for column in shape.authored():
+        value = _rendered(shape.value(data, column["name"]))
+        sections.append(
+            f"{column['name']}:\n{sanitize.sanitize_untrusted(value) if value else '(none)'}"
+        )
+    sections.append(
         "Recent activity and call/email/demo notes (most recent first):\n"
-        f"{_format_events_for_prompt(lead)}"
+        f"{_format_events_for_prompt(lead, shape)}"
     )
-    return sanitize.wrap_untrusted(body)
+    return sanitize.wrap_untrusted("\n\n".join(sections))
+
+
+def _addressee(lead):
+    """Who the email is to, by the shape's two roles — the one place the prompt
+    names a person rather than a column."""
+    shape = _shape(lead)
+    if shape is None:
+        return "", ""
+    data = getattr(lead, "data", None)
+    return (
+        shape.role_value(data, shape.ROLE_CONTACT_NAME),
+        shape.role_value(data, shape.ROLE_AGENCY_NAME),
+    )
 
 
 def _build_copy_prompt(lead, action_type, reason):
     meta = actions.ACTION_META.get(action_type, {})
     # `reason` quotes note snippets, so sanitize it before the trusted region.
     reason = sanitize.sanitize_untrusted(reason)
-    return f"""You are an account executive at Locked In. Locked In sells Sure Lock — insurance premium protection for homeowners — through independent insurance agencies. Write a short, personalized outreach email to the agency contact below.
+    contact, agency = _addressee(lead)
+    return f"""You are an account executive at Locked In. Locked In sells Sure Lock — insurance premium protection for homeowners — through independent insurance agencies.
+
+{ADDRESSEE_LINE.format(contact=contact, agency=agency)}
 
 Trusted lead record (system fields — safe to rely on):
-- Contact: {getattr(lead, "contact_name", "")} ({getattr(lead, "contact_email", "")})
-- Agency: {getattr(lead, "agency_name", "")} ({getattr(lead, "state", "")}, {getattr(lead, "num_producers", "?")} producers, {getattr(lead, "years_in_business", "?")} years in business)
-- Stage: {getattr(lead, "stage", "")}
-- Estimated book size: ${getattr(lead, "estimated_book_size_usd", 0) or 0:,.0f}
-- Signed up: {getattr(lead, "signed_up_date", None)} | Last login: {getattr(lead, "last_login_date", None)} | Last contacted: {getattr(lead, "last_contacted_date", None)}
-- Usage: {getattr(lead, "quotes_created", 0)} quotes created, {getattr(lead, "quotes_submitted", 0)} submitted, {getattr(lead, "deals_closed", 0)} deals closed
+{build_trusted_block(lead)}
 
 {UNTRUSTED_STANDING_INSTRUCTION}
 
@@ -464,12 +518,12 @@ def failed_generation_filter():
 def _review(item, outcome, level, today):
     """The output gates for one lead: decide whether a human needs to see this."""
     if item.action_type == actions.UNKNOWN:
+        contact, agency = _addressee(item.lead)
         return ReviewOutcome(
             suggested_copy="",
             needs_human=True,
             further_action=CLASSIFICATION_UNMATCHED.format(
-                contact_name=item.lead.contact_name,
-                agency_name=item.lead.agency_name,
+                contact_name=contact, agency_name=agency
             ),
         )
 

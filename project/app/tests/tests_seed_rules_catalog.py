@@ -1,16 +1,25 @@
 """The ``seed_rules_catalog`` management command.
 
-Pins the demo catalog seed: deterministic rules plus the AI-inference ones
-land as one user's ``ActionType``/``OutreachRule`` rows, weighted and
-idempotent, owned by the resolved demo user.
+Pins the demo catalog seed: the demo shape, then deterministic rules plus the
+AI-inference ones, landing as one user's ``ActionType``/``OutreachRule`` rows,
+weighted and idempotent, owned by the resolved demo user.
 """
+
+import datetime
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-from project.app.management.commands.seed_rules_catalog import DEFAULT_OWNER_EMAIL
-from project.app.models import ActionType, Lead, OutreachRule
+from project.app.actions import services
+from project.app.actions.models import ActionJob
+from project.app.management.commands.seed_rules_catalog import (
+    DEFAULT_OWNER_EMAIL,
+    EVENT_COLUMNS,
+    LEAD_COLUMNS,
+    ROLES,
+)
+from project.app.models import ActionType, Lead, OutreachRule, Shape
 
 OWNER = "bd@lockedin.example"
 
@@ -105,15 +114,17 @@ class LeadOwnershipTests(TestCase):
     def _lead(self, lead_id):
         return Lead.objects.create(
             id=lead_id,
-            agency_name="Summit Risk Advisors",
-            contact_name="Priya Nair",
-            contact_email="priya@summitrisk.example.com",
-            contact_phone="555-0100",
-            state="CO",
-            num_producers=4,
-            years_in_business=9,
-            estimated_book_size_usd=1_400_000,
-            stage="active_trial",
+            data={
+                "agency_name": "Summit Risk Advisors",
+                "contact_name": "Priya Nair",
+                "contact_email": "priya@summitrisk.example.com",
+                "contact_phone": "555-0100",
+                "state": "CO",
+                "num_producers": 4,
+                "years_in_business": 9,
+                "estimated_book_size_usd": 1_400_000,
+                "stage": "active_trial",
+            },
         )
 
     def test_seeding_puts_every_lead_in_the_owners_book(self):
@@ -142,3 +153,79 @@ class LeadOwnershipTests(TestCase):
 
         self.assertEqual(Lead.objects.count(), 1)
         self.assertIsNone(Lead.objects.get(id="lead_001").owner)
+
+
+class DemoShapeTests(TestCase):
+    def test_seeding_declares_the_demo_shape_before_the_rules(self):
+        _seed(owner=OWNER)
+        shape = Shape.objects.get(owner=_owner())
+        self.assertEqual(shape.lead_columns, LEAD_COLUMNS)
+        self.assertEqual(shape.event_columns, EVENT_COLUMNS)
+        self.assertEqual(shape.roles, ROLES)
+
+    def test_the_seeded_shape_is_one_the_model_accepts(self):
+        _seed(owner=OWNER)
+        Shape.objects.get(owner=_owner()).full_clean()
+
+    def test_the_lead_writes_exactly_one_of_the_demo_columns(self):
+        _seed(owner=OWNER)
+        shape = Shape.objects.get(owner=_owner())
+        self.assertEqual([c["name"] for c in shape.authored()], ["hubspot_notes"])
+
+    def test_reseeding_re_declares_rather_than_adding_a_second_shape(self):
+        _seed(owner=OWNER)
+        Shape.objects.filter(owner=_owner()).update(event_columns=[])
+        _seed(owner=OWNER)
+        self.assertEqual(Shape.objects.filter(owner=_owner()).count(), 1)
+        self.assertEqual(Shape.objects.get(owner=_owner()).event_columns, EVENT_COLUMNS)
+
+
+# What the engine decides for `raw_data/` on a frozen date, so ingest, the
+# seeded shape and the rules stay in step: change any one of them and this
+# says which lead moved.
+TODAY = datetime.date(2026, 6, 12)
+
+RAW_DATA_DECISIONS = {
+    "lead_001": "power_user_reward",
+    "lead_002": "follow_up_after_hold",
+    "lead_003": "complete_onboarding",
+    "lead_004": "nudge_usage",
+    "lead_005": None,
+    "lead_006": "reengage_dormant",
+    "lead_007": None,
+    "lead_008": None,
+    "lead_009": None,
+    "lead_010": None,
+    "lead_011": "nudge_usage",
+    "lead_012": "follow_up_after_hold",
+}
+
+
+class RawDataEndToEndTests(TestCase):
+    """Ingest, seed, then one engine run over the committed raw files."""
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("ingest_data", verbosity=0)
+        _seed(owner=OWNER)
+        for job in services.enqueue_pending_leads(today=TODAY):
+            if services.claim(job):
+                services.run_job(job, today=TODAY)
+
+    def _decisions(self):
+        return {
+            job.lead_id: (job.selected_action.key if job.selected_action else None)
+            for job in ActionJob.objects.select_related("selected_action")
+        }
+
+    def test_the_run_reaches_a_verdict_for_every_ingested_lead(self):
+        self.assertEqual(ActionJob.objects.count(), Lead.objects.count())
+        self.assertFalse(ActionJob.objects.exclude(status__in=ActionJob.DECIDED_STATUSES).exists())
+
+    def test_the_engine_chooses_the_same_action_for_every_raw_lead(self):
+        self.assertEqual(self._decisions(), RAW_DATA_DECISIONS)
+
+    def test_no_deterministic_rule_is_unevaluable_against_the_seeded_shape(self):
+        for job in ActionJob.objects.all():
+            with self.subTest(job.lead_id):
+                self.assertEqual(job.decision["deterministic"].get("unevaluable_rule_ids", []), [])

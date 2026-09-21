@@ -15,7 +15,16 @@ from project.app.actions import evaluate, services
 from project.app.actions.models import ActionJob
 from project.app.models import ActionType, Event, Lead, OutreachRule
 from project.app.rules import inference, schema, utils
-from project.app.rules.utils import _all_of, _cond
+from project.app.rules import utils as rules_utils
+from project.app.rules.utils import _all_of
+from project.app.tests.tests_shape_utils import shape, shape_for
+
+SHAPE = shape()
+
+
+def _cond(field, operator, threshold=None, source=None):
+    return rules_utils._cond(field, operator, threshold, source=source, shape=SHAPE)
+
 
 TODAY = datetime.date(2026, 6, 12)
 
@@ -35,9 +44,10 @@ class EngineTestCase(TestCase):
     def setUp(self):
         super().setUp()
         self.owner = get_user_model().objects.create_user(username="planner@lockedin.example")
+        self.shape = shape_for(self.owner)
 
     def _lead(self, lead_id="lead_001", owner=None, **kwargs):
-        fields = dict(
+        data = dict(
             agency_name="Summit Risk Advisors",
             contact_name="Priya Nair",
             contact_email="priya@summitrisk.example.com",
@@ -47,19 +57,21 @@ class EngineTestCase(TestCase):
             years_in_business=9,
             estimated_book_size_usd=1_400_000,
             stage="active_trial",
-            signed_up_date=TODAY - datetime.timedelta(days=50),
-            last_login_date=TODAY - datetime.timedelta(days=2),
-            last_contacted_date=TODAY - datetime.timedelta(days=5),
+            signed_up_date=(TODAY - datetime.timedelta(days=50)).isoformat(),
+            last_login_date=(TODAY - datetime.timedelta(days=2)).isoformat(),
+            last_contacted_date=(TODAY - datetime.timedelta(days=5)).isoformat(),
             quotes_created=10,
             quotes_submitted=6,
             deals_closed=3,
             hubspot_notes="",
         )
-        fields.update(kwargs)
-        return Lead.objects.create(id=lead_id, owner=owner or self.owner, **fields)
+        data.update(kwargs)
+        return Lead.objects.create(id=lead_id, owner=owner or self.owner, data=data)
 
-    def _event(self, lead, type_="login", **meta):
-        return Event.objects.create(lead=lead, type=type_, timestamp=timezone.now(), meta=meta)
+    def _event(self, lead, type_="login", **data):
+        return Event.objects.create(
+            lead=lead, timestamp=timezone.now(), data=dict(data, type=type_)
+        )
 
     def _action(self, key, owner=None):
         return ActionType.objects.create(owner=owner or self.owner, key=key, label=key)
@@ -311,7 +323,7 @@ class DeterministicPassTests(EngineTestCase):
         self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
 
     def test_the_job_is_judged_on_its_own_events_not_the_leads_later_ones(self):
-        lead = self._lead(last_contacted_date=TODAY - datetime.timedelta(days=15))
+        lead = self._lead(last_contacted_date=(TODAY - datetime.timedelta(days=15)).isoformat())
         action = self._action("follow_up_after_hold")
         self._rule(
             action,
@@ -319,7 +331,7 @@ class DeterministicPassTests(EngineTestCase):
             OutreachRule.WEIGHT_HIGH,
             conditions=_all_of(
                 _cond("hubspot_notes", "contains", "circle back", source="notes"),
-                _cond("days_since_last_contact", ">=", 14, source="derived"),
+                _cond("days_since_last_contacted_date", ">=", 14, source="derived"),
             ),
         )
         job = services.enqueue_lead(lead)
@@ -384,6 +396,7 @@ class OwnerScopingTests(EngineTestCase):
 
     def test_the_job_runs_the_catalog_of_the_user_whose_book_the_lead_is_in(self):
         colleague = get_user_model().objects.create_user(username="colleague@lockedin.example")
+        shape_for(colleague)
         self._rule(self._action("nudge_usage"), "mine", OutreachRule.WEIGHT_HIGH)
         self._rule(
             self._action("reengage_dormant", owner=colleague), "theirs", OutreachRule.WEIGHT_HIGH
@@ -680,7 +693,7 @@ class SeededCatalogTests(EngineTestCase):
         from project.app.management.commands import seed_rules_catalog
 
         lead = self._lead()
-        for spec in seed_rules_catalog.RULES:
+        for spec in seed_rules_catalog._rules(self.shape):
             conditions = spec.get("conditions")
             if not conditions:
                 continue
@@ -696,7 +709,7 @@ class SeededCatalogTests(EngineTestCase):
 
     def test_the_seeded_catalog_chooses_the_planners_action_for_a_dormant_lead(self):
         call_command("seed_rules_catalog", owner=self.owner.username)
-        lead = self._lead(last_login_date=TODAY - datetime.timedelta(days=60))
+        lead = self._lead(last_login_date=(TODAY - datetime.timedelta(days=60)).isoformat())
 
         job = self._run(services.enqueue_lead(lead))
 
@@ -707,35 +720,49 @@ class SeededCatalogTests(EngineTestCase):
 
 class VocabularyCoverageTests(EngineTestCase):
     """What the catalog can store against what this engine can evaluate. The
-    vocabulary is read off the Lead and Event columns, so it can widen without
-    anyone touching the engine."""
+    vocabulary is read off the owner's shape, so it widens with a
+    re-declaration without anyone touching the engine."""
 
-    def test_every_computed_field_in_the_vocabulary_has_a_resolver(self):
-        fields = utils.fields_by_source()
-        for source in (utils.SOURCE_DERIVED, utils.SOURCE_NOTES):
+    def test_every_field_the_vocabulary_names_outside_events_has_a_verdict(self):
+        lead = self._lead()
+        fields = utils.fields_by_source(self.shape)
+        for source in (utils.SOURCE_LEAD, utils.SOURCE_DERIVED, utils.SOURCE_NOTES):
             for field in fields[source]:
                 with self.subTest(source=source, field=field):
-                    self.assertIn(field, evaluate.RESOLVERS[source])
-
-    def test_every_lead_column_in_the_vocabulary_is_read_straight_off_the_row(self):
-        lead = self._lead()
-        for field in utils.fields_by_source()[utils.SOURCE_LEAD]:
-            with self.subTest(field=field):
-                self.assertTrue(hasattr(lead, field))
+                    payload = _all_of(_cond(field, "exists", source=source))
+                    self.assertIsInstance(evaluate.matches(payload, lead, TODAY), bool)
 
     def test_an_event_column_stores_in_a_rule_but_has_no_verdict_yet(self):
-        unresolved = set(utils.fields_by_source()[utils.SOURCE_EVENTS]) - set(
-            evaluate.RESOLVERS.get(utils.SOURCE_EVENTS, {})
-        )
-        self.assertEqual(unresolved, {"type", "timestamp"})
-
         payload = _all_of(
             _cond("deals_closed", ">", 0),
             _cond("type", "==", "login", source=utils.SOURCE_EVENTS),
         )
-        utils.validate_conditions(payload)
+        utils.validate_conditions(payload, self.shape)
         with self.assertRaises(evaluate.ConditionError):
             evaluate.matches(payload, self._lead(), TODAY)
+
+    def test_a_column_the_owner_renames_leaves_its_old_rule_unevaluable(self):
+        action = self._action("nudge_usage")
+        self._rule(
+            action,
+            "reads a column that is about to be renamed",
+            OutreachRule.WEIGHT_HIGH,
+            conditions=_all_of(_cond("deals_closed", ">", 0)),
+        )
+        self.shape.lead_columns = [
+            {
+                "name": "closed_deals" if c["name"] == "deals_closed" else c["name"],
+                **{k: v for k, v in c.items() if k != "name"},
+            }
+            for c in self.shape.lead_columns
+        ]
+        self.shape.save()
+
+        job = self._run(services.enqueue_lead(self._lead()))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
+        self.assertEqual(len(job.decision["unevaluable_rule_ids"]), 1)
 
 
 class ConstraintTests(EngineTestCase):

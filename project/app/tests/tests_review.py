@@ -6,9 +6,9 @@ silent no-op; and a dismissal suppresses the recommendation until the reopen
 revokes it.
 """
 
-from datetime import date
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
@@ -19,6 +19,7 @@ from rest_framework.throttling import SimpleRateThrottle
 from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import dedupe
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
+from project.app.tests.tests_shape_utils import shape_for
 from project.app.views.review import ReviewListView, ReviewVerifyView
 
 # A lead and a draft that between them exercise every grounded claim kind the
@@ -38,11 +39,19 @@ GROUNDED_COPY = (
 )
 
 
-def make_lead(lead_id="lead_001", **overrides):
+def reviewer():
+    """The owner whose shape says what these leads' columns are — without one,
+    the verifier has nothing to ground against."""
+    owner, created = get_user_model().objects.get_or_create(username="ae@lockedin.example")
+    if created:
+        shape_for(owner)
+    return owner
+
+
+def make_lead(lead_id="lead_001", *, owner=None, **overrides):
     """A power user: deals >= 5 and submissions >= 10, so the classification is
     date-independent (rule R2) and ``GROUNDED_COPY`` is fully grounded."""
-    defaults = dict(
-        id=lead_id,
+    data = dict(
         agency_name="Summit Risk Advisors",
         contact_name="Priya Nair",
         contact_email="priya.nair@example.com",
@@ -52,16 +61,16 @@ def make_lead(lead_id="lead_001", **overrides):
         years_in_business=5,
         estimated_book_size_usd=1_400_000,
         stage="active_trial",
-        signed_up_date=date(2026, 1, 1),
-        last_login_date=date(2026, 6, 1),
+        signed_up_date="2026-01-01",
+        last_login_date="2026-06-01",
         quotes_created=19,
         quotes_submitted=14,
         deals_closed=6,
-        last_contacted_date=date(2026, 5, 1),
+        last_contacted_date="2026-05-01",
         hubspot_notes="Wants volume pricing at the 20-deal milestone.",
     )
-    defaults.update(overrides)
-    return Lead.objects.create(**defaults)
+    data.update(overrides)
+    return Lead.objects.create(id=lead_id, owner=owner or reviewer(), data=data)
 
 
 def make_action(lead=None, **overrides):

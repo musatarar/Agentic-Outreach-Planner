@@ -13,6 +13,7 @@ from django.core.validators import MaxLengthValidator, RegexValidator
 from django.db import models
 from django.db.models import Q
 
+from project.app.models.lead import Shape
 from project.app.rules import utils
 
 
@@ -76,8 +77,8 @@ class OutreachRule(models.Model):
     ``action``.
 
     A ``deterministic`` rule is its ``conditions``: a structured, versioned
-    payload (:mod:`project.app.rules.utils`) naming Lead and Event columns and
-    the engine's computed figures, evaluated in-process. An
+    payload (:mod:`project.app.rules.utils`) naming the columns the owner's shape
+    declares and the figures derived from them, evaluated in-process. An
     ``inference`` rule adds ``inference_prompt``, a natural-language predicate
     the LLM seam evaluates against the lead's sanitized, fenced data, and may
     stand on that predicate alone. Conditions on an inference rule are
@@ -109,8 +110,7 @@ class OutreachRule(models.Model):
     ]
 
     # The ``conditions`` schema, its vocabulary and its validator all live in
-    # utils, which reads the nameable fields off the Lead and Event columns
-    # themselves; user-defined data shapes are deliberately deferred.
+    # utils, which reads the nameable fields off the owner's declared shape.
     CONDITIONS_SCHEMA_VERSION = utils.SCHEMA_VERSION
 
     # ``inference_prompt`` is prompt-bound (``build_inference_prompt``); the
@@ -179,10 +179,17 @@ class OutreachRule(models.Model):
             problems["action"] = "A rule can only select one of its owner's own action types."
 
         if self.conditions:
-            try:
-                utils.validate_conditions(self.conditions)
-            except ValidationError as exc:
-                problems["conditions"] = exc.messages
+            shape = Shape.objects.filter(owner_id=self.owner_id).first()
+            if shape is None:
+                problems["conditions"] = (
+                    "Declare what a lead and an event are before writing conditions: "
+                    "without a shape there is no vocabulary to name."
+                )
+            else:
+                try:
+                    utils.validate_conditions(self.conditions, shape)
+                except ValidationError as exc:
+                    problems["conditions"] = exc.messages
 
         prompt = (self.inference_prompt or "").strip()
         if self.kind == self.KIND_DETERMINISTIC:

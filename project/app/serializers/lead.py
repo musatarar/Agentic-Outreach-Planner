@@ -1,8 +1,12 @@
-"""Lead representations shared by the planner-facing endpoints."""
+"""Lead representations shared by the planner-facing endpoints.
+
+A lead is ``id`` plus the blob its owner's shape describes, so the wire carries
+both and nothing interprets the blob here.
+"""
 
 from rest_framework import serializers
 
-from project.app.models import Lead
+from project.app.models import Lead, Shape
 
 
 class LeadSerializer(serializers.ModelSerializer):
@@ -18,4 +22,17 @@ class LeadSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Lead
-        fields = ["id", "agency_name", "contact_name", "contact_email"]
+        fields = ["id", "data"]
+
+
+class ShapeSerializer(serializers.ModelSerializer):
+    """What one user says a lead and an event are.
+
+    ``owner`` is bound from the session, never the payload, and the write path
+    runs ``full_clean()`` so the model's own checks are the only verdict.
+    """
+
+    class Meta:
+        model = Shape
+        fields = ["lead_columns", "event_columns", "roles", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
