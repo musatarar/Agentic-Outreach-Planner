@@ -26,27 +26,31 @@ import {
 } from '../src/components/leads/leadTable.ts';
 import type { LeadRecord, ProposedAction } from '../src/api/types.ts';
 
-/** A lead with every field defaulted, so each test states only what it varies. */
-function lead(overrides: Partial<LeadRecord> = {}): LeadRecord {
+/** A lead with every column defaulted, so each test states only what it varies. */
+function lead(overrides: Partial<LeadRecord['data']> & { id?: string } = {}): LeadRecord {
+  const { id = 'lead_001', ...data } = overrides;
   return {
-    id: 'lead_001',
-    agency_name: 'Acme Insurance',
-    contact_name: 'Dana Reed',
-    contact_email: 'dana@acme.example',
-    contact_phone: '555-0100',
-    state: 'TX',
-    num_producers: 4,
-    years_in_business: 9,
-    estimated_book_size_usd: 1_000_000,
-    stage: 'active_trial',
-    signed_up_date: '2026-01-05',
-    last_login_date: '2026-08-01',
-    quotes_created: 3,
-    quotes_submitted: 1,
-    deals_closed: 0,
-    last_contacted_date: '2026-08-01',
-    hubspot_notes: '',
-    ...overrides,
+    id,
+    owner: 1,
+    data: {
+      agency_name: 'Acme Insurance',
+      contact_name: 'Dana Reed',
+      contact_email: 'dana@acme.example',
+      contact_phone: '555-0100',
+      state: 'TX',
+      num_producers: 4,
+      years_in_business: 9,
+      estimated_book_size_usd: 1_000_000,
+      stage: 'active_trial',
+      signed_up_date: '2026-01-05',
+      last_login_date: '2026-08-01',
+      quotes_created: 3,
+      quotes_submitted: 1,
+      deals_closed: 0,
+      last_contacted_date: '2026-08-01',
+      hubspot_notes: '',
+      ...data,
+    },
   };
 }
 

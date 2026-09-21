@@ -27,9 +27,7 @@ function proposal(overrides: Partial<ProposedAction> = {}): ProposedAction {
     id: 42,
     lead: {
       id: 'lead_118',
-      agency_name: 'Harbor Insurance',
-      contact_name: 'Dana Ruiz',
-      contact_email: 'dana@harbor.example',
+      data: { agency_name: 'Harbor Insurance', contact_name: 'Dana Ruiz' },
     },
     action: { key: 'reward_power_user', label: 'Reward power user', urgency: 'high' },
     reasons: ['Closed 20+ deals'],

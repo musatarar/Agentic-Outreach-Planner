@@ -41,6 +41,7 @@ export interface LeadCardProps {
  */
 export function LeadCard({ item, report, draft, onDraftClick, actions }: LeadCardProps) {
   const { lead } = item;
+  const book = lead.data.estimated_book_size_usd;
   // A row with no draft is a failed or unmatched generation: `further_action`
   // is then the whole point of the card, and says whose problem it is.
   const hasDraft = item.effective_copy.trim().length > 0;
@@ -52,9 +53,9 @@ export function LeadCard({ item, report, draft, onDraftClick, actions }: LeadCar
           <div className="lead-card__head">
             <div className="lead-card__identity">
               <h2 className="lead-card__contact" id={`lead-card-heading-${item.id}`}>
-                {lead.contact_name}
+                {lead.data.contact_name ?? lead.id}
               </h2>
-              <p className="lead-card__agency">{lead.agency_name}</p>
+              <p className="lead-card__agency">{lead.data.agency_name ?? '—'}</p>
             </div>
             <div className="lead-card__badges">
               <Badge tone={`p${item.priority}`}>P{item.priority}</Badge>
@@ -73,12 +74,15 @@ export function LeadCard({ item, report, draft, onDraftClick, actions }: LeadCar
           {/* The record the draft's claims are checked against. */}
           <div className="lead-card__facts">
             <Fact label="id" value={lead.id} />
-            <Fact label="stage" value={lead.stage} />
-            <Fact label="book" value={USD.format(lead.estimated_book_size_usd)} />
-            <Fact label="quotes" value={`${lead.quotes_created}/${lead.quotes_submitted}`} />
-            <Fact label="closed" value={String(lead.deals_closed)} />
-            <Fact label="producers" value={String(lead.num_producers)} />
-            <Fact label="last login" value={lead.last_login_date ?? '—'} />
+            <Fact label="stage" value={lead.data.stage ?? '—'} />
+            <Fact label="book" value={book === undefined ? '—' : USD.format(book)} />
+            <Fact
+              label="quotes"
+              value={`${lead.data.quotes_created ?? 0}/${lead.data.quotes_submitted ?? 0}`}
+            />
+            <Fact label="closed" value={String(lead.data.deals_closed ?? 0)} />
+            <Fact label="producers" value={String(lead.data.num_producers ?? 0)} />
+            <Fact label="last login" value={lead.data.last_login_date ?? '—'} />
           </div>
 
           <div className="inbox-section">

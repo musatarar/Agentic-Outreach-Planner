@@ -183,22 +183,32 @@ export function LeadsTable({
                       {isOpen ? '▾' : '▸'}
                     </span>
                     <span>
-                      <span className="leads-table__agency">{lead.agency_name}</span>
+                      <span className="leads-table__agency">
+                        {lead.data.agency_name ?? lead.id}
+                      </span>
                       <span className="leads-table__id">{lead.id}</span>
                     </span>
                   </button>
                 </td>
                 <td>
-                  <span className="leads-table__contact">{lead.contact_name}</span>
-                  <a className="leads-table__email" href={`mailto:${lead.contact_email}`}>
-                    {lead.contact_email}
-                  </a>
+                  <span className="leads-table__contact">{lead.data.contact_name ?? '—'}</span>
+                  {lead.data.contact_email ? (
+                    <a className="leads-table__email" href={`mailto:${lead.data.contact_email}`}>
+                      {lead.data.contact_email}
+                    </a>
+                  ) : (
+                    <span className="leads-table__email">—</span>
+                  )}
                 </td>
-                <td>{formatStage(lead.stage)}</td>
+                <td>{formatStage(lead.data.stage ?? '')}</td>
                 <td className="leads-table__num">
-                  {formatUsdCompact(lead.estimated_book_size_usd)}
+                  {lead.data.estimated_book_size_usd === undefined
+                    ? '—'
+                    : formatUsdCompact(lead.data.estimated_book_size_usd)}
                 </td>
-                <td className="leads-table__num">{formatDateOnly(lead.last_contacted_date)}</td>
+                <td className="leads-table__num">
+                  {formatDateOnly(lead.data.last_contacted_date ?? null)}
+                </td>
                 <td className="leads-table__proposal">
                   {isAwaitingReview(proposal, open.has(lead.id)) ? (
                     <Badge tone="pending">Review drafted email</Badge>
