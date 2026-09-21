@@ -2,27 +2,19 @@
 
 :mod:`project.app.rules.utils` owns the vocabulary, reading it off the Lead and
 Event columns. A field it names that nothing here resolves is refused at
-evaluation rather than quietly firing. Pure Python and duck-typed like the planner's rule functions -- no database, no
-provider call. Lead-controlled text is only ever read through the planner's
+evaluation rather than quietly firing. Pure Python and duck-typed -- no
+database, no provider call. Lead-controlled text is only ever read through the
 sanitized notes blob.
 """
 
 import datetime
 
 from project.app.rules import utils
-from project.app.services import outreach
+from project.app.services import outreach, sanitize
 
 
 class ConditionError(Exception):
     """A payload this engine cannot evaluate -- it names something unknown."""
-
-
-# Named phrase sets a `contains` threshold may reference, resolved to the
-# planner's own lists so the two can never drift.
-PHRASE_SETS = {
-    "HOLD_PHRASES": outreach.HOLD_PHRASES,
-    "STALL_PHRASES": outreach.STALL_PHRASES,
-}
 
 
 def _days_since_signup(lead, today):
@@ -37,11 +29,20 @@ def _days_since_last_contact(lead, today):
     return outreach._days_since(getattr(lead, "last_contacted_date", None), today)
 
 
-def _deals_below_milestone(lead, today):
-    milestone = outreach._milestone_from_notes(lead)
-    if milestone is None:
-        return False
-    return (getattr(lead, "deals_closed", 0) or 0) < milestone
+def _notes_blob(lead, today):
+    """Combined lowercase text of hubspot notes + event notes/outcomes.
+
+    Attacker-controlled free-text, sanitized before it is matched against; a
+    phrase match is only a SIGNAL, and ``validate_conditions`` is what keeps it
+    from satisfying a rule on its own (see SECURITY.md).
+    """
+    parts = [getattr(lead, "hubspot_notes", "") or ""]
+    for event in outreach._events_list(lead):
+        meta = getattr(event, "meta", None) or {}
+        for key in ("notes", "subject", "outcome"):
+            if meta.get(key):
+                parts.append(str(meta[key]))
+    return " ".join(sanitize.sanitize_untrusted(p) for p in parts).lower()
 
 
 # Every non-`lead` field in the vocabulary, resolved from the lead + its events.
@@ -50,16 +51,10 @@ RESOLVERS = {
         "days_since_signup": _days_since_signup,
         "days_since_last_login": _days_since_last_login,
         "days_since_last_contact": _days_since_last_contact,
-        "gone_quiet": outreach._gone_quiet,
     },
     utils.SOURCE_NOTES: {
         # The sanitized, lowercased blob -- never the raw CRM field.
-        "hubspot_notes": lambda lead, today: outreach._notes_blob(lead),
-        "milestone_from_notes": lambda lead, today: outreach._milestone_from_notes(lead),
-        "deals_below_milestone": _deals_below_milestone,
-    },
-    utils.SOURCE_EVENTS: {
-        "has_no_reply_email": lambda lead, today: outreach._had_no_reply_email(lead),
+        "hubspot_notes": _notes_blob,
     },
 }
 
@@ -145,13 +140,7 @@ def _compare(value, operator, threshold, field_type):
 
 
 def _contains(value, threshold):
-    text = str(value or "").lower()
-    phrases = PHRASE_SETS.get(threshold)
-    if phrases is not None:
-        return outreach._matched_phrase(text, phrases) is not None
-    if threshold in utils.PHRASE_SETS:
-        raise ConditionError(f"Phrase set {threshold!r} has no phrases behind it.")
-    return threshold.strip().lower() in text
+    return threshold.strip().lower() in str(value or "").lower()
 
 
 def _coerce(threshold, field_type):

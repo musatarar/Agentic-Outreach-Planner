@@ -1,6 +1,6 @@
 """Copy normalization and verification snapshots.
 
-Shared between ``plan_outreach()`` and the review views — a service must not
+Shared between the actions engine and the review views — a service must not
 import from the API layer. Normalization happens *before* storing copy or
 computing any offset; verification and approval each have one reading here.
 """

@@ -1,11 +1,9 @@
 """The deterministic pass: a stored conditions payload against one lead. Pure
-Python, no Django -- leads are SimpleNamespace stubs, exactly as tests_logic.py
-builds them."""
+Python, no Django -- leads are SimpleNamespace stubs."""
 
 import datetime
 import unittest
 from types import SimpleNamespace
-from unittest import mock
 
 from project.app.actions import evaluate
 from project.app.rules import utils
@@ -92,20 +90,6 @@ class DerivedSourceTests(unittest.TestCase):
             )
         )
 
-    def test_gone_quiet_needs_a_structured_corroborator_not_a_stall_phrase(self):
-        payload = _all_of(_cond("gone_quiet", "==", True, source="derived"))
-        phrase_only = _lead(
-            hubspot_notes="haven't heard back from them",
-            last_contacted_date=TODAY - datetime.timedelta(days=15),
-        )
-        self.assertFalse(evaluate.matches(payload, phrase_only, TODAY))
-        corroborated = _lead(
-            hubspot_notes="haven't heard back from them",
-            last_contacted_date=TODAY - datetime.timedelta(days=15),
-            events=[_event("email_sent", TODAY, outcome="no_reply")],
-        )
-        self.assertTrue(evaluate.matches(payload, corroborated, TODAY))
-
 
 class DerivedDateTests(unittest.TestCase):
     def test_days_since_signup_and_last_contact_count_from_the_run_date(self):
@@ -130,20 +114,6 @@ class DerivedDateTests(unittest.TestCase):
 
 
 class NotesSourceTests(unittest.TestCase):
-    def test_contains_resolves_a_named_phrase_set(self):
-        payload = _all_of(_cond("hubspot_notes", "contains", "HOLD_PHRASES", source="notes"))
-        self.assertTrue(
-            evaluate.matches(payload, _lead(hubspot_notes="Waiting on budget approval"), TODAY)
-        )
-        self.assertFalse(
-            evaluate.matches(payload, _lead(hubspot_notes="All good, very happy"), TODAY)
-        )
-
-    def test_every_phrase_set_the_validator_accepts_resolves_to_phrases(self):
-        self.assertEqual(set(evaluate.PHRASE_SETS), set(utils.PHRASE_SETS))
-        for name, phrases in evaluate.PHRASE_SETS.items():
-            self.assertTrue(phrases, name)
-
     def test_contains_matches_a_literal_phrase_case_insensitively(self):
         payload = _all_of(_cond("hubspot_notes", "contains", "volume pricing", source="notes"))
         self.assertTrue(
@@ -151,37 +121,9 @@ class NotesSourceTests(unittest.TestCase):
         )
 
     def test_contains_also_reads_event_notes_not_just_the_crm_field(self):
-        payload = _all_of(_cond("hubspot_notes", "contains", "HOLD_PHRASES", source="notes"))
+        payload = _all_of(_cond("hubspot_notes", "contains", "circle back", source="notes"))
         lead = _lead(events=[_event("call_logged", TODAY, notes="asked us to circle back in Q3")])
         self.assertTrue(evaluate.matches(payload, lead, TODAY))
-
-    def test_milestone_and_deals_below_it_come_out_of_the_notes(self):
-        lead = _lead(hubspot_notes="volume pricing at 20 closed deals", deals_closed=6)
-        self.assertTrue(
-            evaluate.matches(
-                _all_of(_cond("milestone_from_notes", "exists", source="notes")), lead, TODAY
-            )
-        )
-        self.assertTrue(
-            evaluate.matches(
-                _all_of(_cond("deals_below_milestone", "==", True, source="notes")), lead, TODAY
-            )
-        )
-
-    def test_deals_below_milestone_is_false_when_the_notes_name_none(self):
-        payload = _all_of(_cond("deals_below_milestone", "==", True, source="notes"))
-        self.assertFalse(evaluate.matches(payload, _lead(hubspot_notes="no numbers here"), TODAY))
-
-
-class EventSourceTests(unittest.TestCase):
-    def test_has_no_reply_email_reads_the_events_it_was_given(self):
-        payload = _all_of(_cond("has_no_reply_email", "==", True, source="events"))
-        self.assertFalse(evaluate.matches(payload, _lead(), TODAY))
-        self.assertTrue(
-            evaluate.matches(
-                payload, _lead(events=[_event("email_sent", TODAY, outcome="no_reply")]), TODAY
-            )
-        )
 
 
 class GroupTests(unittest.TestCase):
@@ -241,12 +183,6 @@ class GroupTests(unittest.TestCase):
         payload = _all_of(_cond("stage", "!=", "churned"))
         self.assertTrue(evaluate.matches(payload, _lead(), TODAY))
         self.assertFalse(evaluate.matches(payload, _lead(stage="churned"), TODAY))
-
-    def test_a_phrase_set_with_nothing_behind_it_is_refused(self):
-        payload = _all_of(_cond("hubspot_notes", "contains", "HOLD_PHRASES", source="notes"))
-        with mock.patch.dict(evaluate.PHRASE_SETS, {}, clear=True):
-            with self.assertRaises(evaluate.ConditionError):
-                evaluate.matches(payload, _lead(hubspot_notes="waiting on budget"), TODAY)
 
     def test_an_empty_payload_has_no_verdict(self):
         with self.assertRaises(evaluate.ConditionError):

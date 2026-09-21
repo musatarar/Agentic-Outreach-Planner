@@ -1,7 +1,7 @@
 """The ``seed_rules_catalog`` management command.
 
-Pins the demo catalog seed: the planner's compiled rules plus one AI-inference
-rule land as one user's ``ActionType``/``OutreachRule`` rows, weighted and
+Pins the demo catalog seed: deterministic rules plus the AI-inference ones
+land as one user's ``ActionType``/``OutreachRule`` rows, weighted and
 idempotent, owned by the resolved demo user.
 """
 
@@ -45,13 +45,21 @@ class SeedRulesCatalogTests(TestCase):
         for rule in rules:
             rule.full_clean()
 
-    def test_the_seed_includes_one_inference_rule_for_the_appointment_action(self):
+    def test_what_only_a_model_can_read_is_seeded_as_an_inference_rule(self):
         _seed(owner=OWNER)
-        inference = OutreachRule.objects.filter(
-            owner=_owner(), kind=OutreachRule.KIND_INFERENCE
-        ).get()
-        self.assertEqual(inference.action.key, "set_up_appointment")
-        self.assertIn("need help", inference.inference_prompt)
+        inference = OutreachRule.objects.filter(owner=_owner(), kind=OutreachRule.KIND_INFERENCE)
+        self.assertEqual(
+            {rule.action.key for rule in inference}, {"set_up_appointment", "nudge_usage"}
+        )
+        self.assertIn("need help", inference.get(action__key="set_up_appointment").inference_prompt)
+
+    def test_the_milestone_rule_gates_its_provider_call_behind_conditions(self):
+        _seed(owner=OWNER)
+        milestone = OutreachRule.objects.get(
+            owner=_owner(), kind=OutreachRule.KIND_INFERENCE, action__key="nudge_usage"
+        )
+        self.assertIn("deal target", milestone.inference_prompt)
+        self.assertTrue(milestone.conditions["conditions"])
 
     def test_three_weighted_rules_argue_for_a_usage_nudge(self):
         _seed(owner=OWNER)

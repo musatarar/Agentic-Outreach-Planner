@@ -1,7 +1,7 @@
 """Deterministic grounding verifier for generated outreach copy.
 
 Pure regex/string logic, no LLM, duck-typed on lead attributes. Checks every
-concrete claim in the copy against the ``Lead`` record; ``plan_outreach`` fails
+concrete claim in the copy against the ``Lead`` record; the actions engine fails
 closed on any :class:`Violation` (see SECURITY.md). Must not import
 ``outreach`` — that module imports this one.
 """
@@ -102,7 +102,7 @@ _UNCOUNTED_KINDS = frozenset(
 )
 
 # Claim kinds that block approval on their own, whatever the "N of M" ratio says.
-# `plan_outreach()` already fails closed on these; the approve gate must agree.
+# Drafting already fails closed on these; the approve gate must agree.
 BLOCKING_KINDS = frozenset({"unauthorized_offer"})
 
 VERIFICATION_SCHEMA_VERSION = 1

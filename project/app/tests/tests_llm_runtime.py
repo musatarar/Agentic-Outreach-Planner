@@ -272,7 +272,7 @@ class EnvParsingTests(SimpleTestCase):
 
 class DjangoFreeImportTests(SimpleTestCase):
     """Every module under ``services/llm/`` must import with no Django settings
-    configured -- ``evals/run_rules_eval.py`` and the retry unit tests need it."""
+    configured -- the retry unit tests need it."""
 
     def test_the_llm_package_imports_without_django_configured(self):
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
