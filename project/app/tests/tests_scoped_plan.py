@@ -1,4 +1,4 @@
-"""Composing outreach for ONE client, on demand.
+"""Planning outreach for ONE client: ``plan_outreach(lead_ids=[...])``.
 
 Pins that the scope is real (exactly one lead reaches the provider, asserted on the
 stub's call count) and that the unscoped whole-book run is unchanged. The provider seam
@@ -8,14 +8,11 @@ is ``outreach.agenerate_copy``, so phase 3 stays exercised.
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
-from django.urls import reverse
-from rest_framework import status
 
 from project.app.models import DismissedOutreachKey, Lead, OutreachAction
 from project.app.services import actions
 from project.app.services import dedupe as dedupe_service
 from project.app.services.outreach import OutreachCopy, plan_outreach
-from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
 def _make_lead(lead_id, agency_name):
@@ -198,120 +195,3 @@ class ScopedPlanOutreachTests(TestCase):
             {"Alpha Agency", "Bravo Agency", "Charlie Agency"},
         )
         self.assertEqual(OutreachAction.objects.count(), 3)
-
-
-# ---------------------------------------------------------------------------
-# The endpoint
-# ---------------------------------------------------------------------------
-
-
-@override_settings(COPY_VERIFY_LEVEL="off")
-class ComposeForLeadViewTests(AuthenticatedAPITestCase):
-    """POST /api/leads/<lead_id>/compose/ — one client, one press, one mail."""
-
-    def setUp(self):
-        super().setUp()
-        self.alpha = _make_lead("lead_001", "Alpha Agency")
-        self.bravo = _make_lead("lead_002", "Bravo Agency")
-
-    def url_for(self, lead_id):
-        return reverse("lead-compose", kwargs={"lead_id": lead_id})
-
-    def test_composing_returns_the_action_in_the_shared_action_shape(self):
-        stub = _ProviderStub()
-        with _stub_provider(stub):
-            resp = self.client.post(self.url_for(self.bravo.id))
-
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        # The same shape OutreachActionSerializer emits everywhere else.
-        self.assertEqual(
-            set(resp.data.keys()),
-            {
-                "id",
-                "lead",
-                "priority",
-                "action_type",
-                "reason",
-                "suggested_copy",
-                "needs_human",
-                "further_action",
-                "created_at",
-            },
-        )
-        self.assertEqual(resp.data["lead"]["id"], self.bravo.id)
-        self.assertEqual(resp.data["lead"]["agency_name"], "Bravo Agency")
-        self.assertTrue(resp.data["suggested_copy"])
-
-    def test_composing_touches_only_the_requested_client(self):
-        stub = _ProviderStub()
-        with _stub_provider(stub):
-            self.client.post(self.url_for(self.bravo.id))
-
-        self.assertEqual(len(stub.prompts), 1)
-        self.assertEqual(stub.agencies_called([self.alpha, self.bravo]), {"Bravo Agency"})
-        self.assertEqual(
-            list(OutreachAction.objects.values_list("lead_id", flat=True)), [self.bravo.id]
-        )
-
-    def test_an_unknown_client_is_a_404_and_writes_nothing(self):
-        stub = _ProviderStub()
-        with _stub_provider(stub):
-            resp = self.client.post(self.url_for("lead_does_not_exist"))
-
-        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(resp.data["error"], "unknown_lead")
-        self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
-
-    def test_a_client_with_an_open_recommendation_is_a_409_and_costs_nothing(self):
-        OutreachAction.objects.create(
-            lead=self.bravo,
-            priority=2,
-            action_type=actions.COMPLETE_ONBOARDING,
-            reason="already queued",
-            suggested_copy="an existing draft",
-            status=OutreachAction.STATUS_PENDING,
-            dedupe_key=dedupe_service.dedupe_key(self.bravo.id, actions.COMPLETE_ONBOARDING),
-        )
-
-        stub = _ProviderStub()
-        with _stub_provider(stub):
-            resp = self.client.post(self.url_for(self.bravo.id))
-
-        self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(resp.data["error"], "no_new_recommendation")
-        self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 1)
-
-    def test_a_dismissed_recommendation_is_a_409_and_costs_nothing(self):
-        DismissedOutreachKey.objects.create(
-            dedupe_key=dedupe_service.dedupe_key(self.bravo.id, actions.COMPLETE_ONBOARDING),
-            lead=self.bravo,
-            action_type=actions.COMPLETE_ONBOARDING,
-            reason="not_a_fit",
-        )
-
-        stub = _ProviderStub()
-        with _stub_provider(stub):
-            resp = self.client.post(self.url_for(self.bravo.id))
-
-        self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(resp.data["error"], "no_new_recommendation")
-        self.assertEqual(stub.prompts, [])
-        self.assertEqual(OutreachAction.objects.count(), 0)
-
-    def test_an_unmatched_client_still_gets_a_row_routed_to_a_human(self):
-        nomatch = _unmatched_lead()
-        stub = _ProviderStub()
-        with _stub_provider(stub):
-            resp = self.client.post(self.url_for(nomatch.id))
-
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["action_type"], actions.UNKNOWN)
-        self.assertTrue(resp.data["needs_human"])
-        self.assertEqual(stub.prompts, [])
-
-    def test_the_endpoint_requires_a_session(self):
-        self.client.logout()
-        resp = self.client.post(self.url_for(self.bravo.id))
-        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)

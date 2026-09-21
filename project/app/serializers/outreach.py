@@ -1,4 +1,4 @@
-"""Outreach actions on the wire: the planner's summary and the review item.
+"""Outreach actions on the wire: the review item.
 
 ``ReviewItemSerializer`` is complete on purpose: advancing a row in the inbox
 must perform zero extra network requests, so the list endpoint and every
@@ -10,8 +10,6 @@ from rest_framework import serializers
 from project.app.models import Lead, OutreachAction
 from project.app.services import queue_copy
 from project.app.services.actions import ACTION_META
-
-from .lead import LeadSummarySerializer
 
 # The only event data the frontend gets -- the inbox needs no second request.
 RECENT_EVENT_LIMIT = 5
@@ -33,26 +31,6 @@ _DATETIME = serializers.DateTimeField()
 
 def _event_summary(event):
     return EVENT_SUMMARIES.get(event.type) or event.type.replace("_", " ").capitalize()
-
-
-class OutreachActionSerializer(serializers.ModelSerializer):
-    """Outreach action with a nested lead summary, matching the contract shape."""
-
-    lead = LeadSummarySerializer(read_only=True)
-
-    class Meta:
-        model = OutreachAction
-        fields = [
-            "id",
-            "lead",
-            "priority",
-            "action_type",
-            "reason",
-            "suggested_copy",
-            "needs_human",
-            "further_action",
-            "created_at",
-        ]
 
 
 class ReviewLeadSerializer(serializers.ModelSerializer):

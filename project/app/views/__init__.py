@@ -1,8 +1,7 @@
 """Domain-split API views; the SPA page shells stay in ``views.frontend``."""
 
 from .auth import AuthConsumeView, AuthLogoutView, AuthMeView, AuthRequestLinkView
-from .leads import LeadComposeView, LeadListView
-from .outreach import OutreachRunView
+from .leads import LeadListView
 from .review import (
     ReviewApproveView,
     ReviewDismissView,
@@ -17,9 +16,7 @@ __all__ = [
     "AuthLogoutView",
     "AuthMeView",
     "AuthRequestLinkView",
-    "LeadComposeView",
     "LeadListView",
-    "OutreachRunView",
     "ReviewApproveView",
     "ReviewDismissView",
     "ReviewEditView",
