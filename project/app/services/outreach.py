@@ -1,14 +1,11 @@
-"""Outreach planning logic for Locked In's Agentic Outreach Planner.
+"""Copy generation for Locked In's Agentic Outreach Planner.
 
-`determine_priority` and `determine_action` are pure, duck-typed logic testable
-without Django or a database; Django models are only imported inside `plan_outreach()`.
+The prompt, the provider call and the two output gates the actions engine
+drives; duck-typed and importable without Django configured.
 """
 
-import asyncio
 import datetime
 import re
-import time
-from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,10 +22,7 @@ from project.app.services.llm import (
     LLMTimeoutError,
     LLMTransientError,
     get_llm_client,
-    wrap_unexpected,
 )
-from project.app.services.llm import runtime as llm_runtime
-from project.app.services.llm.retry import acall_with_retry
 
 # Fallback for OUTREACH_MAX_COPY_TOKENS, whose default settings.py restates.
 MAX_COPY_TOKENS = 1000
@@ -38,45 +32,6 @@ MAX_SUBJECT_CHARS = 120
 
 # The label `render_email` writes and the frontend splits the draft on.
 SUBJECT_PREFIX = "Subject:"
-
-# Phrases (lowercase) suggesting the lead asked to be contacted later — a "hold".
-HOLD_PHRASES = [
-    "waiting on",
-    "waiting for",
-    "budget approval",
-    "budget",
-    "follow up in",
-    "get back",
-    "circle back",
-    "touch base in",
-    "next quarter",
-]
-
-# Phrases (lowercase) suggesting the lead has gone quiet on us.
-STALL_PHRASES = [
-    "haven't heard back",
-    "havent heard back",
-    "haven't heard",
-    "no response",
-    "no reply",
-    "went quiet",
-    "gone quiet",
-]
-
-DORMANT_DAYS = 21  # no login for this long => dormant
-QUIET_CONTACT_DAYS = 14  # gone-quiet only counts if last contact >= this old
-STALE_CONTACT_DAYS = 21  # contact older than this is overdue
-TRIAL_AT_RISK_DAYS = 30  # signed up this long with zero deals => at risk
-POWER_USER_DEALS = 5  # deals closed to count as a power user
-POWER_USER_SUBMISSIONS = 10  # quote submissions to count as a power user
-
-# Priority score -> priority band; the first band whose ``min_score`` the score
-# reaches wins.
-PRIORITY_BANDS = (
-    {"priority": 1, "min_score": 5},
-    {"priority": 2, "min_score": 2},
-    {"priority": 3, "min_score": 0},
-)
 
 
 # --------------------------------------------------------------------------
@@ -110,262 +65,6 @@ def _days_since(value, today):
     if value is None:
         return None
     return (today - value).days
-
-
-def _notes_blob(lead):
-    """Combined lowercase text of hubspot notes + event notes/outcomes.
-
-    Attacker-controlled free-text, sanitized before phrase-matching; a matched
-    phrase is only a SIGNAL — escalation needs a structured corroborator (see
-    ``_gone_quiet`` / SECURITY.md).
-    """
-    parts = [getattr(lead, "hubspot_notes", "") or ""]
-    for event in _events_list(lead):
-        meta = getattr(event, "meta", None) or {}
-        for key in ("notes", "subject", "outcome"):
-            if meta.get(key):
-                parts.append(str(meta[key]))
-    return " ".join(sanitize.sanitize_untrusted(p) for p in parts).lower()
-
-
-def _matched_phrase(text, phrases):
-    for p in phrases:
-        if p in text:
-            return p
-    return None
-
-
-def _sentence_containing(text, phrase):
-    """Return the sentence of `text` containing `phrase` (case-insensitive)."""
-    if not text:
-        return ""
-    for sentence in re.split(r"(?<=[.!?])\s+", text):
-        if phrase in sentence.lower():
-            return sentence.strip()
-    return ""
-
-
-def _milestone_from_notes(lead):
-    """Pull a numeric deal milestone out of the hubspot notes (e.g. '20 closed
-    deals', 'close 5 deals'). Returns int or None."""
-    notes = getattr(lead, "hubspot_notes", "") or ""
-    match = re.search(r"(\d+)\s+(?:closed\s+)?deals?", notes, re.IGNORECASE)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def _had_no_reply_email(lead):
-    for event in _events_list(lead):
-        if getattr(event, "type", "") == "email_sent":
-            meta = getattr(event, "meta", None) or {}
-            if meta.get("outcome") == "no_reply":
-                return True
-    return False
-
-
-def _gone_quiet(lead, today):
-    """True when we reached out, enough time passed, and the lead went quiet.
-
-    Injection hardening: a stall phrase alone can never escalate — it
-    needs a structured corroborator (a real ``no_reply`` email event, or a
-    genuinely stale trusted ``last_contacted_date``); see SECURITY.md.
-    """
-    days_contact = _days_since(getattr(lead, "last_contacted_date", None), today)
-    if days_contact is None or days_contact < QUIET_CONTACT_DAYS:
-        return False
-    # Structured corroborator: a real no-reply email is definitive on its own.
-    if _had_no_reply_email(lead):
-        return True
-    # A stall phrase counts only alongside a genuinely stale trusted contact date.
-    if days_contact >= STALE_CONTACT_DAYS:
-        return _matched_phrase(_notes_blob(lead), STALL_PHRASES) is not None
-    return False
-
-
-# --------------------------------------------------------------------------
-# priority
-# --------------------------------------------------------------------------
-
-
-def determine_priority(lead, today=None) -> int:
-    """Score a lead and map to priority 1 (highest) .. 3 (lowest).
-
-    Additive scoring: every signal that fires adds its weight, and the first
-    band the total reaches wins. Pure and duck-typed — the rules eval runs this
-    without a database.
-    """
-    today = today or datetime.date.today()
-    score = 0
-
-    # Book size: bigger books are worth more attention.
-    book = getattr(lead, "estimated_book_size_usd", 0) or 0
-    if book >= 5_000_000:
-        score += 2
-    elif book >= 2_000_000:
-        score += 1
-
-    # Demo completed but never signed up: high-value conversion opportunity.
-    signed_up = _as_date(getattr(lead, "signed_up_date", None))
-    if getattr(lead, "stage", "") == "demo_completed" and not signed_up:
-        score += 2
-
-    # We reached out, time passed, and they went quiet (stall notes / no-reply).
-    days_contact = _days_since(getattr(lead, "last_contacted_date", None), today)
-    if _gone_quiet(lead, today):
-        score += 2
-
-    # Contact is overdue regardless of why (never contacted counts as overdue).
-    if days_contact is None or days_contact > STALE_CONTACT_DAYS:
-        score += 1
-
-    # Trial at risk: signed up a while ago, zero deals closed.
-    deals = getattr(lead, "deals_closed", 0) or 0
-    days_signup = _days_since(signed_up, today)
-    if days_signup is not None and days_signup > TRIAL_AT_RISK_DAYS and deals == 0:
-        score += 1
-
-    # Hot revenue engagement: heavy submitters/closers deserve attention too.
-    submitted = getattr(lead, "quotes_submitted", 0) or 0
-    if deals >= POWER_USER_DEALS or submitted >= POWER_USER_SUBMISSIONS:
-        score += 1
-
-    priority = PRIORITY_BANDS[-1]["priority"]
-    for band in PRIORITY_BANDS:
-        if score >= band["min_score"]:
-            priority = band["priority"]
-            break
-    return priority
-
-
-# --------------------------------------------------------------------------
-# action classification
-# --------------------------------------------------------------------------
-
-
-def determine_action(lead, today=None) -> tuple[str, str]:
-    """Classify the right outreach action for a lead. Returns (action_type, reason).
-
-    The six rules are evaluated in order and the first match wins; `reason` is
-    the plain-text why a reviewer reads and the prompt carries. Pure and
-    duck-typed, exactly like :func:`determine_priority`.
-    """
-    today = today or datetime.date.today()
-
-    name = getattr(lead, "contact_name", "this lead")
-    notes = getattr(lead, "hubspot_notes", "") or ""
-    blob = _notes_blob(lead)
-    deals = getattr(lead, "deals_closed", 0) or 0
-    created = getattr(lead, "quotes_created", 0) or 0
-    submitted = getattr(lead, "quotes_submitted", 0) or 0
-    book = getattr(lead, "estimated_book_size_usd", 0) or 0
-    last_login = _as_date(getattr(lead, "last_login_date", None))
-    days_login = _days_since(last_login, today)
-    days_contact = _days_since(getattr(lead, "last_contacted_date", None), today)
-    milestone = _milestone_from_notes(lead)
-    signed_up = _as_date(getattr(lead, "signed_up_date", None))
-
-    # 1. Demo completed but never signed up -> complete onboarding.
-    if getattr(lead, "stage", "") == "demo_completed" and not signed_up:
-        reason = (
-            f"{name} completed a demo but never signed up, and the agency's "
-            f"estimated book is ${book:,.0f}."
-        )
-        stall = _matched_phrase(blob, STALL_PHRASES)
-        promise = _sentence_containing(notes, "follow up") or _sentence_containing(
-            notes, "get back"
-        )
-        if promise:
-            reason += f' Notes say: "{promise}"'
-        if days_contact is not None:
-            reason += f" Last contact was {days_contact} days ago"
-            reason += " with no reply since." if (stall or _had_no_reply_email(lead)) else "."
-        return actions.COMPLETE_ONBOARDING, reason
-
-    # 2. Power user near a reward/volume-pricing milestone.
-    if deals >= POWER_USER_DEALS and submitted >= POWER_USER_SUBMISSIONS:
-        reason = (
-            f"{name} is a power user: {created} quotes created, {submitted} "
-            f"submitted, {deals} deals closed, last login {last_login}."
-        )
-        if milestone:
-            remaining = max(milestone - deals, 0)
-            reason += (
-                f" HubSpot notes flag a volume-pricing conversation at the "
-                f"{milestone}-deal milestone — only {remaining} deals away."
-            )
-        snippet = _sentence_containing(notes, "volume pricing")
-        if snippet:
-            reason += f' Notes: "{snippet}"'
-        return actions.POWER_USER_REWARD, reason
-
-    # 3. On hold ("contact me later" / waiting on budget) and the hold passed.
-    hold_phrase = _matched_phrase(blob, HOLD_PHRASES)
-    if hold_phrase is not None and _gone_quiet(lead, today):
-        reason = f"{name} put us on hold and the hold reason has now passed."
-        snippet = _sentence_containing(notes, hold_phrase)
-        if not snippet:
-            for event in _events_list(lead):
-                meta = getattr(event, "meta", None) or {}
-                snippet = _sentence_containing(str(meta.get("notes", "")), hold_phrase)
-                if snippet:
-                    break
-        if snippet:
-            reason += f' Notes: "{snippet}"'
-        if days_contact is not None:
-            reason += f" Last contacted {days_contact} days ago"
-            reason += " and a follow-up email got no reply." if _had_no_reply_email(lead) else "."
-        if days_login is not None:
-            reason += f" Last portal login was {days_login} days ago ({last_login})."
-        return actions.FOLLOW_UP_AFTER_HOLD, reason
-
-    # 4. Onboarded but stopped using the portal entirely.
-    # A lead that never logged in reads as maximally dormant.
-    if signed_up and (days_login is None or days_login > DORMANT_DAYS):
-        if days_login is None:
-            reason = f"{name} signed up on {signed_up} but has never logged in to the portal."
-        else:
-            reason = (
-                f"{name} signed up on {signed_up} but hasn't logged in for "
-                f"{days_login} days (last login {last_login}) — the trial has gone dormant."
-            )
-        return actions.REENGAGE_DORMANT, reason
-
-    # 5. Active but underusing -> nudge.
-    if days_login is not None and days_login <= DORMANT_DAYS:
-        if created > 0 and submitted == 0:
-            reason = (
-                f"{name} logs in regularly (last login {last_login}) and has "
-                f"created {created} quotes but has never submitted one — needs "
-                f"help getting a first quote over the line."
-            )
-            return actions.NUDGE_USAGE, reason
-
-        if deals > 0 and milestone and deals < milestone:
-            remaining = milestone - deals
-            reason = (
-                f"{name} is using the portal steadily ({created} quotes created, "
-                f"{deals} deals closed, last login {last_login}) but is {remaining} "
-                f"deals short of the {milestone}-deal commitment target in the "
-                f"notes — a well-timed push could convert the trial."
-            )
-            return actions.NUDGE_USAGE, reason
-
-        if deals > 0 and deals < POWER_USER_DEALS:
-            reason = (
-                f"{name} is active (last login {last_login}) with {deals} deals "
-                f"closed but momentum is modest — encourage more volume."
-            )
-            return actions.NUDGE_USAGE, reason
-
-    # 6. Nothing matched -> escalate to a human.
-    reason = (
-        f"No outreach pattern matched for {name}: stage={getattr(lead, 'stage', '?')}, "
-        f"quotes_created={created}, quotes_submitted={submitted}, deals_closed={deals}, "
-        f"last_login={last_login}, last_contacted={_as_date(getattr(lead, 'last_contacted_date', None))}. "
-        f"BD should review the HubSpot notes and decide the next step manually."
-    )
-    return actions.UNKNOWN, reason
 
 
 # --------------------------------------------------------------------------
@@ -553,9 +252,9 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     :class:`~.llm.errors.LLMMalformedResponseError` rather than reaching a
     reviewer. :func:`render_email` turns it into the stored draft.
 
-    ``prompt``/``client`` let the planner pass pre-built values so its phase 3
-    never touches the ORM; omitted, both are resolved here (the single-lead
-    path). Callers passing ``prompt`` pass no ``lead`` — see :func:`_prompt_for`.
+    ``prompt``/``client`` let the caller pass pre-built values so the provider
+    call never touches the ORM; omitted, both are resolved here. Callers
+    passing ``prompt`` pass no ``lead`` — see :func:`_prompt_for`.
     """
     prompt = _prompt_for(lead, action_type, reason, prompt)
     if client is None:
@@ -563,121 +262,14 @@ def generate_copy(lead, action_type, reason, *, prompt=None, client=None):
     return client.generate_structured(prompt, OutreachCopy, max_tokens=max_copy_tokens()).parsed
 
 
-class CopyGenerationGaveUp(RuntimeError):
-    """The provider call failed for good, plus what the attempt cost
-    (``attempts``, ``elapsed_s``) — the reviewer's message needs both."""
-
-    def __init__(self, error, attempts, elapsed_s):
-        super().__init__(str(error))
-        self.error = error
-        self.attempts = attempts
-        self.elapsed_s = elapsed_s
-
-
-async def agenerate_copy(
-    lead, action_type, reason, *, prompt=None, client=None, retry=None, timeouts=None
-):
-    """Async twin of :func:`generate_copy`, and the planner's path: it awaits
-    the provider and — unlike the sync twin — **it retries**. Returns an
-    :class:`OutreachCopy`.
-
-    **Pass ``client``**: the fallback resolution is an ORM read, which inside a
-    running loop is a ``SynchronousOnlyOperation``. ``retry``/``timeouts``
-    default to the configured policy; the planner passes them resolved once per
-    run. Raises :class:`CopyGenerationGaveUp` when the call fails for good.
-    """
-    prompt = _prompt_for(lead, action_type, reason, prompt)
-    if client is None:
-        client = get_llm_client()
-    if retry is None:
-        retry = llm_runtime.get_retry_policy()
-    if timeouts is None:
-        timeouts = llm_runtime.get_timeouts()
-    # Read before the loop: every retry of this lead shares one budget.
-    max_tokens = max_copy_tokens()
-
-    attempts = 0
-    last_error = None
-    started = time.monotonic()
-
-    async def attempt():
-        nonlocal attempts, last_error
-        attempts += 1
-        try:
-            # Structured, so the two fields are the provider's contract rather
-            # than something parsed back out of prose.
-            return await client.agenerate_structured(
-                prompt, OutreachCopy, max_tokens=max_tokens, timeout=timeouts.request_s
-            )
-        except LLMError as exc:
-            # Remembered: the per-lead budget expiring discards the in-flight
-            # exception, and the reviewer's message is built from this.
-            last_error = exc
-            raise
-
-    try:
-        # `timeouts.request_s` bounds each HTTP attempt; this bounds the whole
-        # loop, backoff sleeps included. `asyncio.timeout` rather than `wait_for`
-        # so a CancelledError from somewhere else still reads as a cancellation.
-        async with asyncio.timeout(timeouts.per_lead_s) as budget:
-            result = await acall_with_retry(attempt, policy=retry)
-            return result.parsed
-    except LLMError as exc:
-        raise CopyGenerationGaveUp(exc, attempts, time.monotonic() - started) from exc
-    except TimeoutError as exc:
-        if not budget.expired():
-            # Someone else's TimeoutError: relabelling it as our per-lead budget
-            # would name the wrong knob. Let it fall through.
-            raise
-        raise CopyGenerationGaveUp(
-            _budget_error(client, timeouts.per_lead_s, last_error),
-            attempts,
-            time.monotonic() - started,
-        ) from exc
-
-
-def _budget_error(client, per_lead_s, last_error):
-    """The error to report when the per-lead budget expires.
-
-    Rebuilt from ``last_error`` because ``asyncio.timeout`` cancelled the
-    in-flight exception — "kept returning rate limits and ran out of time" is
-    the diagnosis. Falls back to a plain timeout when nothing failed yet.
-    """
-    note = f"gave up after {per_lead_s:g}s (OUTREACH_PER_LEAD_TIMEOUT_S)"
-    if last_error is None:
-        return LLMTimeoutError(
-            f"The provider did not answer; {note}",
-            provider=getattr(client, "provider_name", None),
-        )
-    # Same class, so `failure_kind` still reports what the provider was doing.
-    try:
-        return type(last_error)(
-            f"{last_error} ({note})",
-            provider=last_error.provider,
-            status_code=last_error.status_code,
-            retry_after=last_error.retry_after,
-        )
-    except TypeError:
-        # An adapter subclass with its own constructor signature: fall back to a
-        # plain timeout — the budget genuinely did expire.
-        return LLMTimeoutError(
-            f"{last_error} ({note})",
-            provider=last_error.provider,
-            status_code=last_error.status_code,
-            retry_after=last_error.retry_after,
-        )
-
-
 def _prompt_for(lead, action_type, reason, prompt):
-    """The shared ``prompt``/``lead`` contract of the two entry points: a caller
-    passing neither must fail loudly, because a ``None`` lead would otherwise
-    produce a well-formed prompt full of blanks."""
+    """:func:`generate_copy`'s ``prompt``/``lead`` contract: a caller passing
+    neither must fail loudly, because a ``None`` lead would otherwise produce a
+    well-formed prompt full of blanks."""
     if prompt is not None:
         return prompt
     if lead is None:
-        raise ValueError(
-            "generate_copy/agenerate_copy need either a lead to build a prompt from, or a prompt."
-        )
+        raise ValueError("generate_copy needs either a lead to build a prompt from, or a prompt.")
     return _build_copy_prompt(lead, action_type, reason)
 
 
@@ -728,29 +320,13 @@ def format_shape_problems(problems):
 
 
 # --------------------------------------------------------------------------
-# planner
+# what one proposal carries through the provider call and the output gates
 # --------------------------------------------------------------------------
-#
-# `plan_outreach` runs as five explicit phases:
-#
-#   1. read the leads
-#   2. classify each one, apply the two skip rules, AND build its prompt
-#                                                   -> WorkItem
-#   3. call the provider, CONCURRENTLY              -> CopyOutcome
-#   4. run the two output gates                     -> ReviewOutcome
-#   5. write the rows
-#
-# The function stays synchronous: phases 1, 2, 4 and 5 are ORM work, so only
-# phase 3 gets an event loop (`_run_coroutine`). Phase 2 builds the prompt so
-# phase 3 holds nothing but network I/O — it is handed the prompt and the
-# client, never the lead (see `_agenerate_for` / `_resolve_client`). The skip
-# rules run ahead of the prompt: a skipped lead costs neither a prompt nor an
-# LLM call.
 
 
 @dataclass(frozen=True, slots=True)
 class WorkItem:
-    """One lead's classification plus the prompt phase 3 will send.
+    """One lead's classification plus the prompt the provider call will send.
 
     ``prompt`` is ``None`` when there is no copy to generate: ``UNKNOWN``
     (straight to a human), or the build failed — ``prompt_error`` says which.
@@ -774,9 +350,9 @@ class CopyOutcome:
 
     The exception is carried rather than raised so one lead's dead API call
     cannot sink the run. ``attempts``/``elapsed_s`` are meaningful only on
-    failure — phase 4's "gave up after 4 attempts over 31s".
+    failure — the review's "gave up after 4 attempts over 31s".
     ``subject``/``body`` are the pair ``text`` was composed from, carried so
-    phase 5 stores what the provider returned rather than re-splitting it.
+    the written row stores what the provider returned rather than re-splitting it.
     """
 
     text: str = ""
@@ -791,7 +367,8 @@ class CopyOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReviewOutcome:
-    """The fields phase 4 decides and phase 5 writes, plus its workings.
+    """The fields :func:`_review` decides and the written row carries, plus its
+    workings.
 
     The counts are carried rather than recomputed: a second run of a
     fail-closed gate is a second chance to disagree with the decision made.
@@ -804,215 +381,6 @@ class ReviewOutcome:
     body: str = ""
     shape_problem_count: int = 0
     violation_count: int = 0
-
-
-def _build_work_item(lead, suppressed, open_keys, today):
-    """Phase 2 for one lead: classify it, apply the skip rules, and build its
-    prompt while ORM access is still cheap.
-
-    Returns ``None`` when the recommendation is skipped (see :func:`plan_outreach`);
-    the check sits ahead of the prompt so a skip costs no provider call. ``today``
-    is the run's date, fixed in phase 1.
-    """
-    # Local import: the module stays importable without Django configured.
-    from project.app.services import dedupe as dedupe_service
-
-    priority = determine_priority(lead, today)
-    action_type, reason = determine_action(lead, today)
-    key = dedupe_service.dedupe_key(lead.id, action_type)
-    if key in suppressed or key in open_keys:
-        return None
-
-    prompt = None
-    prompt_error = None
-    if action_type != actions.UNKNOWN:
-        try:
-            prompt = _build_copy_prompt(lead, action_type, reason)
-        except Exception as exc:
-            # Caught so a malformed lead costs one row rather than the whole run.
-            prompt_error = exc
-    return WorkItem(
-        lead=lead,
-        priority=priority,
-        action_type=action_type,
-        reason=reason,
-        dedupe_key=key,
-        prompt=prompt,
-        prompt_error=prompt_error,
-    )
-
-
-def _resolve_client(work):
-    """Resolve the provider client once, before phase 3 runs.
-
-    Returns ``(client, error)``, exactly one of which is set — or ``(None,
-    None)`` when nothing in this run needs copy. Resolution is an ORM read, which
-    is why it happens here rather than per lead. A failure is *returned*, not
-    raised, so a bad configuration is one failed row per lead, not a dead run.
-    """
-    if not any(item.prompt is not None for item in work):
-        return None, None
-    try:
-        return get_llm_client(), None
-    except LLMError as exc:
-        # Already classified (an unset key raises LLMAuthError from the adapter).
-        return None, exc
-    except Exception as exc:
-        # Our bug, not a provider's. Wrapped so phase 4 has one exception family.
-        return None, wrap_unexpected(exc)
-
-
-def _outcome_without_calling(item, client_error):
-    """The :class:`CopyOutcome` for a lead that never reaches the provider, or
-    ``None`` when it does.
-
-    Three ways to skip the call: no prompt (``UNKNOWN``), a failed prompt build,
-    or an unresolvable client. Decided before the semaphore is acquired.
-    """
-    if item.prompt_error is not None:
-        return CopyOutcome(error=item.prompt_error)
-    if item.prompt is None:
-        return CopyOutcome()
-    if client_error is not None:
-        return CopyOutcome(error=client_error)
-    return None
-
-
-async def _agenerate_for(item, client, runtime, client_error=None):
-    """Phase 3 for one lead: the provider call, and nothing else.
-
-    ``lead`` is deliberately passed as ``None`` and ``client`` passed in: phase 3
-    must hold no ORM handle, since a lazy query inside the gather raises Django's
-    ``SynchronousOnlyOperation``.
-    """
-
-    # Re-checked so this function is correct called standalone; `bounded` checks
-    # the same thing ahead of the semaphore.
-    outcome = _outcome_without_calling(item, client_error)
-    if outcome is not None:
-        return outcome
-    try:
-        # Normalized here because `suggested_copy` is immutable after this point
-        # and every span offset computed later indexes it.
-        subject, body = _stored_pair(
-            await agenerate_copy(
-                None,
-                item.action_type,
-                item.reason,
-                prompt=item.prompt,
-                client=client,
-                retry=runtime.retry,
-                timeouts=runtime.timeouts,
-            )
-        )
-    except CopyGenerationGaveUp as exc:
-        # Unwrapped: phase 4 branches on the provider error's own `retryable`.
-        return CopyOutcome(error=exc.error, attempts=exc.attempts, elapsed_s=exc.elapsed_s)
-    except LLMError as exc:
-        # Already classified by the adapter; the class must survive to the span.
-        return CopyOutcome(error=exc)
-    except Exception as exc:  # don't let one lead's bug sink the run
-        # Wrapped so the caller has one exception family to reason about.
-        return CopyOutcome(error=wrap_unexpected(exc))
-    return CopyOutcome(text=compose_email(subject, body), subject=subject, body=body)
-
-
-async def _agenerate_all(work, client, client_error, runtime):
-    """Phase 3 for the whole run: every lead at once, at most
-    ``runtime.max_in_flight`` of them actually talking to the provider.
-
-    A semaphore rather than a chunked loop, so the next lead starts the instant a
-    slot frees. ``return_exceptions=True`` keeps one dead lead from cancelling
-    the gather; ``gather`` preserves argument order, so phase 4 can keep zipping
-    positionally.
-
-    The client is closed on the way out: ``asyncio.run`` closes its loop but not
-    the transports on it, so without this every run strands a connection pool on
-    a dead loop.
-    """
-    semaphore = asyncio.Semaphore(runtime.max_in_flight)
-
-    async def bounded(item):
-        # Skip cases never take a slot — they have no provider call to make.
-        outcome = _outcome_without_calling(item, client_error)
-        if outcome is not None:
-            return outcome
-        async with semaphore:
-            return await _agenerate_for(item, client, runtime, client_error)
-
-    try:
-        results = await asyncio.gather(
-            *(bounded(item) for item in work),
-            return_exceptions=True,
-        )
-    finally:
-        await _aclose_quietly(client)
-
-    return [_as_outcome(result) for result in results]
-
-
-async def _aclose_quietly(client):
-    """Release the client's async resources, never at the cost of the run.
-
-    Phase 3's results are already computed here, so a test double or an unhappy
-    transport must not cost them.
-    """
-    if client is None:
-        return
-    try:
-        await client.aclose()
-    except Exception:  # pragma: no cover - defensive; no adapter does this today
-        pass
-
-
-def _as_outcome(result):
-    """Normalize one ``gather(return_exceptions=True)`` slot into a
-    :class:`CopyOutcome`.
-
-    ``_agenerate_for`` already catches ``Exception``, so the branches are mostly
-    defensive. ``CancelledError`` is the one genuinely reachable
-    ``BaseException`` and is re-raised rather than reported as a lead's failure.
-    """
-    if isinstance(result, CopyOutcome):
-        return result
-    if isinstance(result, Exception):
-        return CopyOutcome(error=result)
-    if isinstance(result, BaseException):
-        raise result
-    # Unreachable from `bounded`; named explicitly because `raise result` on a
-    # non-exception reports the raise statement rather than the offending value.
-    raise TypeError(f"phase 3 produced {result!r}, expected a CopyOutcome.")
-
-
-def _run_coroutine(coro):
-    """Run ``coro`` to completion on its own event loop, from sync code.
-
-    Called from inside a running loop it **raises**: there is no correct way to
-    call ``plan_outreach()`` from inside one, so accommodating it would only
-    relocate the failure.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        inside_a_loop = False
-    else:
-        inside_a_loop = True
-
-    # OUTSIDE the except block on purpose: inside it, `sys.exc_info()` is live
-    # and every exception escaping phase 3 would chain onto the probe's own
-    # "no running event loop".
-    if not inside_a_loop:
-        return asyncio.run(coro)
-
-    # Closed explicitly: a never-awaited coroutine emits a RuntimeWarning at
-    # collection time that would read like a second, unrelated bug.
-    coro.close()
-    raise RuntimeError(
-        "plan_outreach() runs its own event loop and cannot be called from "
-        "inside one. Its ORM phases are synchronous, so there is no async "
-        "variant to await -- call it from a thread (e.g. asyncio.to_thread) or "
-        "from synchronous code."
-    )
 
 
 # --------------------------------------------------------------------------
@@ -1156,7 +524,7 @@ def failed_generation_filter():
 
 
 def _review(item, outcome, level, today):
-    """Phase 4 for one lead: decide whether a human needs to see this."""
+    """The output gates for one lead: decide whether a human needs to see this."""
     if item.action_type == actions.UNKNOWN:
         return ReviewOutcome(
             suggested_copy="",
@@ -1204,127 +572,3 @@ def _review(item, outcome, level, today):
         shape_problem_count=len(shape_problems),
         violation_count=len(violations),
     )
-
-
-def plan_outreach(lead_ids: Collection[str] | None = None):
-    """Plan outreach for every lead: decide priority + action, generate copy,
-    persist OutreachGeneratedCopy rows, and return them sorted by priority.
-
-    ``lead_ids`` narrows the run to the named clients; ``None`` plans
-    the whole book. A scoped run still *reads* every lead on purpose: the read is
-    cheap and keeps the classification input identical either way.
-    """
-    # Imported here so this module stays importable without Django configured.
-    from django.conf import settings
-    from django.db import transaction
-
-    from project.app.models import DismissedOutreachKey, Lead, OutreachGeneratedCopy
-    from project.app.services import queue_copy
-
-    # Resolved once so a mid-run configuration change cannot make half a run
-    # behave differently from the other half.
-    runtime = llm_runtime.get_planner_runtime()
-
-    # Copy grounding strictness (off | standard | strict); see verify.py.
-    level = getattr(settings, "COPY_VERIFY_LEVEL", verify.DEFAULT_LEVEL)
-
-    # Two skip rules, both keyed on the (lead, action_type) dedupe key and read
-    # once per run: (1) a dismissal is permanent, (2) an open item wins.
-    #
-    # KNOWN GAP: rule 2 is a read-then-write with no lock, so two overlapping
-    # runs can both plan the same lead. `dedupe_key` is indexed but not unique;
-    # closing this needs a partial unique constraint or a ledger lock.
-    suppressed = set(
-        DismissedOutreachKey.objects.filter(revoked_at__isnull=True).values_list(
-            "dedupe_key", flat=True
-        )
-    )
-    open_keys = set(
-        OutreachGeneratedCopy.objects.filter(status=OutreachGeneratedCopy.STATUS_PENDING)
-        .exclude(dedupe_key="")
-        # A failed-generation row is not a recommendation, so it must not hold
-        # the dedupe slot; phase 5 supersedes it.
-        .exclude(failed_generation_filter())
-        .values_list("dedupe_key", flat=True)
-    )
-
-    # The run's date, fixed once: phases 2, 4 and 5 are separated by every LLM
-    # call in the run, so a run straddling midnight would otherwise classify and
-    # verify the same lead against two different days.
-    today = datetime.date.today()
-
-    # 1. read. `prefetch_related` is the N+1 fix: each lead's events are
-    # walked four times in a run (phases 2, 3's prompt, 4 and 5), so this is
-    # two queries instead of 1 + 4N.
-    leads = list(Lead.objects.prefetch_related("events"))
-
-    # The clients this run plans for: the set that gets classified, prompted
-    # and written. An unknown id matches nothing.
-    planned_leads = leads if lead_ids is None else [x for x in leads if x.id in set(lead_ids)]
-
-    # 2. classify, apply the skip rules, and build prompts (the last phase
-    #    before the provider call)
-    work = []
-    for lead in planned_leads:
-        item = _build_work_item(lead, suppressed, open_keys, today)
-        if item is None:
-            continue
-        work.append(item)
-        # So a later lead sharing the key (or a re-entrant run) skips it.
-        open_keys.add(item.dedupe_key)
-
-    # 3. call the provider, concurrently -- no ORM in this phase, at all.
-    client, client_error = _resolve_client(work)
-    outcomes = _run_coroutine(_agenerate_all(work, client, client_error, runtime))
-
-    # 4. run the output gates
-    # strict=True on every zip: a silently truncated zip would drop leads
-    # from the run without a trace.
-    reviews = []
-    for item, outcome in zip(work, outcomes, strict=True):
-        reviews.append(_review(item, outcome, level, today))
-
-    # 5. write. The verification snapshots are computed FIRST, outside the
-    # transaction: they are several queries per lead and only the inserts need
-    # atomicity.
-    verifications = [
-        queue_copy.build_verification(
-            item.lead, review.suggested_copy, item.action_type, level=level, today=today
-        )
-        for item, review in zip(work, reviews, strict=True)
-    ]
-    rows = [
-        OutreachGeneratedCopy(
-            lead=item.lead,
-            priority=item.priority,
-            action_type=item.action_type,
-            reason=item.reason,
-            suggested_copy=review.suggested_copy,
-            subject=review.subject,
-            body=review.body,
-            needs_human=review.needs_human,
-            further_action=review.further_action,
-            dedupe_key=item.dedupe_key,
-            verification=verification,
-        )
-        for item, review, verification in zip(work, reviews, verifications, strict=True)
-    ]
-    with transaction.atomic():
-        # Supersede the failed-attempt rows this run replaces (they were let
-        # through the open-item rule on purpose), so a lead that failed
-        # Monday and succeeded Tuesday does not show both. Deleted rather
-        # than marked: a failed attempt carries no draft, so there is nothing
-        # a reviewer decided about it.
-        OutreachGeneratedCopy.objects.filter(
-            dedupe_key__in=[item.dedupe_key for item in work],
-            status=OutreachGeneratedCopy.STATUS_PENDING,
-        ).filter(failed_generation_filter()).delete()
-
-        # `bulk_create` skips `save()` and its signals (unused here) and must
-        # return pk-populated objects, since the serializer emits `id` —
-        # pinned by tests_planner_perf and, on deploys CI never sees, by
-        # checks.bulk_create_pk_check (app.E003).
-        planned = OutreachGeneratedCopy.objects.bulk_create(rows)
-
-    planned.sort(key=lambda a: a.priority)
-    return planned

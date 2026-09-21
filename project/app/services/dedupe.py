@@ -1,6 +1,6 @@
 """Stable identity for an outreach recommendation.
 
-Pure: no Django, no database. ``plan_outreach()`` and the triage views both
+Pure: no Django, no database. The actions engine and the triage views both
 key off this, so it lives on its own rather than inside either of them.
 """
 

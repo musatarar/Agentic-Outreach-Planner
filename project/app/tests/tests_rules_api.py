@@ -182,7 +182,7 @@ class OutreachRuleApiTests(RulesApiTestCase):
             {
                 "field": "hubspot_notes",
                 "operator": "contains",
-                "threshold": ["waiting on", "circle back"],
+                "threshold": "waiting on budget",
                 "source": "notes",
             }
         ]

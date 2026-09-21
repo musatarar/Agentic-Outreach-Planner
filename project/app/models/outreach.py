@@ -126,9 +126,9 @@ class OutreachGeneratedCopy(models.Model):  # copy awaiting review
 class DismissedOutreachKey(models.Model):
     """Permanent suppression ledger for dismissed recommendations.
 
-    Consulted by `plan_outreach()` BEFORE generating copy, so a dismissed
-    recommendation costs no LLM call on a re-run. Outlives the row that created
-    it (SET_NULL); reopening revokes rather than deletes.
+    Consulted BEFORE generating copy, so a dismissed recommendation costs no
+    LLM call on a re-run. Outlives the row that created it (SET_NULL);
+    reopening revokes rather than deletes.
     """
 
     # sha256("v1|{lead_id}|{action_type}").hexdigest(). See services/dedupe.py.

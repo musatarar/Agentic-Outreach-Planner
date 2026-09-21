@@ -28,10 +28,6 @@ ruff check . && ruff format --check .
 mypy project/app/services/                          # CI typechecks this path, nothing more
 python manage.py makemigrations --check --dry-run   # must be clean
 
-# rules regression: pure Python, no DB, no network, frozen clock. Baselines change only by
-# explicit human decision, never to make a run pass.
-python evals/run_rules_eval.py
-
 # actions engine cron: queue the leads with no open job, then run the batch.
 # compose runs this on a loop in the `cron` service (docker/cron.sh).
 python manage.py run_action_jobs [--limit N] [--no-enqueue]
@@ -81,9 +77,6 @@ hygiene.
 
 ## ORM, transactions, async seam
 
-- Query budgets are pinned by tests_planner_perf.py, computed from
-  `connection.ops.bulk_batch_size` so they hold on both backends. Raising one is a reviewed
-  decision, not a test fix.
 - No list endpoint serializes an unbounded table: pagination and a throttle scope for every
   new list or expensive endpoint (settings.py REST_FRAMEWORK block).
 - Only `.all()` is served from a prefetch cache; a filtered call re-queries. Slice in Python.
@@ -94,10 +87,10 @@ hygiene.
 - ATOMIC_REQUESTS is off. Writes that must land together go in one explicit
   `transaction.atomic` block in the service function that owns them; `select_for_update`
   only inside one. Never hold a transaction open across the provider-call phase.
-- plan_outreach is sync; only the provider-call phase runs on an event loop. NO ORM calls
-  inside that phase — SynchronousOnlyOperation at runtime, and nothing static warns you.
-  services/llm/ must not import Django at module level (runtime.py keeps its Django imports
-  function-local). Preserve both.
+- services/llm/ must not import Django at module level (runtime.py keeps its Django imports
+  function-local), so it stays importable unconfigured. If a provider call ever moves back
+  onto an event loop, no ORM call may run inside that phase — SynchronousOnlyOperation at
+  runtime, and nothing static warns you.
 
 ## LLM layer
 

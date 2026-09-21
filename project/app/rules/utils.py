@@ -1,17 +1,18 @@
 """The ``conditions`` payload: its vocabulary, its builders and its validator.
 
 A rule's structured predicate is data, so what it may name is a contract, not a
-convention: the planner has to evaluate exactly this vocabulary, and a payload
+convention: the evaluator has to resolve exactly this vocabulary, and a payload
 naming anything else would be stored happily and then never fire.
 :func:`validate_conditions` is that contract, and every write runs it.
 
 The vocabulary is read off the models rather than restated here: a ``Lead``
 column is named under ``lead`` and an ``Event`` column under ``events``, so a
 schema change moves the vocabulary with it instead of leaving the two to
-drift. Every date column also answers as ``days_since_<column>``, so a rule
-names an age instead of waiting for a resolver to be written for that column.
-Figures the engine computes have no column behind them, so those stay declared
-in :data:`COMPUTED_FIELDS`.
+drift. Figures the engine computes have no column behind them, so those stay
+declared in :data:`COMPUTED_FIELDS`.
+
+A payload may name more than the evaluator resolves: an unresolved field is
+refused at evaluation rather than quietly firing.
 
 Sources split by who controls the value. ``lead`` and ``derived`` are the
 agency's own record and figures computed from it; ``notes`` and ``events``
@@ -67,24 +68,13 @@ COLUMN_TYPES = (
     ((models.CharField, models.TextField), TEXT),
 )
 
-# A DATE column also answers as `<prefix><column>` (NUMBER): its age on the run date.
-DAYS_SINCE_PREFIX = "days_since_"
-
 # Figures the engine computes per lead. No column carries them, so unlike the
 # model-sourced fields these are declared.
 COMPUTED_FIELDS = {
     SOURCE_DERIVED: {
-        # True only with a structured corroborator behind it, never on a
-        # stall phrase alone.
-        "gone_quiet": BOOL,
-    },
-    SOURCE_NOTES: {
-        # Parsed out of the notes, so lead-controlled however numeric it looks.
-        "milestone_from_notes": NUMBER,
-        "deals_below_milestone": BOOL,
-    },
-    SOURCE_EVENTS: {
-        "has_no_reply_email": BOOL,
+        "days_since_signup": NUMBER,
+        "days_since_last_login": NUMBER,
+        "days_since_last_contact": NUMBER,
     },
 }
 
@@ -98,9 +88,7 @@ OPERATORS_BY_TYPE = {
     BOOL: frozenset({"==", "!=", "exists", "absent"}),
 }
 
-# A `contains` threshold is the phrase, or phrases, to look for. An all-caps
-# name is a retired phrase set, refused so a stale rule fails loudly.
-PHRASE_SET_SHAPE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ_")
+# A `contains` threshold is one literal phrase; several go in an `any_of` group.
 MIN_LITERAL_PHRASE_CHARS = 3
 
 LEAF_KEYS = frozenset({"field", "operator", "source", "threshold"})
@@ -121,8 +109,7 @@ def fields_by_source():
     model's concrete columns, minus the primary key, the relations and any
     column whose type has no comparison vocabulary. A column its subject
     authors goes to that source's untrusted sink, so ``hubspot_notes`` is
-    reachable as ``notes`` and never as ``lead``. Each date column adds a
-    ``days_since_`` twin, in :func:`_age_source`.
+    reachable as ``notes`` and never as ``lead``.
     """
     fields = {source: {} for source in SOURCES}
     for source, names in COMPUTED_FIELDS.items():
@@ -137,16 +124,7 @@ def fields_by_source():
                 continue
             owner = untrusted_sink if column.name in model.UNTRUSTED_FIELDS else source
             fields[owner][column.name] = field_type
-            if field_type == DATE:
-                fields[_age_source(owner)][DAYS_SINCE_PREFIX + column.name] = NUMBER
     return fields
-
-
-def _age_source(owner):
-    """Where a date column's ``days_since_`` twin lives: ``derived`` for a
-    column the agency owns, and the column's own source otherwise, since the
-    age of a value its subject authored corroborates no more than the value."""
-    return SOURCE_DERIVED if owner in CORROBORATING_SOURCES else owner
 
 
 def source_for(field):
@@ -181,6 +159,11 @@ def _all_of(*conditions):
         "operator": "all_of",
         "conditions": list(conditions),
     }
+
+
+def _any_of(*conditions):
+    """A nested group, so no ``version`` — only the root payload carries one."""
+    return {"operator": "any_of", "conditions": list(conditions)}
 
 
 def validate_conditions(payload):
@@ -286,25 +269,12 @@ def _validate_threshold(leaf, operator, field_type, path):
 
 
 def _validate_phrase(threshold, path):
-    phrases = threshold if isinstance(threshold, list) else [threshold]
-    if not phrases:
-        raise ValidationError(f"{path}: 'contains' needs a phrase or a non-empty list of them.")
-    for phrase in phrases:
-        if not isinstance(phrase, str) or len(phrase.strip()) < MIN_LITERAL_PHRASE_CHARS:
-            raise ValidationError(
-                f"{path}: every 'contains' phrase is text of at least "
-                f"{MIN_LITERAL_PHRASE_CHARS} characters; got {phrase!r}."
-            )
-        if reads_as_phrase_set(phrase):
-            raise ValidationError(
-                f"{path}: {phrase!r} names a retired phrase set; list the phrases themselves."
-            )
-
-
-def reads_as_phrase_set(phrase):
-    """Whether ``phrase`` is one of the engine's retired phrase-set names
-    rather than text a CRM note would carry."""
-    return bool(phrase) and set(phrase) <= PHRASE_SET_SHAPE
+    if not isinstance(threshold, str) or not threshold.strip():
+        raise ValidationError(f"{path}: 'contains' needs a phrase.")
+    if len(threshold.strip()) < MIN_LITERAL_PHRASE_CHARS:
+        raise ValidationError(
+            f"{path}: a literal phrase needs at least {MIN_LITERAL_PHRASE_CHARS} characters."
+        )
 
 
 def _validate_scalar(value, field_type, path):

@@ -19,16 +19,9 @@ from rest_framework.throttling import SimpleRateThrottle
 from project.app.models import ActionType, DismissedOutreachKey, Lead, OutreachGeneratedCopy
 from project.app.services import dedupe
 from project.app.services.actions import ACTION_META
-from project.app.services.outreach import OutreachCopy, plan_outreach, split_email
+from project.app.services.outreach import split_email
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.views.review import ReviewListView, ReviewVerifyView
-
-
-def _as_copy(email):
-    """A rendered draft as the pair `agenerate_copy` now returns."""
-    subject, _, body = email.partition("\n\n")
-    return OutreachCopy(subject=subject.removeprefix("Subject: "), body=body)
-
 
 # A lead and a draft that between them exercise every grounded claim kind the
 # verifier checks: contact name, deal count, quote count and dollar amount.
@@ -530,48 +523,6 @@ class ReviewReopenTests(ReviewAPITestCase):
 
         key = DismissedOutreachKey.objects.get(dedupe_key=self.action.dedupe_key)
         self.assertIsNone(key.revoked_at)
-
-
-class SuppressionAndThePlannerTests(ReviewAPITestCase):
-    """What a dismissal, and a reopen of one, do to the next planner run."""
-
-    def setUp(self):
-        super().setUp()
-        self.lead = make_lead()
-        with patch(
-            "project.app.services.outreach.agenerate_copy", return_value=_as_copy(GROUNDED_COPY)
-        ):
-            plan_outreach()
-        self.action = OutreachGeneratedCopy.objects.get()
-
-    def _run_planner(self):
-        with patch(
-            "project.app.services.outreach.agenerate_copy", return_value=_as_copy(GROUNDED_COPY)
-        ):
-            return plan_outreach()
-
-    def test_a_dismissed_recommendation_is_not_offered_again(self):
-        self.client.post(url("outreach-dismiss", self.action), {"reason": "not_a_fit"})
-
-        self.assertEqual(self._run_planner(), [])
-        self.assertEqual(OutreachGeneratedCopy.objects.count(), 1)
-
-    def test_reopening_a_dismissal_lets_the_planner_offer_the_lead_again(self):
-        self.client.post(url("outreach-dismiss", self.action), {"reason": "not_a_fit"})
-        self.client.post(url("outreach-reopen", self.action), {})
-
-        # Still suppressed by the open-item rule while the reopened row is
-        # pending; deciding it is what frees the lead.
-        self.client.post(url("outreach-dismiss", self.action), {"reason": "not_a_fit"})
-        self.client.post(url("outreach-reopen", self.action), {})
-        self.client.post(url("outreach-approve", self.action), {})
-
-        planned = self._run_planner()
-
-        self.assertEqual([action.lead_id for action in planned], [self.lead.id])
-
-    def test_an_open_pending_item_still_blocks_a_second_recommendation(self):
-        self.assertEqual(self._run_planner(), [])
 
 
 class TransitionTableTests(TestCase):

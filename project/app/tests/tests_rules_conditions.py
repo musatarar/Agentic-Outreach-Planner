@@ -1,7 +1,7 @@
 """The ``conditions`` payload contract: schema, vocabulary, and the rule that a
 rule may never fire on lead-controlled text alone.
 
-Pure — no database. What is stored here is what the planner must evaluate, so
+Pure — no database. What is stored here is what the evaluator must resolve, so
 anything this accepts is a promise and anything it rejects never reaches a row.
 """
 
@@ -17,9 +17,9 @@ def _payload(*conditions, operator="all_of", version=utils.SCHEMA_VERSION):
 
 
 LEAD = utils._cond("deals_closed", ">", 20)
-DERIVED = utils._cond("gone_quiet", "==", True, source="derived")
-NOTES = utils._cond("hubspot_notes", "contains", ["waiting on", "circle back"], source="notes")
-EVENTS = utils._cond("has_no_reply_email", "==", True, source="events")
+DERIVED = utils._cond("days_since_last_contact", ">=", 14, source="derived")
+NOTES = utils._cond("hubspot_notes", "contains", "waiting on", source="notes")
+EVENTS = utils._cond("type", "==", "email_sent", source="events")
 
 
 class ValidPayloadTests(SimpleTestCase):
@@ -36,8 +36,8 @@ class ValidPayloadTests(SimpleTestCase):
                 utils._cond("signed_up_date", "absent"),
                 utils._cond("last_login_date", ">=", "2026-01-01"),
                 utils._cond("state", "in", ["ID", "TX"]),
-                utils._cond("days_since_last_login_date", "<=", 21, source="derived"),
-                utils._cond("milestone_from_notes", "exists", source="notes"),
+                utils._cond("days_since_last_login", "<=", 21, source="derived"),
+                utils._cond("hubspot_notes", "contains", "waiting on", source="notes"),
             )
         )
 
@@ -124,13 +124,13 @@ class SchemaRejectionTests(SimpleTestCase):
 
     def test_an_operator_that_does_not_apply_to_the_field_is_refused(self):
         self._refused(_payload(utils._cond("deals_closed", "contains", "20")))
-        self._refused(_payload(utils._cond("gone_quiet", ">", True, source="derived")))
+        self._refused(_payload(utils._cond("signed_up_date", "contains", "2026")))
 
     def test_a_threshold_of_the_wrong_type_is_refused(self):
         self._refused(_payload(utils._cond("deals_closed", ">", "twenty")))
         self._refused(_payload(utils._cond("deals_closed", ">", True)))
         self._refused(_payload(utils._cond("signed_up_date", ">", "last tuesday")))
-        self._refused(_payload(utils._cond("gone_quiet", "==", "yes", source="derived")))
+        self._refused(_payload(utils._cond("days_since_last_login", ">", "21", source="derived")))
 
     def test_a_missing_or_surplus_threshold_is_refused(self):
         self._refused(_payload({"field": "deals_closed", "operator": ">", "source": "lead"}))
@@ -145,34 +145,18 @@ class SchemaRejectionTests(SimpleTestCase):
             )
         )
 
-    def test_a_phrase_set_name_is_refused_rather_than_searched_for_literally(self):
-        for name in ("HOLD_PHRASES", "STALL_PHRASES", "HOLD_PHRSES"):
-            with self.subTest(name=name):
-                self._refused(
-                    _payload(utils._cond("hubspot_notes", "contains", name, source="notes"), LEAD)
-                )
+    def test_a_phrase_too_short_to_mean_anything_is_refused(self):
+        self._refused(
+            _payload(utils._cond("hubspot_notes", "contains", "up", source="notes"), LEAD)
+        )
+        self._refused(
+            _payload(utils._cond("hubspot_notes", "contains", "   ", source="notes"), LEAD)
+        )
 
     def test_a_literal_phrase_is_accepted_alongside_a_corroborator(self):
         utils.validate_conditions(
             _payload(utils._cond("hubspot_notes", "contains", "budget", source="notes"), LEAD)
         )
-
-    def test_a_list_of_phrases_is_accepted_on_any_text_field(self):
-        utils.validate_conditions(
-            _payload(
-                utils._cond("hubspot_notes", "contains", ["waiting on", "budget"], source="notes"),
-                utils._cond("stage", "contains", ["trial"]),
-            )
-        )
-
-    def test_a_phrase_list_with_a_short_or_non_string_entry_is_refused(self):
-        for threshold in ([], ["waiting on", "no"], ["waiting on", 7], ["waiting on", None], "no"):
-            with self.subTest(threshold=threshold):
-                self._refused(
-                    _payload(
-                        utils._cond("hubspot_notes", "contains", threshold, source="notes"), LEAD
-                    )
-                )
 
 
 class PredicateTests(SimpleTestCase):
@@ -205,25 +189,6 @@ class VocabularyTests(SimpleTestCase):
         for source in utils.SOURCES:
             with self.subTest(source=source):
                 self.assertNotIn("owner", fields[source])
-
-    def test_every_date_column_answers_as_a_days_since_number(self):
-        fields = utils.fields_by_source()
-        dates = [
-            (source, field)
-            for source in utils.SOURCES
-            for field, field_type in fields[source].items()
-            if field_type == utils.DATE
-        ]
-        self.assertTrue(dates)
-        for source, field in dates:
-            with self.subTest(source=source, field=field):
-                twin_source = utils._age_source(source)
-                self.assertEqual(fields[twin_source][utils.DAYS_SINCE_PREFIX + field], utils.NUMBER)
-
-    def test_the_age_of_an_untrusted_date_corroborates_no_more_than_the_date(self):
-        fields = utils.fields_by_source()
-        self.assertIn("days_since_timestamp", fields[utils.SOURCE_EVENTS])
-        self.assertNotIn("days_since_timestamp", fields[utils.SOURCE_DERIVED])
 
     def test_event_columns_are_nameable_under_the_events_source(self):
         events = utils.fields_by_source()[utils.SOURCE_EVENTS]
@@ -278,7 +243,9 @@ class SourceResolutionTests(SimpleTestCase):
         )
 
     def test_a_computed_figure_resolves_to_its_declared_source(self):
-        self.assertEqual(utils._cond("gone_quiet", "==", True)["source"], utils.SOURCE_DERIVED)
+        self.assertEqual(
+            utils._cond("days_since_last_contact", ">=", 14)["source"], utils.SOURCE_DERIVED
+        )
 
     def test_an_explicit_source_is_never_overridden(self):
         # Including a wrong one -- validate_conditions is what refuses it.
