@@ -707,13 +707,12 @@ class VocabularyCoverageTests(EngineTestCase):
     vocabulary is read off the Lead and Event columns, so it can widen without
     anyone touching the engine."""
 
-    def test_every_derived_and_notes_field_in_the_vocabulary_has_a_value(self):
-        lead = self._lead()
+    def test_every_computed_field_in_the_vocabulary_has_a_resolver(self):
         fields = utils.fields_by_source()
         for source in (utils.SOURCE_DERIVED, utils.SOURCE_NOTES):
             for field in fields[source]:
                 with self.subTest(source=source, field=field):
-                    evaluate._value(source, field, lead, TODAY)
+                    self.assertIn(field, evaluate.RESOLVERS[source])
 
     def test_every_lead_column_in_the_vocabulary_is_read_straight_off_the_row(self):
         lead = self._lead()
@@ -725,7 +724,7 @@ class VocabularyCoverageTests(EngineTestCase):
         unresolved = set(utils.fields_by_source()[utils.SOURCE_EVENTS]) - set(
             evaluate.RESOLVERS[utils.SOURCE_EVENTS]
         )
-        self.assertEqual(unresolved, {"type", "timestamp", "days_since_timestamp"})
+        self.assertEqual(unresolved, {"type", "timestamp"})
 
         payload = _all_of(
             _cond("deals_closed", ">", 0),

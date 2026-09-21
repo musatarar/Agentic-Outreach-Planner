@@ -3,18 +3,38 @@
 :mod:`project.app.rules.utils` owns the vocabulary, reading it off the Lead and
 Event columns. A field it names that nothing here resolves is refused at
 evaluation rather than quietly firing. Pure Python and duck-typed like the planner's rule functions -- no database, no
-provider call. A lead-authored column is sanitized as it is read, so no rule
-ever matches against raw CRM text.
+provider call. Lead-controlled text is only ever read through the planner's
+sanitized notes blob.
 """
 
 import datetime
 
 from project.app.rules import utils
-from project.app.services import outreach, sanitize
+from project.app.services import outreach
 
 
 class ConditionError(Exception):
     """A payload this engine cannot evaluate -- it names something unknown."""
+
+
+# Named phrase sets a `contains` threshold may reference, resolved to the
+# planner's own lists so the two can never drift.
+PHRASE_SETS = {
+    "HOLD_PHRASES": outreach.HOLD_PHRASES,
+    "STALL_PHRASES": outreach.STALL_PHRASES,
+}
+
+
+def _days_since_signup(lead, today):
+    return outreach._days_since(getattr(lead, "signed_up_date", None), today)
+
+
+def _days_since_last_login(lead, today):
+    return outreach._days_since(getattr(lead, "last_login_date", None), today)
+
+
+def _days_since_last_contact(lead, today):
+    return outreach._days_since(getattr(lead, "last_contacted_date", None), today)
 
 
 def _deals_below_milestone(lead, today):
@@ -24,13 +44,17 @@ def _deals_below_milestone(lead, today):
     return (getattr(lead, "deals_closed", 0) or 0) < milestone
 
 
-# Every computed figure in the vocabulary. Columns and their `days_since_`
-# twins resolve off the lead row itself, in `_value`.
+# Every non-`lead` field in the vocabulary, resolved from the lead + its events.
 RESOLVERS = {
     utils.SOURCE_DERIVED: {
+        "days_since_signup": _days_since_signup,
+        "days_since_last_login": _days_since_last_login,
+        "days_since_last_contact": _days_since_last_contact,
         "gone_quiet": outreach._gone_quiet,
     },
     utils.SOURCE_NOTES: {
+        # The sanitized, lowercased blob -- never the raw CRM field.
+        "hubspot_notes": lambda lead, today: outreach._notes_blob(lead),
         "milestone_from_notes": lambda lead, today: outreach._milestone_from_notes(lead),
         "deals_below_milestone": _deals_below_milestone,
     },
@@ -81,16 +105,11 @@ def _value(source, field, lead, today):
         # `_as_date` only narrows datetimes; every other type passes through.
         return outreach._as_date(getattr(lead, field, None))
     resolver = RESOLVERS.get(source, {}).get(field)
-    if resolver is not None:
-        return resolver(lead, today)
-    if source == utils.SOURCE_DERIVED and field.startswith(utils.DAYS_SINCE_PREFIX):
-        column = field[len(utils.DAYS_SINCE_PREFIX) :]
-        return outreach._days_since(getattr(lead, column, None), today)
-    if source == utils.SOURCE_NOTES and hasattr(lead, field):
-        return sanitize.sanitize_untrusted(getattr(lead, field) or "")
-    # In the vocabulary, but nothing computes it yet -- see the Event columns,
-    # which need an "any event where..." semantic first.
-    raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")
+    if resolver is None:
+        # In the vocabulary, but nothing computes it yet -- see the Event
+        # columns, which need an "any event where..." semantic first.
+        raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")
+    return resolver(lead, today)
 
 
 def _blank(value):
@@ -126,13 +145,13 @@ def _compare(value, operator, threshold, field_type):
 
 
 def _contains(value, threshold):
-    """True when any of the author's phrases appears in ``value``."""
-    phrases = threshold if isinstance(threshold, list) else [threshold]
-    for phrase in phrases:
-        if not isinstance(phrase, str) or utils.reads_as_phrase_set(phrase):
-            raise ConditionError(f"{phrase!r} is not a phrase to look for.")
     text = str(value or "").lower()
-    return outreach._matched_phrase(text, [p.strip().lower() for p in phrases]) is not None
+    phrases = PHRASE_SETS.get(threshold)
+    if phrases is not None:
+        return outreach._matched_phrase(text, phrases) is not None
+    if threshold in utils.PHRASE_SETS:
+        raise ConditionError(f"Phrase set {threshold!r} has no phrases behind it.")
+    return threshold.strip().lower() in text
 
 
 def _coerce(threshold, field_type):
