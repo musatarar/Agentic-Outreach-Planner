@@ -432,11 +432,10 @@ def _reason(job):
 
 
 def _copy_outcome(item):
-    """Phase 3 for one proposal: the provider call, and nothing else.
+    """The provider call for one proposal, and nothing else.
 
-    The failure is carried rather than raised, exactly as the planner carries
-    it, so a dead provider produces the row a reviewer can act on instead of a
-    500 they cannot.
+    The failure is carried rather than raised, so a dead provider produces the
+    row a reviewer can act on instead of a 500 they cannot.
     """
     started = time.monotonic()
     try:
@@ -458,14 +457,13 @@ def _copy_outcome(item):
 def compose(job):
     """Draft the copy for one decided proposal and write its inbox row.
 
-    The planner's own machinery throughout -- its prompt, its provider call,
-    both its fail-closed output gates and its verification snapshot -- so a
-    draft made here is a draft made there, and the approval gate has one
-    producer to trust rather than two. Raises :class:`NothingToCompose` when
-    the key is already drafted or dismissed, before any provider call.
+    ``services/outreach.py`` throughout -- its prompt, its provider call, both
+    its fail-closed output gates and its verification snapshot -- so the
+    approval gate has one producer to trust. Raises :class:`NothingToCompose`
+    when the key is already drafted or dismissed, before any provider call.
 
-    KNOWN GAP, shared with ``plan_outreach``: the two refusals are a
-    read-then-write with no lock, so two clicks at once can both draft.
+    KNOWN GAP: the two refusals are a read-then-write with no lock, so two
+    clicks at once can both draft.
     """
     action, lead = job.selected_action, job.lead
     key = dedupe_key_of(job)

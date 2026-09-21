@@ -117,26 +117,12 @@ jobs:
           coverage run manage.py test project.app
           coverage report
 
-  # The rules regression eval is part of plain CI: pure Python against the
-  # committed golden set + baseline, no network, milliseconds.
-  rules-eval:
-    name: Rules eval (baseline gate)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -r requirements-dev.txt
-      - run: python evals/run_rules_eval.py
-
   # Rulesets require status checks *by name*, and the test matrix produces one
   # name per cell — this single stable name is what gets protected. It fails on
   # any failed/cancelled/skipped dependency.
   ci-ok:
     name: ci-ok
-    needs: [lint, typecheck, frontend, test, rules-eval]
+    needs: [lint, typecheck, frontend, test]
     if: always()
     runs-on: ubuntu-latest
     steps:

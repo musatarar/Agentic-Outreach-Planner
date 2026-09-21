@@ -1,7 +1,7 @@
 """The ``conditions`` payload contract: schema, vocabulary, and the rule that a
 rule may never fire on lead-controlled text alone.
 
-Pure — no database. What is stored here is what the planner must evaluate, so
+Pure — no database. What is stored here is what the evaluator must resolve, so
 anything this accepts is a promise and anything it rejects never reaches a row.
 """
 
@@ -17,9 +17,9 @@ def _payload(*conditions, operator="all_of", version=utils.SCHEMA_VERSION):
 
 
 LEAD = utils._cond("deals_closed", ">", 20)
-DERIVED = utils._cond("gone_quiet", "==", True, source="derived")
-NOTES = utils._cond("hubspot_notes", "contains", "HOLD_PHRASES", source="notes")
-EVENTS = utils._cond("has_no_reply_email", "==", True, source="events")
+DERIVED = utils._cond("days_since_last_contact", ">=", 14, source="derived")
+NOTES = utils._cond("hubspot_notes", "contains", "waiting on", source="notes")
+EVENTS = utils._cond("type", "==", "email_sent", source="events")
 
 
 class ValidPayloadTests(SimpleTestCase):
@@ -37,7 +37,7 @@ class ValidPayloadTests(SimpleTestCase):
                 utils._cond("last_login_date", ">=", "2026-01-01"),
                 utils._cond("state", "in", ["ID", "TX"]),
                 utils._cond("days_since_last_login", "<=", 21, source="derived"),
-                utils._cond("milestone_from_notes", "exists", source="notes"),
+                utils._cond("hubspot_notes", "contains", "waiting on", source="notes"),
             )
         )
 
@@ -124,13 +124,13 @@ class SchemaRejectionTests(SimpleTestCase):
 
     def test_an_operator_that_does_not_apply_to_the_field_is_refused(self):
         self._refused(_payload(utils._cond("deals_closed", "contains", "20")))
-        self._refused(_payload(utils._cond("gone_quiet", ">", True, source="derived")))
+        self._refused(_payload(utils._cond("signed_up_date", "contains", "2026")))
 
     def test_a_threshold_of_the_wrong_type_is_refused(self):
         self._refused(_payload(utils._cond("deals_closed", ">", "twenty")))
         self._refused(_payload(utils._cond("deals_closed", ">", True)))
         self._refused(_payload(utils._cond("signed_up_date", ">", "last tuesday")))
-        self._refused(_payload(utils._cond("gone_quiet", "==", "yes", source="derived")))
+        self._refused(_payload(utils._cond("days_since_last_login", ">", "21", source="derived")))
 
     def test_a_missing_or_surplus_threshold_is_refused(self):
         self._refused(_payload({"field": "deals_closed", "operator": ">", "source": "lead"}))
@@ -145,9 +145,12 @@ class SchemaRejectionTests(SimpleTestCase):
             )
         )
 
-    def test_an_unknown_phrase_set_is_refused(self):
+    def test_a_phrase_too_short_to_mean_anything_is_refused(self):
         self._refused(
-            _payload(utils._cond("hubspot_notes", "contains", "HOLD_PHRSES", source="notes"), LEAD)
+            _payload(utils._cond("hubspot_notes", "contains", "up", source="notes"), LEAD)
+        )
+        self._refused(
+            _payload(utils._cond("hubspot_notes", "contains", "   ", source="notes"), LEAD)
         )
 
     def test_a_literal_phrase_is_accepted_alongside_a_corroborator(self):
@@ -240,7 +243,9 @@ class SourceResolutionTests(SimpleTestCase):
         )
 
     def test_a_computed_figure_resolves_to_its_declared_source(self):
-        self.assertEqual(utils._cond("gone_quiet", "==", True)["source"], utils.SOURCE_DERIVED)
+        self.assertEqual(
+            utils._cond("days_since_last_contact", ">=", 14)["source"], utils.SOURCE_DERIVED
+        )
 
     def test_an_explicit_source_is_never_overridden(self):
         # Including a wrong one -- validate_conditions is what refuses it.

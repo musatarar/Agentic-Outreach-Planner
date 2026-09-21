@@ -84,8 +84,8 @@ class OutreachAction(models.Model):  # what the planner decided/did
 class DismissedOutreachKey(models.Model):
     """Permanent suppression ledger for dismissed recommendations.
 
-    Consulted by `plan_outreach()` BEFORE generating copy, so a dismissed
-    recommendation costs no LLM call on a re-run. Outlives the OutreachAction
+    Consulted BEFORE generating copy, so a dismissed recommendation costs no
+    LLM call on a re-run. Outlives the OutreachAction
     that created it (SET_NULL); reopening revokes rather than deletes.
     """
 

@@ -47,15 +47,17 @@ attacks with no trigger keyword — this is heuristic defense-in-depth, not a gu
 the real instructions; trusted instructions also sit both before and after the data block.
 *Does not cover* a short, potent injection.
 
-**4. Classifier corroboration** (`_notes_blob`, `_gone_quiet`, `determine_action` /
-`determine_priority`). Phrase matching on notes is a signal, never sole grounds for an
-escalation: the `follow_up_after_hold` flip and the gone-quiet priority bump each require a
-structured corroborator — a real `no_reply` / `email_sent` event, or a genuinely stale
-trusted `last_contacted_date`. *Covers* classification hijack via forged "on hold" note
-text. *Does not cover* cases where the structured signals genuinely support escalation:
-that is correct behavior, not an attack.
+**4. Rule corroboration** (`rules/utils.py::validate_conditions`, `_branch_corroborated`;
+the sanitized blob in `actions/evaluate.py::_notes_blob`). Phrase matching on notes is a
+signal, never sole grounds for an escalation: a stored `conditions` payload is refused at
+write time unless every branch that reads lead-controlled text also reads a `lead` or
+`derived` field, so the seeded `follow_up_after_hold` rule needs a genuinely stale trusted
+`last_contacted_date` alongside its hold phrase. *Covers* rule hijack via forged "on hold"
+note text. *Does not cover* cases where the structured signals genuinely support
+escalation (correct behavior, not an attack), or an inference rule, whose natural-language
+predicate is judged by the model and may stand alone.
 
-**5. Shape validation on the output** (`validate_copy` in `plan_outreach`, backed by
+**5. Shape validation on the output** (`outreach.py::validate_copy`, backed by
 `project/app/services/copy_checks.py`). Subject line present, one CTA, sane body length, no leaked
 preamble. Fail-closed: the draft is kept but routed to a human (`needs_human=True`) with the
 problems spelled out. *Covers* injections that visibly derail the output — a dumped system
@@ -69,8 +71,8 @@ non-reward action. Fail-closed into the same human-review path. *Covers* the hig
 outcomes: fabricated numbers, a wrong contact name, "90% off", "auto-renews". *Does not
 cover* persuasive-but-grounded text, or a promise phrased with no matched keyword.
 
-Layers 1–3 are pinned by `tests_sanitize.py`, layer 4 by `tests_logic.py`, layers 5–6 by
-`tests_verify.py` and `tests_verify_spans.py`.
+Layers 1–3 are pinned by `tests_sanitize.py`, layer 4 by `tests_rules_conditions.py` and
+`tests_action_conditions.py`, layers 5–6 by `tests_verify.py` and `tests_verify_spans.py`.
 
 ## Residual risk
 

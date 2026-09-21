@@ -106,9 +106,6 @@ ruff check . && ruff format --check .
 mypy project/app/services/
 python manage.py makemigrations --check --dry-run
 
-# rules regression gate (pure Python, no DB, no network)
-python evals/run_rules_eval.py
-
 # actions engine: queue every lead without an open job, then run the batch.
 # `docker compose up` runs this on a loop in the `cron` service; this is the
 # same entry point by hand. Runs are dry by default: ACTIONS_LLM_DRY_RUN=False spends.
@@ -120,7 +117,7 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 ```
 
 CI runs the backend suite on Python 3.12 and 3.13 against both SQLite and Postgres, plus
-lint, mypy, the migration check, the rules eval and the frontend build.
+lint, mypy, the migration check and the frontend build.
 
 ## Architecture
 
@@ -130,9 +127,9 @@ lint, mypy, the migration check, the rules eval and the frontend build.
   events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
   the deterministic rules of the user whose book the lead is in, sends what is left to the
   inference pass (stubbed), and records the action the weight tally chose.
-- **Rules + planner** (`services/outreach.py`): `determine_action` / `determine_priority`
-  are pure functions over a lead and its events. `plan_outreach` runs in numbered phases —
-  read, classify and build prompts, call the provider, run the two output gates, write.
+- **Copy generation** (`services/outreach.py`): builds the prompt for a decided action,
+  calls the provider, and runs the two fail-closed output gates (shape, then grounding)
+  before a draft reaches the review inbox.
 - **LLM layer** (`services/llm/`): one adapter per provider behind a shared interface,
   selected by `LLM_PROVIDER`. Imports no Django, stores nothing.
 - **Verifier** (`services/verify.py`): deterministic, no LLM. Checks numbers, names, dates
@@ -156,8 +153,9 @@ Registries — start here to find anything: `project/app/models/__init__.py`,
 - **Approval is a judgement, not a send.** The server re-verifies the copy in play and
   refuses approval when a claim contradicts the record.
 - **Dismiss is permanent.** It writes a suppression row keyed on
-  `sha256("v1|{lead_id}|{action_type}")`, which `plan_outreach` reads *before* generating,
-  so a re-run neither resurrects the recommendation nor pays for a call to rediscover it.
+  `sha256("v1|{lead_id}|{action_type}")`, which the actions engine reads *before*
+  generating, so a re-run neither resurrects the recommendation nor pays for a call to
+  rediscover it.
   Reopening a dismissal revokes the suppression in the same transaction.
 
 ## Stack

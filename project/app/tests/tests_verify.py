@@ -1,6 +1,6 @@
 """Pure-Python tests for the grounding verifier (project.app.services.verify).
 
-No Django, no database: leads are SimpleNamespace stubs, as in tests_logic.py.
+No Django, no database: leads are SimpleNamespace stubs.
 """
 
 import datetime

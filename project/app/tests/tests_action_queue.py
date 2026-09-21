@@ -317,11 +317,14 @@ class DeterministicPassTests(EngineTestCase):
             action,
             "went quiet",
             OutreachRule.WEIGHT_HIGH,
-            conditions=_all_of(_cond("gone_quiet", "==", True, source="derived")),
+            conditions=_all_of(
+                _cond("hubspot_notes", "contains", "circle back", source="notes"),
+                _cond("days_since_last_contact", ">=", 14, source="derived"),
+            ),
         )
         job = services.enqueue_lead(lead)
-        # The corroborating event lands after the job was queued.
-        self._event(lead, "email_sent", outcome="no_reply")
+        # The note that would fire the rule lands after the job was queued.
+        self._event(lead, "call_logged", notes="asked us to circle back in Q3")
 
         self._run(job)
 
@@ -722,7 +725,7 @@ class VocabularyCoverageTests(EngineTestCase):
 
     def test_an_event_column_stores_in_a_rule_but_has_no_verdict_yet(self):
         unresolved = set(utils.fields_by_source()[utils.SOURCE_EVENTS]) - set(
-            evaluate.RESOLVERS[utils.SOURCE_EVENTS]
+            evaluate.RESOLVERS.get(utils.SOURCE_EVENTS, {})
         )
         self.assertEqual(unresolved, {"type", "timestamp"})
 

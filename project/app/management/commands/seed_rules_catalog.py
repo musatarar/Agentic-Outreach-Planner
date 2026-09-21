@@ -1,7 +1,6 @@
 """Seed the demo user's outreach rules catalog.
 
-The seeded set reproduces the planner's compiled behavior as editable data,
-weighted: strong, unambiguous signals carry 3, softer ones 2 or 1. Several
+The seeded set is the demo user's starting catalog, weighted: strong, unambiguous signals carry 3, softer ones 2 or 1. Several
 rules select the same action on purpose — three separate signals argue for a
 usage nudge, and a dormant account argues harder than modest momentum — so
 the tally decides rather than evaluation position.
@@ -20,10 +19,24 @@ from django.db import transaction
 
 from project.app.models import Lead
 from project.app.rules.models import ActionType, OutreachRule
-from project.app.rules.utils import _all_of, _cond
+from project.app.rules.utils import _all_of, _any_of, _cond
 
 # Used when no --owner is given and LOGIN_ALLOWED_EMAILS is empty.
 DEFAULT_OWNER_EMAIL = "demo@lockedin.example"
+
+# Phrases (lowercase) suggesting the lead asked to be contacted later. Seed
+# data, not engine data: a user edits these on the rule like any other.
+HOLD_PHRASES = [
+    "waiting on",
+    "waiting for",
+    "budget approval",
+    "budget",
+    "follow up in",
+    "get back",
+    "circle back",
+    "touch base in",
+    "next quarter",
+]
 
 ACTIONS = [
     {
@@ -60,8 +73,8 @@ ACTIONS = [
 
 # "conditions" makes a deterministic rule, "inference" an AI-inference one.
 # Each condition's source is resolved from the field name (`utils.source_for`),
-# so a lead column reads as `lead`, an event column as `events`, and the
-# engine's computed figures as `derived` or `notes`.
+# so a lead column reads as `lead`, a lead-authored one as `notes`, and the
+# engine's computed figures as `derived`.
 RULES = [
     {
         "name": "Demo completed but never signed up",
@@ -86,8 +99,9 @@ RULES = [
         "action": "follow_up_after_hold",
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
-            _cond("hubspot_notes", "contains", "HOLD_PHRASES"),
-            _cond("gone_quiet", "==", True),
+            _any_of(*(_cond("hubspot_notes", "contains", p) for p in HOLD_PHRASES)),
+            # The corroborator: a hold phrase alone can never fire this rule.
+            _cond("days_since_last_contact", ">=", 14),
         ),
     },
     {
@@ -110,15 +124,16 @@ RULES = [
         ),
     },
     {
+        # The milestone is a number a lead wrote in prose, so the model reads
+        # it; the conditions gate it, and only a gated lead costs a call.
         "name": "Short of the deal milestone in the notes",
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
             _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
-            _cond("milestone_from_notes", "exists"),
-            _cond("deals_below_milestone", "==", True),
         ),
+        "inference": "the hubspot notes name a deal target this lead is still short of",
     },
     {
         "name": "Modest deal momentum",
