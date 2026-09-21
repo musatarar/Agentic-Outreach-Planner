@@ -1,4 +1,4 @@
-"""Outreach actions on the wire: the review item.
+"""Generated copy on the wire: the review item.
 
 ``ReviewItemSerializer`` is complete on purpose: advancing a row in the inbox
 must perform zero extra network requests, so the list endpoint and every
@@ -7,7 +7,8 @@ mutation return whole items in one shape.
 
 from rest_framework import serializers
 
-from project.app.models import Lead, OutreachAction
+from project.app.models import Lead, OutreachGeneratedCopy
+from project.app.rules.models import resolved_priority
 from project.app.services import queue_copy
 from project.app.services.actions import ACTION_META
 
@@ -27,6 +28,11 @@ EVENT_SUMMARIES = {
 }
 
 _DATETIME = serializers.DateTimeField()
+
+
+def priority_of(obj):
+    """The inbox priority of one row, by the same rule the inbox sorts on."""
+    return resolved_priority(obj.priority, obj.action.urgency if obj.action_id else None)
 
 
 def _event_summary(event):
@@ -82,13 +88,16 @@ class ReviewItemSerializer(serializers.ModelSerializer):
 
     lead = ReviewLeadSerializer(read_only=True)
     action_label = serializers.SerializerMethodField()
+    priority = serializers.SerializerMethodField()
     effective_copy = serializers.SerializerMethodField()
+    effective_subject = serializers.SerializerMethodField()
+    effective_body = serializers.SerializerMethodField()
     is_edited = serializers.SerializerMethodField()
     verification = serializers.SerializerMethodField()
     can_approve = serializers.SerializerMethodField()
 
     class Meta:
-        model = OutreachAction
+        model = OutreachGeneratedCopy
         fields = [
             "id",
             "status",
@@ -103,19 +112,38 @@ class ReviewItemSerializer(serializers.ModelSerializer):
             "dedupe_key",
             "lead",
             "suggested_copy",
+            "subject",
+            "body",
             "edited_copy",
+            "edited_subject",
+            "edited_body",
             "effective_copy",
+            "effective_subject",
+            "effective_body",
             "is_edited",
             "verification",
             "can_approve",
         ]
 
     def get_action_label(self, obj):
+        # The owner's own label when the draft came from their catalog; the
+        # planner's constants otherwise, which have no entry for a user key.
+        if obj.action_id is not None:
+            return obj.action.label
         meta = ACTION_META.get(obj.action_type) or {}
         return meta.get("label", obj.action_type)
 
+    def get_priority(self, obj):
+        return priority_of(obj)
+
     def get_effective_copy(self, obj):
         return obj.effective_copy
+
+    def get_effective_subject(self, obj):
+        return obj.effective_subject
+
+    def get_effective_body(self, obj):
+        return obj.effective_body
 
     def get_is_edited(self, obj):
         return bool(obj.edited_copy)

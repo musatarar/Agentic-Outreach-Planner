@@ -24,10 +24,10 @@ from django.utils import timezone
 from project.app.actions import evaluate
 from project.app.actions.models import ActionJob
 from project.app.models.lead import Event, Lead
-from project.app.models.outreach import DismissedOutreachKey, OutreachAction
+from project.app.models.outreach import DismissedOutreachKey, OutreachGeneratedCopy
 from project.app.rules import inference, schema
 from project.app.rules import services as rules_services
-from project.app.rules.models import ActionType, OutreachRule
+from project.app.rules.models import OutreachRule
 from project.app.services import dedupe, outreach, queue_copy, verify
 from project.app.services.llm import LLMError, wrap_unexpected
 
@@ -341,14 +341,6 @@ PROPOSING_STATUSES = (
     ActionJob.STATUS_INFERRED_ACTION_CHOSEN,
 )
 
-# The inbox sorts on priority; a proposal's is the urgency its owner declared on
-# the catalog action, not the heuristic planner's score for the lead.
-PRIORITY_BY_URGENCY = {
-    ActionType.URGENCY_HIGH: 1,
-    ActionType.URGENCY_MEDIUM: 2,
-    ActionType.URGENCY_LOW: 3,
-}
-
 ALREADY_DRAFTED = "This proposal already has a draft awaiting review."
 DISMISSED = "This recommendation was dismissed, so it is not drafted again."
 
@@ -394,8 +386,8 @@ def _open_drafts(keys):
     surface offers must not be a no-op.
     """
     rows = (
-        OutreachAction.objects.filter(
-            dedupe_key__in=list(keys), status=OutreachAction.STATUS_PENDING
+        OutreachGeneratedCopy.objects.filter(
+            dedupe_key__in=list(keys), status=OutreachGeneratedCopy.STATUS_PENDING
         )
         .exclude(outreach.failed_generation_filter())
         .order_by("-created_at", "-id")
@@ -440,10 +432,8 @@ def _copy_outcome(item):
     started = time.monotonic()
     try:
         # No lead: the prompt is already built, as in the planner's phase 3.
-        text = queue_copy.normalize_copy(
-            outreach.render_email(
-                outreach.generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
-            )
+        subject, body = outreach._stored_pair(
+            outreach.generate_copy(None, item.action_type, item.reason, prompt=item.prompt)
         )
     except LLMError as exc:
         return outreach.CopyOutcome(error=exc, attempts=1, elapsed_s=time.monotonic() - started)
@@ -451,7 +441,9 @@ def _copy_outcome(item):
         return outreach.CopyOutcome(
             error=wrap_unexpected(exc), attempts=1, elapsed_s=time.monotonic() - started
         )
-    return outreach.CopyOutcome(text=text)
+    return outreach.CopyOutcome(
+        text=outreach.compose_email(subject, body), subject=subject, body=body
+    )
 
 
 def compose(job):
@@ -474,7 +466,8 @@ def compose(job):
     reason = _reason(job)
     item = outreach.WorkItem(
         lead=lead,
-        priority=PRIORITY_BY_URGENCY[action.urgency],
+        # None: the draft derives its priority from `action.urgency` instead.
+        priority=None,
         action_type=action.key,
         reason=reason,
         dedupe_key=key,
@@ -488,12 +481,15 @@ def compose(job):
     )
     # Only the write is transactional; the provider call is already behind us.
     with transaction.atomic():
-        return OutreachAction.objects.create(
+        return OutreachGeneratedCopy.objects.create(
             lead=lead,
             priority=item.priority,
             action_type=item.action_type,
+            action=action,
             reason=item.reason,
             suggested_copy=review.suggested_copy,
+            subject=review.subject,
+            body=review.body,
             needs_human=review.needs_human,
             further_action=review.further_action,
             dedupe_key=key,

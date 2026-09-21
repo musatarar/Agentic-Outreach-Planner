@@ -20,7 +20,7 @@ class ActionType(models.Model):
     """One kind of outreach a user's rules can select (their action catalog).
 
     ``key`` is the machine token a firing rule writes into
-    ``OutreachAction.action_type``, so it shares that field's length and
+    ``OutreachGeneratedCopy.action_type``, so it shares that field's length and
     snake_case shape.
     """
 
@@ -61,6 +61,15 @@ class ActionType(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @property
+    def priority(self):
+        """The inbox priority of a draft generated for this action.
+
+        An engine draft stores none of its own: the urgency its owner declared
+        here is the one place it is decided.
+        """
+        return resolved_priority(None, self.urgency)
+
     class Meta:
         ordering = ["key"]
         constraints = [
@@ -69,6 +78,28 @@ class ActionType(models.Model):
 
     def __str__(self):
         return f"{self.key} (user {self.owner_id})"
+
+
+# The inbox sorts on priority, 1 highest; an action's is its declared urgency.
+PRIORITY_BY_URGENCY = {
+    ActionType.URGENCY_HIGH: 1,
+    ActionType.URGENCY_MEDIUM: 2,
+    ActionType.URGENCY_LOW: 3,
+}
+
+# What a draft with neither a stored priority nor a catalog action sorts as.
+LOWEST_PRIORITY = 3
+
+
+def resolved_priority(priority, urgency):
+    """One draft's inbox priority: its own, else its action's declared urgency.
+
+    The single derivation: the inbox sorts on it in Python and the serializer
+    reports it, and a row the two disagreed about would render out of order.
+    """
+    if priority is not None:
+        return priority
+    return PRIORITY_BY_URGENCY.get(urgency, LOWEST_PRIORITY)
 
 
 class OutreachRule(models.Model):

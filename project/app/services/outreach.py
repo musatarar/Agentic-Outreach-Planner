@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from project.app.services import actions, sanitize, verify
 from project.app.services.llm import (
@@ -160,19 +160,74 @@ class OutreachCopy(BaseModel):
 
     Blank is invalid rather than merely ugly: an empty field would render a
     draft with nothing in it, and the reviewer needs the failure instead.
+    Stripped on the way in, so what validated is what is stored and rendered.
     """
 
     subject: str = Field(min_length=1, max_length=MAX_SUBJECT_CHARS)
     body: str = Field(min_length=1)
 
+    @field_validator("subject", "body")
+    @classmethod
+    def _stripped_and_present(cls, value):
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
 
-def render_email(copy):
-    """The stored draft for one :class:`OutreachCopy`.
+
+def compose_email(subject, body):
+    """The stored draft for one subject/body pair.
 
     Every span offset the verifier computes indexes this exact string, and the
-    frontend splits it on :data:`SUBJECT_PREFIX`.
+    frontend splits it on :data:`SUBJECT_PREFIX`. The one composer: a reviewer's
+    edited pair is rendered through it too, so a dry run and the row it becomes
+    cannot disagree about the string.
+
+    The subject is flattened to one line, which is what makes the composition
+    reversible: a blank line inside it would become the separator
+    :func:`split_email` cuts on, and the halves would not come back.
     """
-    return f"{SUBJECT_PREFIX} {copy.subject.strip()}\n\n{copy.body.strip()}"
+    return f"{SUBJECT_PREFIX} {one_line(subject)}\n\n{(body or '').strip()}"
+
+
+def one_line(text):
+    """``text`` with every run of whitespace collapsed to a single space."""
+    return " ".join((text or "").split())
+
+
+def render_email(copy):
+    """:func:`compose_email` for one :class:`OutreachCopy`."""
+    return compose_email(copy.subject, copy.body)
+
+
+def _stored_pair(copy):
+    """One :class:`OutreachCopy` as it is stored: normalized, then stripped.
+
+    Normalizing each field rather than the composed draft keeps
+    ``compose_email(subject, body)`` equal to the stored ``suggested_copy``,
+    which is the string every span offset indexes.
+    """
+    from project.app.services import queue_copy
+
+    return one_line(copy.subject), queue_copy.normalize_copy(copy.body).strip()
+
+
+def split_email(text):
+    """``(subject, body)`` for a draft :func:`render_email` wrote.
+
+    The inverse of the composer, for a reviewer's edit sent as one whole string
+    rather than as its two halves. Text with no ``Subject:`` line is all body: a
+    reviewer may legitimately write one, so this reports what is there rather
+    than inventing a subject.
+    """
+    text = (text or "").strip()
+    if not text.startswith(SUBJECT_PREFIX):
+        return "", text
+    subject, separator, body = text[len(SUBJECT_PREFIX) :].partition("\n\n")
+    if not separator:
+        # A subject line and nothing under it.
+        return subject.strip(), ""
+    return subject.strip(), body.strip()
 
 
 def max_copy_tokens():
@@ -276,11 +331,12 @@ class WorkItem:
     ``prompt`` is ``None`` when there is no copy to generate: ``UNKNOWN``
     (straight to a human), or the build failed — ``prompt_error`` says which.
     ``dedupe_key`` is computed with the classification and carried through: the
-    key is the identity of the recommendation.
+    key is the identity of the recommendation. ``priority`` is ``None`` on an
+    engine draft, which derives it from its catalog action instead.
     """
 
     lead: Any
-    priority: int
+    priority: int | None
     action_type: str
     reason: str
     dedupe_key: str
@@ -295,9 +351,13 @@ class CopyOutcome:
     The exception is carried rather than raised so one lead's dead API call
     cannot sink the run. ``attempts``/``elapsed_s`` are meaningful only on
     failure — the review's "gave up after 4 attempts over 31s".
+    ``subject``/``body`` are the pair ``text`` was composed from, carried so
+    the written row stores what the provider returned rather than re-splitting it.
     """
 
     text: str = ""
+    subject: str = ""
+    body: str = ""
     # Narrower than BaseException on purpose: KeyboardInterrupt/SystemExit
     # abort the run instead of landing here.
     error: Exception | None = None
@@ -307,8 +367,8 @@ class CopyOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReviewOutcome:
-    """The three fields :func:`_review` decides and the written row carries,
-    plus its workings.
+    """The fields :func:`_review` decides and the written row carries, plus its
+    workings.
 
     The counts are carried rather than recomputed: a second run of a
     fail-closed gate is a second chance to disagree with the decision made.
@@ -317,6 +377,8 @@ class ReviewOutcome:
     suggested_copy: str
     needs_human: bool
     further_action: str
+    subject: str = ""
+    body: str = ""
     shape_problem_count: int = 0
     violation_count: int = 0
 
@@ -488,7 +550,13 @@ def _review(item, outcome, level, today):
         item.lead, outcome.text, item.action_type, level=level, today=today
     )
     if not (shape_problems or violations):
-        return ReviewOutcome(suggested_copy=outcome.text, needs_human=False, further_action="")
+        return ReviewOutcome(
+            suggested_copy=outcome.text,
+            needs_human=False,
+            further_action="",
+            subject=outcome.subject,
+            body=outcome.body,
+        )
 
     messages = []
     if shape_problems:
@@ -499,6 +567,8 @@ def _review(item, outcome, level, today):
         suggested_copy=outcome.text,
         needs_human=True,
         further_action="\n\n".join(messages),
+        subject=outcome.subject,
+        body=outcome.body,
         shape_problem_count=len(shape_problems),
         violation_count=len(violations),
     )

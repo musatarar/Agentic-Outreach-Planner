@@ -1,6 +1,6 @@
 """User-defined outreach catalog: ``ActionType`` and ``OutreachRule``.
 
-Pins the rules-catalog schema (migration 0002_rules_catalog): per-owner
+Pins the rules-catalog schema: per-owner
 action keys, the deterministic/inference kind <-> payload pairing, per-rule
 weights, and the delete story (RESTRICT on the action FK, clean sweep on owner
 delete).

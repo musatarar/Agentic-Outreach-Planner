@@ -7,7 +7,7 @@ from .auth import LoginToken
 from .lead import Event, Lead
 from .outreach import (
     DismissedOutreachKey,
-    OutreachAction,
+    OutreachGeneratedCopy,
 )
 
 __all__ = [
@@ -17,6 +17,6 @@ __all__ = [
     "Event",
     "Lead",
     "LoginToken",
-    "OutreachAction",
+    "OutreachGeneratedCopy",
     "OutreachRule",
 ]

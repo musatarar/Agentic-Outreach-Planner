@@ -218,9 +218,31 @@
   max-width: var(--prose-measure);
 }
 
-/* The literal "Subject:" prefix is a label, not prose, so it is sans while the
-   subject text it introduces stays serif. */
-.draft__subject-label {
+/* The subject is one line of the same voice, set a step up so the eye lands on
+   it first; it is the part a reviewer rewrites most. */
+.draft--subject {
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+}
+
+/* The two fields the draft is. Stacked, each under its own label, so the
+   subject reads as a subject rather than as the email's first sentence. */
+.draft-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.draft-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* A field name, not prose: sans and quiet, so it never competes with the copy
+   it introduces. */
+.draft-field__label {
   font-family: var(--font-sans);
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
@@ -279,6 +301,10 @@
   border-radius: var(--radius-md);
   background: var(--color-surface-sunken);
 }
+
+/* Each field owns a stack; the editor spaces them the way .draft-fields spaces
+   the read-only pair, so opening it moves nothing. */
+.draft-edit > .draft-field + .draft-field { margin-top: var(--space-4); }
 
 .draft-edit__stack { display: grid; }
 

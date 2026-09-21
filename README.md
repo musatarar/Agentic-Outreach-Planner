@@ -121,7 +121,7 @@ lint, mypy, the migration check and the frontend build.
 
 ## Architecture
 
-- **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction`,
+- **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachGeneratedCopy`,
   `DismissedOutreachKey`, `LoginToken`, `ActionJob`.
 - **Actions engine** (`project/app/actions/`): a queue of per-lead jobs, each holding the
   events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
@@ -145,7 +145,7 @@ Registries — start here to find anything: `project/app/models/__init__.py`,
 
 ### Review flow
 
-`OutreachAction` moves `pending → approved | dismissed`, and either state reopens back to
+`OutreachGeneratedCopy` moves `pending → approved | dismissed`, and either state reopens back to
 `pending`, behind `/api/outreach/<id>/{edit,verify,approve,dismiss,reopen}/`.
 
 - **`suggested_copy` is immutable.** A reviewer's edit lands in `edited_copy`, so what the

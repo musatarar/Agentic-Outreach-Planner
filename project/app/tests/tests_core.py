@@ -6,7 +6,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils.timezone import is_aware
 
-from project.app.models import Event, Lead, OutreachAction
+from project.app.models import Event, Lead, OutreachGeneratedCopy
 
 
 def _raw_json(name):
@@ -115,7 +115,7 @@ class ModelBasicsTests(TestCase):
             estimated_book_size_usd=1,
             stage="active_trial",
         )
-        action = OutreachAction.objects.create(
+        action = OutreachGeneratedCopy.objects.create(
             lead=lead,
             priority=1,
             action_type="nudge_usage",

@@ -16,8 +16,10 @@ from rest_framework import status
 from rest_framework.settings import api_settings
 from rest_framework.throttling import SimpleRateThrottle
 
-from project.app.models import DismissedOutreachKey, Lead, OutreachAction
+from project.app.models import ActionType, DismissedOutreachKey, Lead, OutreachGeneratedCopy
 from project.app.services import dedupe
+from project.app.services.actions import ACTION_META
+from project.app.services.outreach import split_email
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 from project.app.views.review import ReviewListView, ReviewVerifyView
 
@@ -75,7 +77,10 @@ def make_action(lead=None, **overrides):
         dedupe_key=dedupe.dedupe_key(lead.id, "power_user_reward"),
     )
     defaults.update(overrides)
-    return OutreachAction.objects.create(**defaults)
+    subject, body = split_email(defaults["suggested_copy"])
+    defaults.setdefault("subject", subject)
+    defaults.setdefault("body", body)
+    return OutreachGeneratedCopy.objects.create(**defaults)
 
 
 def url(name, action):
@@ -119,13 +124,42 @@ class ReviewListTests(ReviewAPITestCase):
         second = self.client.get(reverse("outreach-list"), {"page_size": 2, "page": 2})
         self.assertEqual(len(second.data["results"]), 1)
 
+    def test_the_inbox_orders_an_engine_draft_against_a_planner_row(self):
+        # The sort is Python, not SQL, so the engine draft's null priority is a
+        # TypeError rather than a mis-sort if it is not resolved first.
+        planner_row = make_action(make_lead("lead_planner"), priority=3)
+        engine_draft = make_action(
+            make_lead("lead_engine"),
+            priority=None,
+            action=ActionType.objects.create(
+                owner=self.user,
+                key="reward_power_user",
+                label="Reward power user",
+                urgency=ActionType.URGENCY_HIGH,
+            ),
+        )
+
+        results = self.client.get(reverse("outreach-list")).data["results"]
+
+        self.assertEqual([row["id"] for row in results], [engine_draft.id, planner_row.id])
+        self.assertEqual(results[0]["priority"], 1)
+        self.assertEqual(results[0]["action_label"], "Reward power user")
+
+    def test_a_planner_row_keeps_its_own_label_and_priority(self):
+        make_action(priority=2, action_type="power_user_reward")
+
+        row = self.client.get(reverse("outreach-list")).data["results"][0]
+
+        self.assertEqual(row["priority"], 2)
+        self.assertEqual(row["action_label"], ACTION_META["power_user_reward"]["label"])
+
     def test_an_item_carries_the_copy_and_the_verification_the_reviewer_decides_on(self):
         action = make_action()
 
         row = self.client.get(reverse("outreach-list")).data["results"][0]
 
         self.assertEqual(row["id"], action.id)
-        self.assertEqual(row["status"], OutreachAction.STATUS_PENDING)
+        self.assertEqual(row["status"], OutreachGeneratedCopy.STATUS_PENDING)
         self.assertEqual(row["effective_copy"], GROUNDED_COPY)
         self.assertFalse(row["is_edited"])
         self.assertTrue(row["can_approve"])
@@ -215,6 +249,49 @@ class ReviewEditTests(ReviewAPITestCase):
         self.action.refresh_from_db()
         self.assertEqual(self.action.edited_copy, "")
 
+    def test_an_edit_sent_as_a_pair_is_stored_composed_and_split(self):
+        body = GROUNDED_COPY.split("\n\n", 1)[1]
+
+        resp = self._edit({"subject": "A new subject", "body": body})
+
+        self.assertEqual(resp.data["edited_subject"], "A new subject")
+        self.assertEqual(resp.data["edited_body"], body)
+        self.assertEqual(resp.data["edited_copy"], f"Subject: A new subject\n\n{body}")
+        self.assertEqual(resp.data["effective_subject"], "A new subject")
+
+    def test_an_edit_sent_as_a_string_still_records_its_two_halves(self):
+        self._edit({"copy": "Subject: Hand written\n\nHello there."})
+
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.edited_subject, "Hand written")
+        self.assertEqual(self.action.edited_body, "Hello there.")
+
+    def test_reverting_clears_both_halves_of_the_edit(self):
+        self._edit({"subject": "Gone", "body": "Also gone."})
+
+        resp = self._edit({"copy": None})
+
+        self.assertEqual(resp.data["edited_subject"], "")
+        self.assertEqual(resp.data["edited_body"], "")
+        self.assertEqual(resp.data["effective_subject"], self.action.subject)
+
+    def test_a_half_sent_without_its_partner_is_a_validation_error(self):
+        resp = self._edit({"subject": "Lonely"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "validation_error")
+
+    def test_a_pair_sent_alongside_copy_is_a_validation_error(self):
+        resp = self._edit({"copy": GROUNDED_COPY, "subject": "A", "body": "B"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "validation_error")
+
+    def test_a_blank_half_is_refused_rather_than_stored(self):
+        resp = self._edit({"subject": "  ", "body": "Hello there."})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "empty_copy")
+        self.action.refresh_from_db()
+        self.assertEqual(self.action.edited_copy, "")
+
     def test_a_decided_item_cannot_be_edited(self):
         for verb in ("outreach-approve", "outreach-dismiss"):
             with self.subTest(verb):
@@ -269,6 +346,20 @@ class ReviewVerifyTests(ReviewAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(resp.data["code"], "empty_copy")
 
+    def test_verify_takes_the_pair_and_reports_on_the_copy_it_composes(self):
+        body = GROUNDED_COPY.split("\n\n", 1)[1]
+
+        resp = self.client.post(
+            url("outreach-verify", self.action),
+            {"subject": "A new subject", "body": body},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        # The dry run reports on exactly what /edit/ would store.
+        self.assertEqual(resp.data["copy"], f"Subject: A new subject\n\n{body}")
+        self.assertTrue(resp.data["can_approve"])
+
     def test_verify_declares_a_throttle_scope_with_a_configured_rate(self):
         # Key repeat in the inline editor must not hammer the verifier.
         self.assertEqual(ReviewVerifyView.throttle_scope, "copy_verify")
@@ -286,9 +377,9 @@ class ReviewApproveTests(ReviewAPITestCase):
         resp = self.client.post(url("outreach-approve", self.action), {}, format="json")
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["status"], OutreachAction.STATUS_APPROVED)
+        self.assertEqual(resp.data["status"], OutreachGeneratedCopy.STATUS_APPROVED)
         self.action.refresh_from_db()
-        self.assertEqual(self.action.status, OutreachAction.STATUS_APPROVED)
+        self.assertEqual(self.action.status, OutreachGeneratedCopy.STATUS_APPROVED)
         self.assertIsNotNone(self.action.status_changed_at)
         # The report that justified the approval is stored with it.
         self.assertEqual(self.action.verification["copy"], GROUNDED_COPY)
@@ -306,7 +397,7 @@ class ReviewApproveTests(ReviewAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(resp.data["code"], "unverified_claims")
         self.action.refresh_from_db()
-        self.assertEqual(self.action.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(self.action.status, OutreachGeneratedCopy.STATUS_PENDING)
 
     def test_approval_fails_closed_when_no_report_can_be_produced(self):
         # "We could not check this copy" blocks approval rather than waving it
@@ -318,7 +409,7 @@ class ReviewApproveTests(ReviewAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(resp.data["code"], "unverified_claims")
         self.action.refresh_from_db()
-        self.assertEqual(self.action.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(self.action.status, OutreachGeneratedCopy.STATUS_PENDING)
 
     def test_approving_twice_is_a_409(self):
         self.client.post(url("outreach-approve", self.action), {}, format="json")
@@ -350,7 +441,7 @@ class ReviewDismissTests(ReviewAPITestCase):
         )
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["status"], OutreachAction.STATUS_DISMISSED)
+        self.assertEqual(resp.data["status"], OutreachGeneratedCopy.STATUS_DISMISSED)
         self.action.refresh_from_db()
         self.assertIsNotNone(self.action.status_changed_at)
         key = DismissedOutreachKey.objects.get(dedupe_key=self.action.dedupe_key)
@@ -376,7 +467,7 @@ class ReviewDismissTests(ReviewAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(resp.data["code"], "invalid_reason")
         self.action.refresh_from_db()
-        self.assertEqual(self.action.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(self.action.status, OutreachGeneratedCopy.STATUS_PENDING)
         self.assertEqual(DismissedOutreachKey.objects.count(), 0)
 
     def test_an_approved_item_cannot_be_dismissed_without_reopening_it(self):
@@ -401,9 +492,9 @@ class ReviewReopenTests(ReviewAPITestCase):
         resp = self.client.post(url("outreach-reopen", self.action), {}, format="json")
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["status"], OutreachAction.STATUS_PENDING)
+        self.assertEqual(resp.data["status"], OutreachGeneratedCopy.STATUS_PENDING)
         self.action.refresh_from_db()
-        self.assertEqual(self.action.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(self.action.status, OutreachGeneratedCopy.STATUS_PENDING)
         self.assertIsNotNone(self.action.status_changed_at)
 
     def test_reopening_a_dismissal_revokes_its_suppression_row(self):
@@ -439,23 +530,25 @@ class TransitionTableTests(TestCase):
 
     def test_the_legal_moves_are_pending_to_a_decision_and_back(self):
         self.assertEqual(
-            OutreachAction.ALLOWED_TRANSITIONS,
+            OutreachGeneratedCopy.ALLOWED_TRANSITIONS,
             {
-                OutreachAction.STATUS_PENDING: (
-                    OutreachAction.STATUS_APPROVED,
-                    OutreachAction.STATUS_DISMISSED,
+                OutreachGeneratedCopy.STATUS_PENDING: (
+                    OutreachGeneratedCopy.STATUS_APPROVED,
+                    OutreachGeneratedCopy.STATUS_DISMISSED,
                 ),
-                OutreachAction.STATUS_APPROVED: (OutreachAction.STATUS_PENDING,),
-                OutreachAction.STATUS_DISMISSED: (OutreachAction.STATUS_PENDING,),
+                OutreachGeneratedCopy.STATUS_APPROVED: (OutreachGeneratedCopy.STATUS_PENDING,),
+                OutreachGeneratedCopy.STATUS_DISMISSED: (OutreachGeneratedCopy.STATUS_PENDING,),
             },
         )
 
     def test_only_a_pending_item_is_editable(self):
-        self.assertEqual(OutreachAction.EDITABLE_STATUSES, (OutreachAction.STATUS_PENDING,))
+        self.assertEqual(
+            OutreachGeneratedCopy.EDITABLE_STATUSES, (OutreachGeneratedCopy.STATUS_PENDING,)
+        )
 
     def test_a_new_action_starts_pending_undecided_and_unedited(self):
         action = make_action()
-        self.assertEqual(action.status, OutreachAction.STATUS_PENDING)
+        self.assertEqual(action.status, OutreachGeneratedCopy.STATUS_PENDING)
         self.assertIsNone(action.status_changed_at)
         self.assertEqual(action.edited_copy, "")  # "" not None
         self.assertEqual(action.verification, {})
