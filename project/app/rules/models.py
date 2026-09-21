@@ -1,10 +1,10 @@
 """User-defined outreach catalog: action types and the rules that select them.
 
-The user outlines deterministic rules ("deals_closed > 20 ->
-reward_power_user") and AI inferences ("notes show they need help -> set up an
+The user outlines deterministic rules (a column their shape declares, compared
+against a threshold) and AI inferences ("notes show they need help -> set up an
 appointment"); the planner evaluates them later — deterministic rules
 in-process, inference rules via the LLM seam against sanitized, fenced lead
-data.
+data. Nothing here names a column; the shape is the only vocabulary.
 """
 
 from django.conf import settings

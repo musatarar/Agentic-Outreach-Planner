@@ -7,14 +7,13 @@ demo runs on is the declaration the tests hold the engine to.
 from project.app.management.commands.seed_rules_catalog import (
     EVENT_COLUMNS,
     LEAD_COLUMNS,
-    ROLES,
 )
 from project.app.models import Shape
 
 
 def shape(**overrides):
     """An unsaved demo shape — all the vocabulary and the evaluator need."""
-    fields = {"lead_columns": LEAD_COLUMNS, "event_columns": EVENT_COLUMNS, "roles": ROLES}
+    fields = {"lead_columns": LEAD_COLUMNS, "event_columns": EVENT_COLUMNS}
     fields.update(overrides)
     return Shape(**fields)
 

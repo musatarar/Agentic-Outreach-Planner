@@ -34,5 +34,5 @@ class ShapeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Shape
-        fields = ["lead_columns", "event_columns", "roles", "created_at", "updated_at"]
+        fields = ["lead_columns", "event_columns", "created_at", "updated_at"]
         read_only_fields = ["created_at", "updated_at"]

@@ -1,7 +1,7 @@
 """Pure-Python tests for the grounding verifier (project.app.services.verify).
 
 No database: leads are SimpleNamespace stubs carrying the demo shape, which is
-what tells the verifier which columns are figures and which hold the two roles.
+what tells the verifier which columns are figures and which are dates.
 """
 
 import datetime
@@ -463,8 +463,8 @@ class StrictTests(unittest.TestCase):
 
 
 class ShapeReadingTests(unittest.TestCase):
-    """Nothing here names a column: which ones are figures, which are dates and
-    which two hold the roles all come off the declaration."""
+    """Which columns are figures and which are dates comes off the declaration;
+    only the contact and agency columns are named, and only by the copy path."""
 
     def test_an_amount_grounds_against_any_declared_number_column(self):
         lead = _no_figures(num_producers=40)
@@ -479,24 +479,28 @@ class ShapeReadingTests(unittest.TestCase):
         lead = _lead(signed_up_date="2026-04-22")
         self.assertEqual(_verify(lead, "Hi Priya,\nSince 2026-04-22 you've been with us."), [])
 
-    def test_the_greeting_is_checked_against_the_column_the_contact_role_names(self):
+    def test_a_shape_that_declares_no_contact_column_grounds_no_greeting(self):
+        # The copy path names `contact_name`; a shape calling it something else
+        # leaves the greeting ungrounded. That is what #162 removes.
         renamed = shape(
-            lead_columns=[
-                {"name": "who_we_call", "type": "text", "lead_authored": False},
-                {"name": "the_agency", "type": "text", "lead_authored": False},
-            ],
-            roles={"contact_name": "who_we_call", "agency_name": "the_agency"},
+            lead_columns=[{"name": "who_we_call", "type": "text", "lead_authored": False}]
         )
         lead = SimpleNamespace(
-            id="lead_y",
-            data={"who_we_call": "Priya Nair", "the_agency": "Summit Risk Advisors"},
-            shape=renamed,
-            events=_EventSet([]),
+            id="lead_y", data={"who_we_call": "Priya Nair"}, shape=renamed, events=_EventSet([])
         )
-        self.assertEqual(_verify(lead, "Hi Priya,\nHello."), [])
-        self.assertIn("wrong_contact_name", _kinds(_verify(lead, "Hi David,\nHello.")))
+        self.assertEqual(_verify(lead, "Hi David,\nHello."), [])
 
-    def test_the_agency_omission_check_reads_the_agency_role(self):
+    def test_a_lead_authored_contact_column_grounds_no_greeting(self):
+        # Otherwise the lead writes the name its own copy is checked against.
+        authored = shape(
+            lead_columns=[{"name": "contact_name", "type": "text", "lead_authored": True}]
+        )
+        lead = SimpleNamespace(
+            id="lead_z", data={"contact_name": "Priya Nair"}, shape=authored, events=_EventSet([])
+        )
+        self.assertEqual(_verify(lead, "Hi David,\nHello."), [])
+
+    def test_the_agency_omission_check_reads_the_agency_column(self):
         lead = _lead(agency_name="Harbor & Main Insurance")
         strict = verify.verify_copy(
             lead,

@@ -140,12 +140,14 @@ class ShapeValueTests(TestCase):
         # `premium` is not a lead column, so it has no value as one.
         self.assertIsNone(self.shape.value(data, "premium"))
 
-    def test_a_role_reads_the_value_of_the_column_it_names(self):
+    def test_a_trusted_column_reads_as_text(self):
         data = {"contact_name": "Priya Nair", "agency_name": "Summit Risk Advisors"}
-        self.assertEqual(self.shape.role_value(data, Shape.ROLE_CONTACT_NAME), "Priya Nair")
-        self.assertEqual(
-            self.shape.role_value(data, Shape.ROLE_AGENCY_NAME), "Summit Risk Advisors"
-        )
+        self.assertEqual(self.shape.trusted_value(data, "contact_name"), "Priya Nair")
+        self.assertEqual(self.shape.trusted_value(data, "agency_name"), "Summit Risk Advisors")
 
-    def test_an_unfilled_role_reads_as_blank(self):
-        self.assertEqual(Shape().role_value({"contact_name": "Priya"}, "contact_name"), "")
+    def test_a_lead_authored_column_has_no_trusted_value(self):
+        # `hubspot_notes` is the demo's lead-authored column.
+        self.assertEqual(self.shape.trusted_value({"hubspot_notes": "theirs"}, "hubspot_notes"), "")
+
+    def test_an_undeclared_column_has_no_trusted_value(self):
+        self.assertEqual(Shape().trusted_value({"contact_name": "Priya"}, "contact_name"), "")

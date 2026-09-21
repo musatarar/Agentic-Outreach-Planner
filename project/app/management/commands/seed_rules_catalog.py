@@ -1,9 +1,9 @@
 """Seed the demo user's shape and outreach rules catalog.
 
-This command is the one place under ``project/app/`` that names a column: it
-writes the demo owner's shape — what a lead and an event are, which columns the
-lead authors, and which two hold the contact and the agency — and the rules
-follow from it.
+This command writes the demo owner's shape — what a lead and an event are, and
+which columns the lead authors — and the rules follow from it. The rules engine
+names no column anywhere; the copy path names two, in
+``services/verify.py`` (see #162).
 
 The seeded set is the demo user's starting catalog, weighted: strong, unambiguous signals carry 3, softer ones 2 or 1. Several
 rules select the same action on purpose — three separate signals argue for a
@@ -60,9 +60,6 @@ EVENT_COLUMNS = [
     {"name": "outcome", "type": "text"},
     {"name": "lock_term_months", "type": "number"},
 ]
-
-# The two columns the prompts and the verifier need by meaning.
-ROLES = {"contact_name": "contact_name", "agency_name": "agency_name"}
 
 # Phrases (lowercase) suggesting the lead asked to be contacted later. Seed
 # data, not engine data: a user edits these on the rule like any other.
@@ -226,7 +223,6 @@ class Command(BaseCommand):
         shape = Shape.objects.filter(owner=owner).first() or Shape(owner=owner)
         shape.lead_columns = LEAD_COLUMNS
         shape.event_columns = EVENT_COLUMNS
-        shape.roles = ROLES
         shape.full_clean()
         shape.save()
 

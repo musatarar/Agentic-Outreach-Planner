@@ -146,7 +146,6 @@ class ShapeViewTests(AuthenticatedAPITestCase):
                 {"name": "crm_notes", "type": "text", "lead_authored": True},
             ],
             "event_columns": [{"name": "kind", "type": "text"}],
-            "roles": {"contact_name": "contact_name", "agency_name": "agency_name"},
         }
         payload.update(overrides)
         return self.client.put(reverse("shape"), payload, format="json")
@@ -155,7 +154,7 @@ class ShapeViewTests(AuthenticatedAPITestCase):
         resp = self.client.get(reverse("shape"))
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data["lead_columns"], [])
-        self.assertEqual(resp.data["roles"], {})
+        self.assertEqual(resp.data["event_columns"], [])
 
     def test_putting_a_shape_stores_it_and_reads_back(self):
         self.assertEqual(self._put().status_code, status.HTTP_200_OK)
@@ -195,16 +194,12 @@ class ShapeViewTests(AuthenticatedAPITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("lead_authored", resp.data["detail"])
 
-    def test_a_role_naming_an_undeclared_column_is_refused(self):
-        resp = self._put(roles={"contact_name": "nobody", "agency_name": "agency_name"})
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("roles", resp.data["detail"])
-
-    def test_a_role_on_a_lead_authored_column_is_refused(self):
-        # It would put lead-controlled text into the trusted record.
-        resp = self._put(roles={"contact_name": "crm_notes", "agency_name": "agency_name"})
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("roles", resp.data["detail"])
+    def test_a_shape_declaring_neither_copy_path_column_is_still_accepted(self):
+        # The rules engine names no column, so a shape owes it nothing.
+        resp = self._put(
+            lead_columns=[{"name": "closed_deals", "type": "number", "lead_authored": False}]
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_a_duplicate_column_name_is_refused(self):
         resp = self._put(

@@ -119,7 +119,6 @@ class Migration(migrations.Migration):
                 ),
                 ("lead_columns", models.JSONField(blank=True, default=list)),
                 ("event_columns", models.JSONField(blank=True, default=list)),
-                ("roles", models.JSONField(blank=True, default=dict)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 (

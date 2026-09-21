@@ -3,8 +3,8 @@
 Pure regex/string logic, no LLM, duck-typed on lead attributes. Checks every
 concrete claim in the copy against the lead's stored data, read through its
 owner's declared shape: the number and date columns ground figures and dates,
-and the two roles ground the greeting and the agency mention. The actions
-engine fails closed on any :class:`Violation` (see SECURITY.md). Must not
+and the contact and agency columns ground the greeting and the agency mention.
+The actions engine fails closed on any :class:`Violation` (see SECURITY.md). Must not
 import ``outreach`` — that module imports this one.
 """
 
@@ -89,7 +89,7 @@ _VIOLATION_KIND = {
     "unauthorized_offer": "unauthorized_offer",
     "unsupported_year": "unsupported_year",
 }
-# `omission` covers two distinct violation slugs; the checked field picks one.
+# `omission` covers two distinct violation slugs; the checked column picks one.
 _OMISSION_VIOLATION_KIND = {
     "contact_name": "contact_name_absent",
     "agency_name": "agency_name_absent",
@@ -104,10 +104,12 @@ _UNCOUNTED_KINDS = frozenset(
 # Drafting already fails closed on these; the approve gate must agree.
 BLOCKING_KINDS = frozenset({"unauthorized_offer"})
 
-# The two roles a shape fills. Spelled out rather than imported: this module
-# stays Django-free, and `_OMISSION_VIOLATION_KIND` already keys on them.
-ROLE_CONTACT_NAME = "contact_name"
-ROLE_AGENCY_NAME = "agency_name"
+# The only two columns this app names. The copy path needs a person and an
+# organisation and a shape cannot say which text is which; the rules engine
+# names nothing. Both go when the copy prompt stops asking for a name (#162).
+# Defined here rather than in `outreach` because this module must not import it.
+CONTACT_NAME_COLUMN = "contact_name"
+AGENCY_NAME_COLUMN = "agency_name"
 
 VERIFICATION_SCHEMA_VERSION = 1
 
@@ -289,12 +291,12 @@ def _stored(lead: Any, column_type: str) -> list:
     return values
 
 
-def _role(lead: Any, role: str) -> str:
-    """The value behind one of the shape's two roles, as text."""
+def _trusted(lead: Any, column: str) -> str:
+    """One named column's value, as text, and only if the lead did not write it."""
     shape = _shape(lead)
     if shape is None:
         return ""
-    return str(shape.role_value(getattr(lead, "data", None), role) or "").strip()
+    return str(shape.trusted_value(getattr(lead, "data", None), column) or "").strip()
 
 
 def _is_goal_context(copy: str, start: int, end: int) -> bool:
@@ -528,7 +530,7 @@ def _goal_claim(claims, copy, match, expected, claimed) -> None:
 
 
 def _check_contact_name(lead: Any, copy: str, claims: list | None = None) -> None:
-    contact = _role(lead, ROLE_CONTACT_NAME)
+    contact = _trusted(lead, CONTACT_NAME_COLUMN)
     if not contact:
         return
     contact_tokens = set(_tokens(contact))
@@ -631,7 +633,7 @@ def _check_strict(lead: Any, copy: str, today: datetime.date, claims: list | Non
     """Omission / loose-grounding checks layered on top of ``standard``."""
     low = copy.lower()
 
-    contact = _role(lead, ROLE_CONTACT_NAME)
+    contact = _trusted(lead, CONTACT_NAME_COLUMN)
     if contact:
         first = _tokens(contact)[0] if _tokens(contact) else ""
         if len(first) >= 2 and not re.search(rf"\b{re.escape(first)}\b", low):
@@ -649,7 +651,7 @@ def _check_strict(lead: Any, copy: str, today: datetime.date, claims: list | Non
                 message=f"Copy never addresses the contact by name ({contact}).",
             )
 
-    agency = _role(lead, ROLE_AGENCY_NAME)
+    agency = _trusted(lead, AGENCY_NAME_COLUMN)
     agency_tokens = _agency_tokens(agency)
     if agency_tokens and not any(re.search(rf"\b{re.escape(t)}\b", low) for t in agency_tokens):
         _claim(

@@ -60,13 +60,12 @@ def _as_date(value):
 
 
 class Shape(models.Model):
-    """What one user's leads and events are: their columns, types and roles.
+    """What one user's leads and events are: their columns and types.
 
     ``lead_columns`` and ``event_columns`` are lists of ``{"name", "type"}``
     declarations; a lead column also declares ``lead_authored``, which decides
-    whether its text is trusted anywhere. ``roles`` names the lead column that
-    holds the contact and the one that holds the agency — the two the prompts
-    and the verifier need by meaning rather than by name.
+    whether its text is trusted anywhere. Nothing here names a column: the
+    rules engine reads this declaration and nothing else.
     """
 
     LEAD = "lead"
@@ -79,16 +78,11 @@ class Shape(models.Model):
     TEXT = TEXT
     BOOL = BOOL
 
-    ROLE_CONTACT_NAME = "contact_name"
-    ROLE_AGENCY_NAME = "agency_name"
-    ROLES = (ROLE_CONTACT_NAME, ROLE_AGENCY_NAME)
-
     owner = models.OneToOneField(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shape"
     )
     lead_columns = models.JSONField(default=list, blank=True)
     event_columns = models.JSONField(default=list, blank=True)
-    roles = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -124,16 +118,15 @@ class Shape(models.Model):
             return None
         return _coerce((data or {}).get(column), column_type)
 
-    def role(self, role):
-        """The lead column a role names, or ``""`` when the shape declares none."""
-        return (self.roles or {}).get(role) or ""
+    def trusted_value(self, data, column):
+        """A lead column's value as text, or ``""`` when the lead authors it.
 
-    def role_value(self, data, role):
-        """The value behind a role, as text — ``""`` when the role is unfilled."""
-        column = self.role(role)
-        if not column:
-            return ""
-        return self.value(data, column) or ""
+        The copy path names two columns directly; this is what keeps one the
+        lead writes from reaching the trusted region of a prompt.
+        """
+        if column in {declared["name"] for declared in self.trusted() if declared.get("name")}:
+            return self.value(data, column) or ""
+        return ""
 
     def clean(self):
         problems = {}
@@ -141,9 +134,6 @@ class Shape(models.Model):
             messages = _column_problems(getattr(self, field), kind)
             if messages:
                 problems[field] = messages
-        messages = _role_problems(self.roles, self.columns())
-        if messages:
-            problems["roles"] = messages
         if problems:
             raise ValidationError(problems)
 
@@ -185,36 +175,6 @@ def _column_problems(declared, kind):
             problems.append(
                 f"Column {index} needs 'lead_authored': true or false — whether the "
                 "lead writes this column decides whether its text can be trusted."
-            )
-    return problems
-
-
-def _role_problems(roles, lead_columns):
-    """Both roles must name a declared text column the lead does not author.
-
-    A role feeds the trusted region of every prompt and the verifier's greeting
-    check, so a lead-authored column behind one would launder untrusted text
-    into both.
-    """
-    if not isinstance(roles, dict):
-        return ["Declare roles as an object."]
-    unknown = set(roles) - set(Shape.ROLES)
-    problems = [f"Unknown role(s): {_listed(unknown)}."] if unknown else []
-    declared = {column.get("name"): column for column in lead_columns}
-    for role in Shape.ROLES:
-        column = declared.get(roles.get(role))
-        if column is None:
-            problems.append(
-                f"Role {role!r} must name a declared lead column, got {roles.get(role)!r}."
-            )
-        elif column.get("type") != TEXT:
-            problems.append(
-                f"Role {role!r} must name a text column; {column['name']!r} is not one."
-            )
-        elif column.get("lead_authored"):
-            problems.append(
-                f"Role {role!r} must name a column the lead does not author; "
-                f"{column['name']!r} would put lead-controlled text in the trusted record."
             )
     return problems
 

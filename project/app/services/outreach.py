@@ -72,8 +72,8 @@ def _days_since(value, today):
 # --------------------------------------------------------------------------
 
 
-# The addressee sentence, by the shape's two roles. A constant because the stub
-# provider reads the pair back out of a prompt it is handed.
+# The addressee sentence. A constant because the stub provider reads the pair
+# back out of a prompt it is handed.
 ADDRESSEE_LINE = "Write a short, personalized outreach email to {contact} at {agency}."
 
 # What a prompt block says when there is nothing declared to put in it.
@@ -167,15 +167,15 @@ def build_untrusted_block(lead):
 
 
 def _addressee(lead):
-    """Who the email is to, by the shape's two roles — the one place the prompt
-    names a person rather than a column."""
+    """Who the email is to. The two columns `verify` names, read trusted-only so
+    a lead cannot write its own addressee; both go with #162."""
     shape = _shape(lead)
     if shape is None:
         return "", ""
     data = getattr(lead, "data", None)
     return (
-        shape.role_value(data, shape.ROLE_CONTACT_NAME),
-        shape.role_value(data, shape.ROLE_AGENCY_NAME),
+        shape.trusted_value(data, verify.CONTACT_NAME_COLUMN),
+        shape.trusted_value(data, verify.AGENCY_NAME_COLUMN),
     )
 
 

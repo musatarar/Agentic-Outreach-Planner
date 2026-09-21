@@ -17,7 +17,6 @@ from project.app.management.commands.seed_rules_catalog import (
     DEFAULT_OWNER_EMAIL,
     EVENT_COLUMNS,
     LEAD_COLUMNS,
-    ROLES,
 )
 from project.app.models import ActionType, Lead, OutreachRule, Shape
 
@@ -161,7 +160,6 @@ class DemoShapeTests(TestCase):
         shape = Shape.objects.get(owner=_owner())
         self.assertEqual(shape.lead_columns, LEAD_COLUMNS)
         self.assertEqual(shape.event_columns, EVENT_COLUMNS)
-        self.assertEqual(shape.roles, ROLES)
 
     def test_the_seeded_shape_is_one_the_model_accepts(self):
         _seed(owner=OWNER)
