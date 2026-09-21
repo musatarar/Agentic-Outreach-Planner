@@ -2,13 +2,12 @@
 
 from .auth import ConsumeTokenSerializer, RequestLinkSerializer
 from .lead import LeadSerializer, LeadSummarySerializer
-from .outreach import OutreachActionSerializer, ReviewItemSerializer
+from .outreach import ReviewItemSerializer
 
 __all__ = [
     "ConsumeTokenSerializer",
     "LeadSerializer",
     "LeadSummarySerializer",
-    "OutreachActionSerializer",
     "RequestLinkSerializer",
     "ReviewItemSerializer",
 ]

@@ -8,8 +8,7 @@ from project.app.views.auth import (
     AuthMeView,
     AuthRequestLinkView,
 )
-from project.app.views.leads import LeadComposeView, LeadListView
-from project.app.views.outreach import OutreachRunView
+from project.app.views.leads import LeadListView
 from project.app.views.review import (
     ReviewApproveView,
     ReviewDismissView,
@@ -28,11 +27,7 @@ urlpatterns = [
     path("auth/me/", AuthMeView.as_view(), name="auth-me"),
     # --- leads ---
     path("leads/", LeadListView.as_view(), name="lead-list"),
-    # --- per-client composition ---
-    path("leads/<str:lead_id>/compose/", LeadComposeView.as_view(), name="lead-compose"),
-    # --- outreach: plan, then review ---
-    # `outreach/run/` must precede `outreach/<int:pk>/...`.
-    path("outreach/run/", OutreachRunView.as_view(), name="outreach-run"),
+    # --- the review inbox ---
     path("outreach/", ReviewListView.as_view(), name="outreach-list"),
     path("outreach/<int:pk>/edit/", ReviewEditView.as_view(), name="outreach-edit"),
     path("outreach/<int:pk>/verify/", ReviewVerifyView.as_view(), name="outreach-verify"),
