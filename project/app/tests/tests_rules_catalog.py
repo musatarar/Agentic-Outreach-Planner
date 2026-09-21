@@ -253,7 +253,7 @@ class OutreachRuleTests(TestCase):
                     {
                         "field": "hubspot_notes",
                         "operator": "contains",
-                        "threshold": "HOLD_PHRASES",
+                        "threshold": ["waiting on", "circle back"],
                         "source": "notes",
                     }
                 ],
