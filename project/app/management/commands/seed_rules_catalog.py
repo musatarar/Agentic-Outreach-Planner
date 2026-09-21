@@ -21,7 +21,6 @@ from django.db import transaction
 from project.app.models import Lead
 from project.app.rules.models import ActionType, OutreachRule
 from project.app.rules.utils import _all_of, _cond
-from project.app.services import outreach
 
 # Used when no --owner is given and LOGIN_ALLOWED_EMAILS is empty.
 DEFAULT_OWNER_EMAIL = "demo@lockedin.example"
@@ -87,7 +86,7 @@ RULES = [
         "action": "follow_up_after_hold",
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
-            _cond("hubspot_notes", "contains", list(outreach.HOLD_PHRASES)),
+            _cond("hubspot_notes", "contains", "HOLD_PHRASES"),
             _cond("gone_quiet", "==", True),
         ),
     },
@@ -97,7 +96,7 @@ RULES = [
         "weight": OutreachRule.WEIGHT_HIGH,
         "conditions": _all_of(
             _cond("signed_up_date", "exists"),
-            _cond("days_since_last_login_date", ">", 21),
+            _cond("days_since_last_login", ">", 21),
         ),
     },
     {
@@ -105,7 +104,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
-            _cond("days_since_last_login_date", "<=", 21),
+            _cond("days_since_last_login", "<=", 21),
             _cond("quotes_created", ">", 0),
             _cond("quotes_submitted", "==", 0),
         ),
@@ -115,7 +114,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_MEDIUM,
         "conditions": _all_of(
-            _cond("days_since_last_login_date", "<=", 21),
+            _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
             _cond("milestone_from_notes", "exists"),
             _cond("deals_below_milestone", "==", True),
@@ -126,7 +125,7 @@ RULES = [
         "action": "nudge_usage",
         "weight": OutreachRule.WEIGHT_LOW,
         "conditions": _all_of(
-            _cond("days_since_last_login_date", "<=", 21),
+            _cond("days_since_last_login", "<=", 21),
             _cond("deals_closed", ">", 0),
             _cond("deals_closed", "<", 5),
         ),
