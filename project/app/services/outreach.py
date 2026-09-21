@@ -516,11 +516,10 @@ def _stored_pair(copy):
 def split_email(text):
     """``(subject, body)`` for a draft :func:`render_email` wrote.
 
-    The inverse of the composer, for a stored string whose parts were never
-    recorded (see the ``backfill_generated_copy_parts`` command) and for a
-    reviewer's edit sent as one string. Text with no ``Subject:`` line is all
-    body: a reviewer may legitimately write one, so this reports what is there
-    rather than inventing a subject.
+    The inverse of the composer, for a reviewer's edit sent as one whole string
+    rather than as its two halves. Text with no ``Subject:`` line is all body: a
+    reviewer may legitimately write one, so this reports what is there rather
+    than inventing a subject.
     """
     text = (text or "").strip()
     if not text.startswith(SUBJECT_PREFIX):
