@@ -7,33 +7,29 @@ from project.app.models import (
     Lead,
     OutreachAction,
     OutreachRule,
+    Shape,
 )
+
+
+@admin.register(Shape)
+class ShapeAdmin(admin.ModelAdmin):
+    list_display = ("owner", "updated_at")
+    search_fields = ("owner__username",)
 
 
 @admin.register(Lead)
 class LeadAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "agency_name",
-        "contact_name",
-        "state",
-        "stage",
-        "estimated_book_size_usd",
-        "quotes_created",
-        "quotes_submitted",
-        "deals_closed",
-        "last_login_date",
-        "last_contacted_date",
-    )
-    list_filter = ("stage", "state")
-    search_fields = ("id", "agency_name", "contact_name", "contact_email")
+    # A lead's columns are its owner's to declare, so the only names here are
+    # the structural ones.
+    list_display = ("id", "owner")
+    list_filter = ("owner",)
+    search_fields = ("id",)
 
 
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
-    list_display = ("id", "lead", "type", "timestamp")
-    list_filter = ("type",)
-    search_fields = ("lead__id", "lead__agency_name")
+    list_display = ("id", "lead", "timestamp")
+    search_fields = ("lead__id",)
     date_hierarchy = "timestamp"
 
 
@@ -48,7 +44,7 @@ class OutreachActionAdmin(admin.ModelAdmin):
         "created_at",
     )
     list_filter = ("priority", "action_type", "needs_human")
-    search_fields = ("lead__id", "lead__agency_name", "reason")
+    search_fields = ("lead__id", "reason")
 
 
 @admin.register(ActionType)
@@ -69,4 +65,4 @@ class OutreachRuleAdmin(admin.ModelAdmin):
 class ActionJobAdmin(admin.ModelAdmin):
     list_display = ("id", "lead", "status", "selected_action", "attempts", "created_at")
     list_filter = ("status",)
-    search_fields = ("lead__id", "lead__agency_name")
+    search_fields = ("lead__id",)

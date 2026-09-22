@@ -2,8 +2,10 @@
 
 Agentic outreach planner. Django 4.2 + DRF backend; React 18/TS frontend built by Vite into
 a bundle committed at project/app/static/frontend/ and served by Django (no Node in the
-runtime image). Rule functions in services/outreach.py select leads for outreach; provider
-calls generate message text only; services/verify.py checks generated copy against stored
+runtime image). A Lead is id + owner + data and an Event is lead + timestamp + data; the
+owner's Shape declares each column's name, type and whether the lead authored it, plus the
+two roles (contact and agency), and every reader goes through it. Rule functions in
+services/outreach.py select leads for outreach; provider calls generate message text only; services/verify.py checks generated copy against stored
 lead/event fields and blocks approval when checks fail; a human approval gate guards every
 draft, and approved copy leaves via the reviewer's clipboard — the app sends nothing itself.
 
@@ -42,8 +44,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 actions/ is the queue and the cron: one ActionJob per lead, resolved by the deterministic
 pass (actions/evaluate.py, the evaluator for the conditions vocabulary rules/utils.py
 validates) or the stubbed inference pass, then the rules entity's own weight tally. A job
-runs the catalog of lead.owner; an unowned lead has no rules. The vocabulary is derived
-from the columns, so it can widen past what evaluate.py resolves — an unresolved field is
+runs the catalog of lead.owner; an unowned lead has no rules. The vocabulary is read off
+the owner's shape, so it can widen past what evaluate.py resolves — an unresolved field is
 refused at evaluation and recorded on the job, never fired. Runs are dry by default
 (ACTIONS_LLM_DRY_RUN): the inference pass asks nothing and says so on every job it touches,
 until an operator sets exactly False. A lead a run decided today with no newer event is not

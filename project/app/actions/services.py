@@ -318,7 +318,9 @@ def run_queue(limit=DEFAULT_BATCH_SIZE, *, today=None):
     """Claim and run up to ``limit`` queued jobs, oldest first."""
     queued = (
         ActionJob.objects.filter(status=ActionJob.STATUS_QUEUED)
-        .select_related("lead")
+        # The owner's shape comes with the lead: the evaluator reads it for
+        # every condition, and without the join that is a query per job.
+        .select_related("lead", "lead__owner__shape")
         .prefetch_related("events")
         .order_by("created_at", "id")[:limit]
     )
@@ -365,7 +367,7 @@ def proposals_for(user):
             selected_action__isnull=False,
             lead__owner=user,
         )
-        .select_related("lead", "selected_action")
+        .select_related("lead", "lead__owner__shape", "selected_action")
         .order_by("-finished_at", "-id")
     )
 

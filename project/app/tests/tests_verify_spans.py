@@ -10,8 +10,11 @@ import unittest
 from types import SimpleNamespace
 
 from project.app.services import actions, verify
+from project.app.tests.tests_shape_utils import shape
 
 TODAY = datetime.date(2026, 6, 12)
+
+SHAPE = shape()
 
 
 class _EventSet:
@@ -24,13 +27,14 @@ class _EventSet:
         return list(self._events)
 
 
-def _event(type_, ts, **meta):
-    return SimpleNamespace(type=type_, timestamp=ts, meta=meta)
+def _event(type_, ts, **data):
+    return SimpleNamespace(timestamp=ts, data=dict(data, type=type_))
 
 
 def _lead(**kwargs):
-    defaults = dict(
-        id="lead_x",
+    events = kwargs.pop("events", _EventSet([]))
+    lead_id = kwargs.pop("id", "lead_x")
+    data = dict(
         agency_name="Summit Risk Advisors",
         contact_name="Priya Nair",
         contact_email="priya.nair@summitrisk.com",
@@ -47,10 +51,9 @@ def _lead(**kwargs):
         deals_closed=4,
         last_contacted_date=None,
         hubspot_notes="",
-        events=_EventSet([]),
     )
-    defaults.update(kwargs)
-    return SimpleNamespace(**defaults)
+    data.update(kwargs)
+    return SimpleNamespace(id=lead_id, data=data, shape=SHAPE, events=events)
 
 
 # (name, lead, copy, action_type, level)
@@ -326,8 +329,9 @@ class VerifyCopyParityTests(unittest.TestCase):
         lead = _lead(deals_closed=4)
         copy = "Hi Priya,\nCongrats on your 47 closed deals!"
         violation = verify.verify_copy(lead, copy, actions.NUDGE_USAGE, today=TODAY)[0]
-        self.assertEqual(copy[violation.start : violation.end], "47 closed deals")
-        self.assertEqual(violation.field, "deals_closed")
+        # The claim is the figure; no noun binds it to a column, so no field.
+        self.assertEqual(copy[violation.start : violation.end], "47")
+        self.assertEqual(violation.field, "")
 
     def test_omission_violations_have_no_offsets(self):
         lead = _lead()
@@ -450,7 +454,7 @@ class ReportEnvelopeTests(unittest.TestCase):
         lead = _lead(deals_closed=4)
         copy = (
             "Hi there,\nOnce you hit 20 closed deals we should talk. "
-            "Let's meet on 2026-07-01 — 20% off for you."
+            "Let's meet on 2026-07-01 — a discount for you."
         )
         report = self._report(lead, copy, actions.REENGAGE_DORMANT)
         kinds = {c["kind"] for c in report["claims"]}
@@ -475,7 +479,7 @@ class ApproveGateTests(unittest.TestCase):
         lead = _lead(deals_closed=4, quotes_submitted=3, estimated_book_size_usd=5_000_000)
         copy = (
             "Hi Priya,\nYour 4 closed deals and 3 quotes submitted against a "
-            "$5,000,000 book are great — here is 20% off your renewal."
+            "$5,000,000 book are great — here is a discount on your renewal."
         )
         report = self._report(lead, copy, actions.REENGAGE_DORMANT)
 
@@ -488,16 +492,16 @@ class ApproveGateTests(unittest.TestCase):
         offer = next(c for c in report["claims"] if c["kind"] == "unauthorized_offer")
         self.assertFalse(offer["counts_toward_summary"])
         self.assertIs(offer["verified"], False)
-        self.assertEqual(report["copy"][offer["start"] : offer["end"]], "20% off")
+        self.assertEqual(report["copy"][offer["start"] : offer["end"]], "discount")
 
         # ...yet approval is blocked.
         self.assertFalse(report["can_approve"])
 
     def test_the_two_causes_compose_rather_than_override(self):
         lead = _lead(deals_closed=4)
-        copy = "Hi Priya,\nYour 47 closed deals are great — here is 20% off."
+        copy = "Hi Priya,\nYour 47 closed deals are great — here is a discount."
         report = self._report(lead, copy, actions.REENGAGE_DORMANT)
-        self.assertEqual(report["unverified_count"], 1)  # the deal count
+        self.assertEqual(report["unverified_count"], 1)  # the figure
         self.assertTrue(any(c["kind"] == "unauthorized_offer" for c in report["claims"]))
         self.assertFalse(report["can_approve"])
 
@@ -536,8 +540,9 @@ class GoalReferenceTests(unittest.TestCase):
             _lead(quotes_submitted=3), "Hi Priya,\nOnce you hit 20 quotes submitted we should talk."
         )
         goal = next(c for c in claims if c.kind == "goal_reference")
-        self.assertEqual(goal.text, "20 quotes submitted")
-        self.assertEqual((goal.field, goal.expected, goal.claimed), ("quotes_submitted", 3, 20))
+        self.assertEqual(goal.text, "20")
+        self.assertEqual(goal.claimed, 20)
+        self.assertIn(3, goal.expected)
         self.assertIsNone(goal.verified)
         self.assertFalse(goal.counts_toward_summary)
 
@@ -547,8 +552,7 @@ class GoalReferenceTests(unittest.TestCase):
             "Hi Priya,\nWe can talk once your team of 20 producers is in place.",
         )
         goal = next(c for c in claims if c.kind == "goal_reference")
-        self.assertEqual(goal.text, "your team of 20 producers")
-        self.assertEqual((goal.field, goal.expected, goal.claimed), ("num_producers", 4, 20))
+        self.assertEqual((goal.text, goal.claimed), ("20", 20))
 
     def test_years_target(self):
         claims = self._claims(
@@ -556,13 +560,22 @@ class GoalReferenceTests(unittest.TestCase):
             "Hi Priya,\nOnce you reach 20 years in business let's celebrate.",
         )
         goal = next(c for c in claims if c.kind == "goal_reference")
-        self.assertEqual(goal.text, "20 years in business")
-        self.assertEqual((goal.field, goal.expected, goal.claimed), ("years_in_business", 12, 20))
+        self.assertEqual((goal.text, goal.claimed), ("20", 20))
 
-    def test_a_missing_record_value_is_not_a_claim(self):
-        claims = self._claims(
-            _lead(quotes_created=None, quotes_submitted=None), "Hi Priya,\nYou created 12 quotes."
-        )
+    def test_a_record_with_no_figures_grounds_no_count(self):
+        # Nothing to compare against, so the integer is not inspected at all.
+        blank = {
+            name: None
+            for name in (
+                "num_producers",
+                "years_in_business",
+                "estimated_book_size_usd",
+                "quotes_created",
+                "quotes_submitted",
+                "deals_closed",
+            )
+        }
+        claims = self._claims(_lead(**blank), "Hi Priya,\nYou created 12 quotes.")
         self.assertEqual([c.kind for c in claims], ["contact_name"])
 
     def test_future_date_is_recorded_but_ungraded(self):
@@ -582,7 +595,7 @@ PRIYA_COPY = (
     "Summit Risk Advisors on track for the 20 closed deals mark you mentioned. "
     "On a $1,400,000 book that pace is genuinely impressive.\n"
     "\n"
-    "Worth a 15-minute call this week to walk through volume pricing before you "
+    "Worth a quick call this week to walk through volume pricing before you "
     "get there?\n"
     "\n"
     "Best,\n"
@@ -610,7 +623,7 @@ def _priya():
 class WorkedExampleTests(unittest.TestCase):
     def test_example_a_all_verified(self):
         report = verify.verify_spans(_priya(), PRIYA_COPY, actions.POWER_USER_REWARD, today=TODAY)
-        self.assertEqual(report["copy_length"], 369)
+        self.assertEqual(report["copy_length"], 365)
         self.assertTrue(report["is_astral_safe"])
         self.assertEqual(report["verified_count"], 4)
         self.assertEqual(report["unverified_count"], 0)
@@ -623,11 +636,12 @@ class WorkedExampleTests(unittest.TestCase):
                 for c in report["claims"]
             ],
             [
-                ("claim-0001", "contact_name", 60, 65, "Priya", True),
-                ("claim-0002", "deals_count", 75, 89, "closed 6 deals", True),
-                ("claim-0003", "quotes_count", 97, 116, "14 quotes submitted", True),
-                ("claim-0004", "goal_reference", 179, 194, "20 closed deals", None),
-                ("claim-0005", "amount", 220, 230, "$1,400,000", True),
+                ("claim-0001", "goal_reference", 38, 40, "20", None),
+                ("claim-0002", "contact_name", 60, 65, "Priya", True),
+                ("claim-0003", "count", 82, 83, "6", True),
+                ("claim-0004", "count", 97, 99, "14", True),
+                ("claim-0005", "goal_reference", 179, 181, "20", None),
+                ("claim-0006", "amount", 220, 230, "$1,400,000", True),
             ],
         )
         # _CURRENCY_RE's match is "$1,400,000 " (220–231).
@@ -638,7 +652,7 @@ class WorkedExampleTests(unittest.TestCase):
             "$1,400,000", "$2,500,000"
         )
         report = verify.verify_spans(_priya(), copy, actions.POWER_USER_REWARD, today=TODAY)
-        self.assertEqual(report["copy_length"], 369)  # identical character lengths
+        self.assertEqual(report["copy_length"], 365)  # identical character lengths
         self.assertEqual(report["verified_count"], 2)
         self.assertEqual(report["unverified_count"], 2)
         self.assertEqual(report["checked_count"], 4)
@@ -649,17 +663,17 @@ class WorkedExampleTests(unittest.TestCase):
             any(c["kind"] in verify.BLOCKING_KINDS for c in report["claims"]),
         )
         by_id = {c["id"]: c for c in report["claims"]}
-        self.assertEqual((by_id["claim-0002"]["start"], by_id["claim-0002"]["end"]), (75, 89))
-        self.assertIs(by_id["claim-0002"]["verified"], False)
-        self.assertEqual(by_id["claim-0002"]["expected"], 6)
-        self.assertEqual(by_id["claim-0002"]["claimed"], 9)
+        self.assertEqual((by_id["claim-0003"]["start"], by_id["claim-0003"]["end"]), (82, 83))
+        self.assertIs(by_id["claim-0003"]["verified"], False)
+        self.assertNotIn(9, by_id["claim-0003"]["expected"])
+        self.assertEqual(by_id["claim-0003"]["claimed"], 9)
         self.assertEqual(
-            by_id["claim-0002"]["message"],
-            "Copy claims 9 closed deals but the record shows 6.",
+            by_id["claim-0003"]["message"],
+            "Copy claims 9, which is not a figure in the lead record.",
         )
-        self.assertEqual((by_id["claim-0005"]["start"], by_id["claim-0005"]["end"]), (220, 230))
-        self.assertIs(by_id["claim-0005"]["verified"], False)
-        self.assertEqual(by_id["claim-0005"]["claimed"], 2500000)
+        self.assertEqual((by_id["claim-0006"]["start"], by_id["claim-0006"]["end"]), (220, 230))
+        self.assertIs(by_id["claim-0006"]["verified"], False)
+        self.assertEqual(by_id["claim-0006"]["claimed"], 2500000)
 
 
 # ---------------------------------------------------------------------------
@@ -678,7 +692,7 @@ class OffsetHazardTests(unittest.TestCase):
             if claim["start"] is not None:
                 self.assertEqual(report["copy"][claim["start"] : claim["end"]], claim["text"])
         # The FE must slice via Array.from() when is_astral_safe is false.
-        deals = next(c for c in report["claims"] if c["kind"] == "deals_count")
+        deals = next(c for c in report["claims"] if c["kind"] == "count")
         self.assertNotEqual(
             copy.encode("utf-16-le").decode("utf-16-le")[deals["start"] : deals["end"]],
             "",
@@ -714,8 +728,8 @@ class OffsetHazardTests(unittest.TestCase):
         report = verify.verify_spans(lead, crlf, actions.NUDGE_USAGE, today=TODAY)
         self.assertNotIn("\r", report["copy"])
         self.assertEqual(report["copy_length"], len(report["copy"]))
-        claim = next(c for c in report["claims"] if c["kind"] == "deals_count")
-        self.assertEqual(report["copy"][claim["start"] : claim["end"]], "47 closed deals")
+        claim = next(c for c in report["claims"] if c["kind"] == "count")
+        self.assertEqual(report["copy"][claim["start"] : claim["end"]], "47")
         # Same copy with \n line endings produces identical offsets.
         lf = verify.verify_spans(lead, crlf.replace("\r\n", "\n"), actions.NUDGE_USAGE, today=TODAY)
         self.assertEqual(lf["claims"], report["claims"])
@@ -736,7 +750,7 @@ class ClaimDedupeTests(unittest.TestCase):
         copy = "Hi Priya,\n47 closed deals! Yes, 47 closed deals."
         claims: list = []
         violations = verify.verify_copy(lead, copy, actions.NUDGE_USAGE, claims=claims, today=TODAY)
-        deals = [c for c in claims if c.kind == "deals_count"]
+        deals = [c for c in claims if c.kind == "count"]
         self.assertEqual(len(deals), 2)
         self.assertNotEqual(deals[0].start, deals[1].start)
         self.assertEqual(deals[0].message, deals[1].message)

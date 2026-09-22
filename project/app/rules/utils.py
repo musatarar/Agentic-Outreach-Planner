@@ -5,11 +5,9 @@ convention: the evaluator has to resolve exactly this vocabulary, and a payload
 naming anything else would be stored happily and then never fire.
 :func:`validate_conditions` is that contract, and every write runs it.
 
-The vocabulary is read off the models rather than restated here: a ``Lead``
-column is named under ``lead`` and an ``Event`` column under ``events``, so a
-schema change moves the vocabulary with it instead of leaving the two to
-drift. Figures the engine computes have no column behind them, so those stay
-declared in :data:`COMPUTED_FIELDS`.
+The vocabulary is read off the owner's :class:`~project.app.models.lead.Shape`
+rather than restated here: a user declares what a lead and an event are, and
+the fields a rule may name follow that declaration instead of drifting from it.
 
 A payload may name more than the evaluator resolves: an unresolved field is
 refused at evaluation rather than quietly firing.
@@ -22,11 +20,10 @@ ones, but is never satisfiable by them alone — see
 """
 
 import datetime
-import functools
 
-from django.apps import apps
 from django.core.exceptions import ValidationError
-from django.db import models
+
+from project.app.models.lead import BOOL, DATE, DAYS_SINCE_PREFIX, NUMBER, TEXT, Shape
 
 SCHEMA_VERSION = 1
 
@@ -44,39 +41,8 @@ SOURCES = (SOURCE_LEAD, SOURCE_DERIVED, SOURCE_NOTES, SOURCE_EVENTS)
 # rule's predicate is judged separately, and may stand alone.)
 CORROBORATING_SOURCES = frozenset({SOURCE_LEAD, SOURCE_DERIVED})
 
-NUMBER = "number"
-DATE = "date"
-TEXT = "text"
-BOOL = "bool"
-
-# The model behind each column-sourced source, and where that source sends the
-# columns its subject authors. `lead` is corroborating, so a lead-authored
-# column lands in `notes` instead; `events` is already untrusted, so it keeps
-# its own.
-COLUMN_SOURCES = {
-    SOURCE_LEAD: ("app.Lead", SOURCE_NOTES),
-    SOURCE_EVENTS: ("app.Event", SOURCE_EVENTS),
-}
-
-# Django column class -> condition type, most specific first. A column whose
-# class is absent here has no comparison vocabulary, so it stays out of the
-# vocabulary rather than being guessed at.
-COLUMN_TYPES = (
-    ((models.BooleanField,), BOOL),
-    ((models.DateField,), DATE),  # DateTimeField subclasses it; both compare as dates
-    ((models.IntegerField, models.FloatField, models.DecimalField), NUMBER),
-    ((models.CharField, models.TextField), TEXT),
-)
-
-# Figures the engine computes per lead. No column carries them, so unlike the
-# model-sourced fields these are declared.
-COMPUTED_FIELDS = {
-    SOURCE_DERIVED: {
-        "days_since_signup": NUMBER,
-        "days_since_last_login": NUMBER,
-        "days_since_last_contact": NUMBER,
-    },
-}
+# The one event column the shape does not declare, because the table carries it.
+EVENT_TIMESTAMP = "timestamp"
 
 GROUP_OPERATORS = frozenset({"all_of", "any_of"})
 NO_THRESHOLD_OPERATORS = frozenset({"exists", "absent"})
@@ -101,53 +67,47 @@ ROOT_KEYS = frozenset({"version", "operator", "conditions"})
 PREDICATE_FORBIDDEN = ('"', "\n", "\r")
 
 
-@functools.cache
-def fields_by_source():
-    """Every field a condition may name, by source and type — read-only.
+def fields_by_source(shape):
+    """Every field a condition may name, by source and type, for one shape.
 
-    Model columns first: each source in :data:`COLUMN_SOURCES` takes its
-    model's concrete columns, minus the primary key, the relations and any
-    column whose type has no comparison vocabulary. A column its subject
-    authors goes to that source's untrusted sink, so ``hubspot_notes`` is
-    reachable as ``notes`` and never as ``lead``.
+    A trusted lead column is named under ``lead`` and a lead-authored one under
+    ``notes``, so untrusted text can never be read as a corroborator. Each
+    trusted date column gets a ``days_since_`` twin under ``derived``, and
+    ``events`` carries the structural timestamp plus every declared event
+    column.
     """
     fields = {source: {} for source in SOURCES}
-    for source, names in COMPUTED_FIELDS.items():
-        fields[source].update(names)
-    for source, (label, untrusted_sink) in COLUMN_SOURCES.items():
-        model = apps.get_model(label)
-        for column in model._meta.concrete_fields:
-            if column.primary_key or column.is_relation:
-                continue
-            field_type = _column_type(column)
-            if field_type is None:
-                continue
-            owner = untrusted_sink if column.name in model.UNTRUSTED_FIELDS else source
-            fields[owner][column.name] = field_type
+    for column in shape.trusted():
+        fields[SOURCE_LEAD][column["name"]] = column["type"]
+        if column["type"] == DATE:
+            fields[SOURCE_DERIVED][f"{DAYS_SINCE_PREFIX}{column['name']}"] = NUMBER
+    for column in shape.authored():
+        fields[SOURCE_NOTES][column["name"]] = column["type"]
+    fields[SOURCE_EVENTS][EVENT_TIMESTAMP] = DATE
+    fields[SOURCE_EVENTS].update(shape.types(Shape.EVENT))
     return fields
 
 
-def source_for(field):
+def source_for(field, shape):
     """The source that owns ``field``, first match in :data:`SOURCES` order.
 
     An unclaimed name answers ``lead`` so that :func:`validate_conditions`
     stays the one place an unknown field is refused.
     """
+    fields = fields_by_source(shape)
     for source in SOURCES:
-        if field in fields_by_source()[source]:
+        if field in fields[source]:
             return source
     return SOURCE_LEAD
 
 
-def _column_type(column):
-    for classes, field_type in COLUMN_TYPES:
-        if isinstance(column, classes):
-            return field_type
-    return None
-
-
-def _cond(field, operator, threshold=None, source=None):
-    condition = {"field": field, "operator": operator, "source": source or source_for(field)}
+def _cond(field, operator, threshold=None, source=None, shape=None):
+    """One leaf condition. The source is given, or read off ``shape``."""
+    condition = {
+        "field": field,
+        "operator": operator,
+        "source": source or (source_for(field, shape) if shape is not None else SOURCE_LEAD),
+    }
     if threshold is not None:
         condition["threshold"] = threshold
     return condition
@@ -166,8 +126,8 @@ def _any_of(*conditions):
     return {"operator": "any_of", "conditions": list(conditions)}
 
 
-def validate_conditions(payload):
-    """Check a ``conditions`` payload against the schema and the vocabulary.
+def validate_conditions(payload, shape):
+    """Check a ``conditions`` payload against the schema and ``shape``'s vocabulary.
 
     Raises ``ValidationError``; returns None when the payload is evaluable.
     """
@@ -182,7 +142,7 @@ def validate_conditions(payload):
 
     operator = payload.get("operator")
     children = payload.get("conditions")
-    _validate_group(operator, children, "conditions", nested=False)
+    _validate_group(operator, children, "conditions", fields_by_source(shape), nested=False)
 
     if not _branch_corroborated({"operator": operator, "conditions": children}):
         raise ValidationError(
@@ -203,7 +163,7 @@ def validate_inference_predicate(text):
             )
 
 
-def _validate_group(operator, children, path, *, nested):
+def _validate_group(operator, children, path, fields, *, nested):
     if operator not in GROUP_OPERATORS:
         raise ValidationError(f"{path}.operator must be 'all_of' or 'any_of', got {operator!r}.")
     if not isinstance(children, list) or not children:
@@ -213,23 +173,24 @@ def _validate_group(operator, children, path, *, nested):
         if not isinstance(child, dict):
             raise ValidationError(f"{child_path} must be an object.")
         if "field" in child:
-            _validate_leaf(child, child_path)
+            _validate_leaf(child, child_path, fields)
         elif "operator" in child:
             if nested:
                 raise ValidationError(f"{child_path}: groups nest one level only.")
             unknown = set(child) - GROUP_KEYS
             if unknown:
                 raise ValidationError(f"{child_path} has unknown key(s): {_listed(unknown)}.")
-            _validate_group(child.get("operator"), child.get("conditions"), child_path, nested=True)
+            _validate_group(
+                child.get("operator"), child.get("conditions"), child_path, fields, nested=True
+            )
         else:
             raise ValidationError(f"{child_path} must be a condition or a group.")
 
 
-def _validate_leaf(leaf, path):
+def _validate_leaf(leaf, path, fields):
     unknown = set(leaf) - LEAF_KEYS
     if unknown:
         raise ValidationError(f"{path} has unknown key(s): {_listed(unknown)}.")
-    fields = fields_by_source()
     source = leaf.get("source")
     if source not in fields:
         raise ValidationError(f"{path}.source must be one of {_listed(fields)}, got {source!r}.")

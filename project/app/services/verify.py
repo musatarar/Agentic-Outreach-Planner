@@ -1,9 +1,11 @@
 """Deterministic grounding verifier for generated outreach copy.
 
 Pure regex/string logic, no LLM, duck-typed on lead attributes. Checks every
-concrete claim in the copy against the ``Lead`` record; the actions engine fails
-closed on any :class:`Violation` (see SECURITY.md). Must not import
-``outreach`` — that module imports this one.
+concrete claim in the copy against the lead's stored data, read through its
+owner's declared shape: the number and date columns ground figures and dates,
+and the contact and agency columns ground the greeting and the agency mention.
+The actions engine fails closed on any :class:`Violation` (see SECURITY.md). Must not
+import ``outreach`` — that module imports this one.
 """
 
 from __future__ import annotations
@@ -81,16 +83,13 @@ class Claim:
 # `further_action`, so they are deliberately NOT the claim kinds.
 _VIOLATION_KIND = {
     "amount": "unsupported_amount",
-    "deals_count": "wrong_count",
-    "quotes_count": "wrong_count",
-    "producers_count": "wrong_count",
-    "years_count": "wrong_count",
+    "count": "wrong_count",
     "contact_name": "wrong_contact_name",
     "iso_date": "unsupported_date",
     "unauthorized_offer": "unauthorized_offer",
     "unsupported_year": "unsupported_year",
 }
-# `omission` covers two distinct violation slugs; the checked field picks one.
+# `omission` covers two distinct violation slugs; the checked column picks one.
 _OMISSION_VIOLATION_KIND = {
     "contact_name": "contact_name_absent",
     "agency_name": "agency_name_absent",
@@ -104,6 +103,13 @@ _UNCOUNTED_KINDS = frozenset(
 # Claim kinds that block approval on their own, whatever the "N of M" ratio says.
 # Drafting already fails closed on these; the approve gate must agree.
 BLOCKING_KINDS = frozenset({"unauthorized_offer"})
+
+# The only two columns this app names. The copy path needs a person and an
+# organisation and a shape cannot say which text is which; the rules engine
+# names nothing. Both go when the copy prompt stops asking for a name (#162).
+# Defined here rather than in `outreach` because this module must not import it.
+CONTACT_NAME_COLUMN = "contact_name"
+AGENCY_NAME_COLUMN = "agency_name"
 
 VERIFICATION_SCHEMA_VERSION = 1
 
@@ -133,28 +139,11 @@ _MULTIPLIERS = {
 # clean roundings ("$5M" for 4,800,000 or 5,200,000) are accepted.
 _AMOUNT_TOLERANCE = 0.10
 
-# Counts are anchored to their noun *and* an achievement qualifier so goals and
-# incidental numbers ("close 5 more deals", "a 15-minute call") are ignored.
-_DEALS_RE = re.compile(
-    r"(?:(\d+)\s+closed\s+deals?|(\d+)\s+deals?\s+closed|closed\s+(\d+)\s+deals?)",
-    re.IGNORECASE,
-)
-_QUOTES_RE = re.compile(
-    r"(?:(\d+)\s+quotes?\s+(created|submitted)|(created|submitted)\s+(\d+)\s+quotes?)",
-    re.IGNORECASE,
-)
-# Producer counts are anchored to the *lead's own team* (a possessive / second-
-# person cue) so comparisons and hypotheticals are not flagged. Up to three
-# words may sit between the cue and the count.
-_PRODUCERS_RE = re.compile(
-    r"(?:your|team of|team's|roster of|staff of|you've|you have|you employ)\s+"
-    r"(?:[\w'&/-]+\s+){0,3}?(\d+)\s+producers?\b",
-    re.IGNORECASE,
-)
-_YEARS_RE = re.compile(
-    r"(?:(\d+)[\s-]+years?\s+in\s+business|(\d+)-year-old)",
-    re.IGNORECASE,
-)
+# A bare integer. Without a noun per column the verifier cannot bind "14 quotes"
+# to a column, so every standalone integer is checked against every number
+# column and an unmatched one fails closed: noisier than the old per-noun
+# patterns, not weaker.
+_INTEGER_RE = re.compile(r"\b\d+\b")
 
 # Goal framing that turns a count into a *target* rather than a claim about the
 # record ("once you hit 20 closed deals"). Deliberately excludes the ambiguous
@@ -255,28 +244,59 @@ def _events(lead: Any) -> list:
 
 
 def _as_date(value: Any) -> datetime.date | None:
+    """A stored date, however it was stored — ingest keeps them as ISO text."""
     if isinstance(value, datetime.datetime):
         return value.date()
     if isinstance(value, datetime.date):
         return value
-    return None
-
-
-def _int_attr(lead: Any, name: str) -> int | None:
-    value = getattr(lead, name, None)
-    if value is None:
+    if not isinstance(value, str):
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError:
         return None
 
 
-def _first_group_int(match: re.Match) -> int | None:
-    for group in match.groups():
-        if group is not None and group.isdigit():
-            return int(group)
-    return None
+def _shape(lead: Any) -> Any:
+    return getattr(lead, "shape", None)
+
+
+def _stored(lead: Any, column_type: str) -> list:
+    """Every raw value the lead and its events keep in a column the shape
+    declares as ``column_type``.
+
+    Raw rather than coerced: each check knows how loosely to read its own
+    values — an amount tolerates ``"$12,000"``, a plain date does not.
+    ``column_type`` is read off the shape itself, so this module stays free of
+    Django imports.
+    """
+    shape = _shape(lead)
+    if shape is None:
+        return []
+    values = []
+    data = getattr(lead, "data", None) or {}
+    for name, declared in shape.types().items():
+        if declared == column_type:
+            values.append(data.get(name))
+    event_columns = [
+        name for name, declared in shape.types(shape.EVENT).items() if declared == column_type
+    ]
+    for event in _events(lead):
+        event_data = getattr(event, "data", None) or {}
+        values.extend(event_data.get(name) for name in event_columns)
+    return values
+
+
+def _trusted(lead: Any, column: str) -> str:
+    """One named column's value, as text, and only if the lead did not write it."""
+    shape = _shape(lead)
+    if shape is None:
+        return ""
+    return str(shape.trusted_value(getattr(lead, "data", None), column) or "").strip()
 
 
 def _is_goal_context(copy: str, start: int, end: int) -> bool:
@@ -403,17 +423,12 @@ def _violation_kind(claim: Claim) -> str:
 
 
 def _grounded_amounts(lead: Any) -> list[float]:
-    """Dollar figures the model is allowed to cite: book size and event premiums."""
-    grounded: list[float] = []
-    book = _coerce_number(getattr(lead, "estimated_book_size_usd", None))
-    if book is not None:
-        grounded.append(book)
-    for event in _events(lead):
-        meta = getattr(event, "meta", None) or {}
-        premium = _coerce_number(meta.get("premium"))
-        if premium is not None:
-            grounded.append(premium)
-    return grounded
+    """Dollar figures the model may cite: every number column, lead and events."""
+    shape = _shape(lead)
+    if shape is None:
+        return []
+    grounded = [_coerce_number(value) for value in _stored(lead, shape.NUMBER)]
+    return [value for value in grounded if value is not None]
 
 
 def _is_grounded_amount(value: float, grounded: list[float]) -> bool:
@@ -427,9 +442,8 @@ def _is_grounded_amount(value: float, grounded: list[float]) -> bool:
 
 def _check_amounts(lead: Any, copy: str, claims: list | None = None) -> None:
     grounded = _grounded_amounts(lead)
-    if not grounded:  # nothing to check against (real leads always have a book)
+    if not grounded:  # nothing to check against (real leads always have figures)
         return
-    book = _coerce_number(getattr(lead, "estimated_book_size_usd", None))
     for match in _CURRENCY_RE.finditer(copy):
         value = _money_to_number(match.group(1), match.group(2))
         ok = _is_grounded_amount(value, grounded)
@@ -440,8 +454,8 @@ def _check_amounts(lead: Any, copy: str, claims: list | None = None) -> None:
             start=match.start(),
             end=match.end(),
             verified=ok,
-            field="estimated_book_size_usd",
-            expected=book,
+            field="",
+            expected=sorted(set(grounded)),
             claimed=value,
             message=""
             if ok
@@ -452,108 +466,53 @@ def _check_amounts(lead: Any, copy: str, claims: list | None = None) -> None:
         )
 
 
-def _check_counts(lead: Any, copy: str, claims: list | None = None) -> None:
-    deals = _int_attr(lead, "deals_closed")
-    if deals is not None:
-        for match in _DEALS_RE.finditer(copy):
-            claimed = _first_group_int(match)
-            if _is_goal_context(copy, match.start(), match.end()):
-                _goal_claim(claims, copy, match, "deals_closed", deals, claimed)
-                continue
-            if claimed is None:
-                continue
-            _count_claim(
-                claims,
-                copy,
-                match,
-                kind="deals_count",
-                field="deals_closed",
-                expected=deals,
-                claimed=claimed,
-                message=f"Copy claims {claimed} closed deals but the record shows {deals}.",
-            )
+def _spanned(copy: str, *patterns: re.Pattern) -> list[tuple[int, int]]:
+    """Where a figure is already accounted for by another check."""
+    return [m.span() for pattern in patterns for m in pattern.finditer(copy)]
 
-    created = _int_attr(lead, "quotes_created")
-    submitted = _int_attr(lead, "quotes_submitted")
-    for match in _QUOTES_RE.finditer(copy):
-        if match.group(1) is not None:
-            claimed, qualifier = int(match.group(1)), match.group(2).lower()
-        else:
-            claimed, qualifier = int(match.group(4)), match.group(3).lower()
-        field = "quotes_created" if qualifier == "created" else "quotes_submitted"
-        expected = created if qualifier == "created" else submitted
+
+def _inside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    return any(start <= span[0] and span[1] <= end for start, end in spans)
+
+
+def _check_counts(lead: Any, copy: str, claims: list | None = None) -> None:
+    """Every standalone integer against every number column.
+
+    A currency amount, an ISO date and a year are each another check's, so
+    those are skipped here. What is left is a figure about the record with no
+    noun to bind it to a column, so it is grounded if it equals any number the
+    record holds and a contradiction if it equals none.
+    """
+    grounded = [value for value in _grounded_amounts(lead) if float(value).is_integer()]
+    if not grounded:
+        return
+    expected = sorted({int(value) for value in grounded})
+    taken = _spanned(copy, _CURRENCY_RE, _ISO_DATE_RE, _YEAR_RE)
+    for match in _INTEGER_RE.finditer(copy):
+        if _inside(match.span(), taken):
+            continue
+        claimed = int(match.group(0))
         if _is_goal_context(copy, match.start(), match.end()):
-            _goal_claim(claims, copy, match, field, expected, claimed)
+            _goal_claim(claims, copy, match, expected, claimed)
             continue
-        if expected is None:
-            continue
-        _count_claim(
+        ok = claimed in expected
+        _claim(
             claims,
-            copy,
-            match,
-            kind="quotes_count",
-            field=field,
+            kind="count",
+            copy=copy,
+            start=match.start(),
+            end=match.end(),
+            verified=ok,
+            field="",
             expected=expected,
             claimed=claimed,
-            message=f"Copy claims {claimed} quotes {qualifier} but the record shows {expected}.",
+            message=""
+            if ok
+            else f"Copy claims {claimed}, which is not a figure in the lead record.",
         )
 
-    producers = _int_attr(lead, "num_producers")
-    if producers is not None:
-        for match in _PRODUCERS_RE.finditer(copy):
-            claimed = int(match.group(1))
-            if _is_goal_context(copy, match.start(), match.end()):
-                _goal_claim(claims, copy, match, "num_producers", producers, claimed)
-                continue
-            _count_claim(
-                claims,
-                copy,
-                match,
-                kind="producers_count",
-                field="num_producers",
-                expected=producers,
-                claimed=claimed,
-                message=f"Copy claims {claimed} producers but the record shows {producers}.",
-            )
 
-    years = _int_attr(lead, "years_in_business")
-    if years is not None:
-        for match in _YEARS_RE.finditer(copy):
-            claimed = _first_group_int(match)
-            if _is_goal_context(copy, match.start(), match.end()):
-                _goal_claim(claims, copy, match, "years_in_business", years, claimed)
-                continue
-            if claimed is None:
-                continue
-            _count_claim(
-                claims,
-                copy,
-                match,
-                kind="years_count",
-                field="years_in_business",
-                expected=years,
-                claimed=claimed,
-                message=f"Copy claims {claimed} years in business but the record shows {years}.",
-            )
-
-
-def _count_claim(claims, copy, match, *, kind, field, expected, claimed, message) -> None:
-    ok = claimed == expected
-    _claim(
-        claims,
-        kind=kind,
-        copy=copy,
-        start=match.start(),
-        end=match.end(),
-        verified=ok,
-        field=field,
-        expected=expected,
-        claimed=claimed,
-        message="" if ok else message,
-    )
-
-
-def _goal_claim(claims, copy, match, field, expected, claimed) -> None:
+def _goal_claim(claims, copy, match, expected, claimed) -> None:
     """A count framed as a target: neither a violation nor part of the "N of M"
     ratio, but still shown to the reviewer as inspected."""
     _claim(
@@ -563,7 +522,7 @@ def _goal_claim(claims, copy, match, field, expected, claimed) -> None:
         start=match.start(),
         end=match.end(),
         verified=None,
-        field=field,
+        field="",
         expected=expected,
         claimed=claimed,
         message=_GOAL_REFERENCE_MESSAGE,
@@ -571,7 +530,7 @@ def _goal_claim(claims, copy, match, field, expected, claimed) -> None:
 
 
 def _check_contact_name(lead: Any, copy: str, claims: list | None = None) -> None:
-    contact = (getattr(lead, "contact_name", "") or "").strip()
+    contact = _trusted(lead, CONTACT_NAME_COLUMN)
     if not contact:
         return
     contact_tokens = set(_tokens(contact))
@@ -625,16 +584,12 @@ def _check_offer(lead: Any, copy: str, action_type: str, claims: list | None = N
 
 
 def _record_dates(lead: Any) -> set[datetime.date]:
-    dates: set[datetime.date] = set()
-    for attr in ("signed_up_date", "last_login_date", "last_contacted_date"):
-        value = _as_date(getattr(lead, attr, None))
-        if value is not None:
-            dates.add(value)
-    for event in _events(lead):
-        value = _as_date(getattr(event, "timestamp", None))
-        if value is not None:
-            dates.add(value)
-    return dates
+    """Every date the record holds: each declared date column, plus the
+    structural event timestamps."""
+    shape = _shape(lead)
+    dates = {_as_date(value) for value in _stored(lead, shape.DATE)} if shape else set()
+    dates.update(_as_date(getattr(event, "timestamp", None)) for event in _events(lead))
+    return {value for value in dates if value is not None}
 
 
 def _check_iso_dates(
@@ -670,8 +625,7 @@ def _check_iso_dates(
         )
 
 
-def _agency_tokens(lead: Any) -> list[str]:
-    name = getattr(lead, "agency_name", "") or ""
+def _agency_tokens(name: str) -> list[str]:
     return [t for t in _tokens(name) if len(t) >= 3 and t not in _AGENCY_STOPWORDS]
 
 
@@ -679,7 +633,7 @@ def _check_strict(lead: Any, copy: str, today: datetime.date, claims: list | Non
     """Omission / loose-grounding checks layered on top of ``standard``."""
     low = copy.lower()
 
-    contact = (getattr(lead, "contact_name", "") or "").strip()
+    contact = _trusted(lead, CONTACT_NAME_COLUMN)
     if contact:
         first = _tokens(contact)[0] if _tokens(contact) else ""
         if len(first) >= 2 and not re.search(rf"\b{re.escape(first)}\b", low):
@@ -697,9 +651,9 @@ def _check_strict(lead: Any, copy: str, today: datetime.date, claims: list | Non
                 message=f"Copy never addresses the contact by name ({contact}).",
             )
 
-    agency_tokens = _agency_tokens(lead)
+    agency = _trusted(lead, AGENCY_NAME_COLUMN)
+    agency_tokens = _agency_tokens(agency)
     if agency_tokens and not any(re.search(rf"\b{re.escape(t)}\b", low) for t in agency_tokens):
-        agency = getattr(lead, "agency_name", "")
         _claim(
             claims,
             kind="omission",

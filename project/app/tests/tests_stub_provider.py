@@ -4,6 +4,7 @@ the app without the ``OUTREACH_ALLOW_STUB_LLM`` opt-in."""
 import os
 from unittest import mock
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 
 from project.app.models import Lead
@@ -23,6 +24,7 @@ from project.app.services.outreach import (
     render_email,
     validate_copy,
 )
+from project.app.tests.tests_shape_utils import shape_for
 
 
 def _allowed():
@@ -85,19 +87,23 @@ class CannedEmailPassesTheRealGatesTests(TestCase):
 
     def setUp(self):
         super().setUp()
+        self.owner = get_user_model().objects.create_user(username="ae@lockedin.example")
+        shape_for(self.owner)
         self.lead = Lead.objects.create(
             id="synth_0001",
-            agency_name="Summit Risk Advisors",
-            contact_name="Priya Nair",
-            contact_email="priya.nair@summitrisk.com",
-            contact_phone="555-0000",
-            state="CO",
-            num_producers=4,
-            years_in_business=12,
-            estimated_book_size_usd=5_000_000,
-            stage="demo_completed",
-            signed_up_date=None,
-            deals_closed=3,
+            owner=self.owner,
+            data={
+                "agency_name": "Summit Risk Advisors",
+                "contact_name": "Priya Nair",
+                "contact_email": "priya.nair@summitrisk.com",
+                "contact_phone": "555-0000",
+                "state": "CO",
+                "num_producers": 4,
+                "years_in_business": 12,
+                "estimated_book_size_usd": 5_000_000,
+                "stage": "demo_completed",
+                "deals_closed": 3,
+            },
         )
         self.prompt = _build_copy_prompt(self.lead, "complete_onboarding", "reason")
 
@@ -224,19 +230,23 @@ class StubStructuredOutputTests(TestCase):
 
     def setUp(self):
         super().setUp()
+        owner = get_user_model().objects.create_user(username="ae@lockedin.example")
+        shape_for(owner)
         self.prompt = _build_copy_prompt(
             Lead.objects.create(
                 id="synth_0002",
-                agency_name="Summit Risk Advisors",
-                contact_name="Priya Nair",
-                contact_email="priya.nair@summitrisk.com",
-                contact_phone="555-0000",
-                state="CO",
-                num_producers=4,
-                years_in_business=12,
-                estimated_book_size_usd=5_000_000,
-                stage="demo_completed",
-                signed_up_date=None,
+                owner=owner,
+                data={
+                    "agency_name": "Summit Risk Advisors",
+                    "contact_name": "Priya Nair",
+                    "contact_email": "priya.nair@summitrisk.com",
+                    "contact_phone": "555-0000",
+                    "state": "CO",
+                    "num_producers": 4,
+                    "years_in_business": 12,
+                    "estimated_book_size_usd": 5_000_000,
+                    "stage": "demo_completed",
+                },
             ),
             "complete_onboarding",
             "reason",

@@ -121,8 +121,14 @@ lint, mypy, the migration check and the frontend build.
 
 ## Architecture
 
-- **Models** (`project/app/models/`): `Lead`, `Event`, `OutreachAction`,
+- **Models** (`project/app/models/`): `Lead`, `Event`, `Shape`, `OutreachAction`,
   `DismissedOutreachKey`, `LoginToken`, `ActionJob`.
+- **Shape** (`GET/PUT /api/shape/`): what one user's leads and events are — which columns
+  exist, their types, and which of them the lead writes. The rules vocabulary is read off
+  it, so a PUT is refused when it would leave one of the owner's stored rules unevaluable.
+  Event columns are declared and may be named in a rule, but no condition on the `events`
+  source evaluates yet: the engine refuses those until events have an "any event
+  where..." semantic.
 - **Actions engine** (`project/app/actions/`): a queue of per-lead jobs, each holding the
   events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
   the deterministic rules of the user whose book the lead is in, sends what is left to the

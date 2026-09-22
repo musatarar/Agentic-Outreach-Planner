@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from project.app.models import ActionType, OutreachRule
+from project.app.tests.tests_shape_utils import shape_for
 
 ACTIONS_URL = "/api/rules/actions/"
 RULES_URL = "/api/rules/"
@@ -41,6 +42,8 @@ class RulesApiTestCase(TestCase):
         cache.clear()
         self.user = get_user_model().objects.create_user(username="planner@lockedin.example")
         self.other = get_user_model().objects.create_user(username="teammate@lockedin.example")
+        self.shape = shape_for(self.user)
+        shape_for(self.other)
         self.client.force_login(self.user)
 
     def _action(self, owner=None, key="reward_power_user"):

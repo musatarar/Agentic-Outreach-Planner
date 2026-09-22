@@ -114,9 +114,8 @@ export function LeadsPage() {
       const draft = await generateFromProposal(proposal.id);
       setProposals((current) => withDraft(current, proposal.id, draft.id));
       await loadOpenItems();
-      setNotice(
-        `Drafted ${proposal.action.label} for ${proposal.lead.agency_name}. Review it in the inbox.`,
-      );
+      const who = proposal.lead.data.agency_name ?? proposal.lead.id;
+      setNotice(`Drafted ${proposal.action.label} for ${who}. Review it in the inbox.`);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setNotice(err.message);

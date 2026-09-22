@@ -52,7 +52,7 @@ export function sortLeads(
   direction: SortDirection,
 ): LeadRecord[] {
   return [...leads].sort((a, b) => {
-    const primary = compareValues(a[key], b[key]);
+    const primary = compareValues(a.data[key] ?? null, b.data[key] ?? null);
     if (primary !== 0) return direction === 'desc' ? -primary : primary;
     // Ties always break ascending by id, in both directions: it is what keeps
     // rows from swapping under a checked box when the table re-renders.

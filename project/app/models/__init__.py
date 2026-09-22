@@ -4,7 +4,7 @@ from project.app.actions.models import ActionJob
 from project.app.rules.models import ActionType, OutreachRule
 
 from .auth import LoginToken
-from .lead import Event, Lead
+from .lead import Event, Lead, Shape
 from .outreach import (
     DismissedOutreachKey,
     OutreachAction,
@@ -19,4 +19,5 @@ __all__ = [
     "LoginToken",
     "OutreachAction",
     "OutreachRule",
+    "Shape",
 ]

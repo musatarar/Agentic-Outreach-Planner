@@ -1,6 +1,7 @@
 """Pure-Python tests for the grounding verifier (project.app.services.verify).
 
-No Django, no database: leads are SimpleNamespace stubs.
+No database: leads are SimpleNamespace stubs carrying the demo shape, which is
+what tells the verifier which columns are figures and which are dates.
 """
 
 import datetime
@@ -8,9 +9,12 @@ import unittest
 from types import SimpleNamespace
 
 from project.app.services import actions, verify
+from project.app.tests.tests_shape_utils import shape
 
 # Frozen "today" so the date-based rules are deterministic.
 TODAY = datetime.date(2026, 6, 12)
+
+SHAPE = shape()
 
 
 class _EventSet:
@@ -23,13 +27,24 @@ class _EventSet:
         return list(self._events)
 
 
-def _event(type_, ts, **meta):
-    return SimpleNamespace(type=type_, timestamp=ts, meta=meta)
+def _event(type_, ts, **data):
+    return SimpleNamespace(timestamp=ts, data=dict(data, type=type_))
+
+
+# Every number column, so a test that wants nothing grounded can clear them all.
+FIGURES = (
+    "num_producers",
+    "years_in_business",
+    "estimated_book_size_usd",
+    "quotes_created",
+    "quotes_submitted",
+    "deals_closed",
+)
 
 
 def _lead(**kwargs):
-    defaults = dict(
-        id="lead_x",
+    events = kwargs.pop("events", _EventSet([]))
+    data = dict(
         agency_name="Summit Risk Advisors",
         contact_name="Priya Nair",
         contact_email="priya.nair@summitrisk.com",
@@ -46,10 +61,15 @@ def _lead(**kwargs):
         deals_closed=4,
         last_contacted_date=None,
         hubspot_notes="",
-        events=_EventSet([]),
     )
-    defaults.update(kwargs)
-    return SimpleNamespace(**defaults)
+    data.update(kwargs)
+    return SimpleNamespace(id="lead_x", data=data, shape=SHAPE, events=events)
+
+
+def _no_figures(**kwargs):
+    """A lead with only the number columns the caller names: nothing else for a
+    figure to match against."""
+    return _lead(**{name: None for name in FIGURES} | kwargs)
 
 
 def _kinds(violations):
@@ -74,7 +94,7 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_invented_dollar_figure(self):
         v = _verify(
-            _lead(estimated_book_size_usd=5_000_000),
+            _no_figures(estimated_book_size_usd=5_000_000),
             "Hi Priya,\nYour $47 million book is impressive.",
         )
         self.assertIn("unsupported_amount", _kinds(v))
@@ -98,6 +118,13 @@ class AcceptanceTests(unittest.TestCase):
 
 
 class CountTests(unittest.TestCase):
+    """Every standalone integer is checked against every number column.
+
+    Without a noun per column the verifier cannot bind "14 quotes" to
+    ``quotes_submitted``, so a figure the record does not hold fails closed
+    wherever it appears. Noisier than per-noun patterns, not weaker.
+    """
+
     def test_correct_counts_pass(self):
         lead = _lead(
             deals_closed=4,
@@ -112,53 +139,43 @@ class CountTests(unittest.TestCase):
         )
         self.assertEqual(_verify(lead, copy), [])
 
-    def test_wrong_quotes_created(self):
+    def test_a_figure_the_record_does_not_hold_is_flagged(self):
         v = _verify(_lead(quotes_created=8), "Hi Priya,\nImpressive: 80 quotes created.")
         self.assertIn("wrong_count", _kinds(v))
-        self.assertTrue(any("80 quotes created" in x.message for x in v))
+        self.assertTrue(any("80" in x.message for x in v))
 
-    def test_created_before_number_phrasing(self):
-        v = _verify(_lead(quotes_created=8), "Hi Priya,\nYou created 80 quotes.")
-        self.assertIn("wrong_count", _kinds(v))
+    def test_a_figure_matching_any_number_column_passes(self):
+        # 12 is `years_in_business`, not a quote count -- with no noun to bind
+        # it, any number the record holds grounds it.
+        self.assertEqual(_verify(_lead(), "Hi Priya,\nYou created 12 quotes."), [])
 
-    def test_closed_before_number_phrasing(self):
-        v = _verify(_lead(deals_closed=4), "Hi Priya,\nYou've closed 47 deals.")
-        self.assertIn("wrong_count", _kinds(v))
+    def test_an_event_figure_grounds_a_count(self):
+        lead = _lead(
+            events=_EventSet(
+                [_event("deal_closed", datetime.datetime(2026, 5, 1, 9), lock_term_months=24)]
+            )
+        )
+        self.assertEqual(_verify(lead, "Hi Priya,\nA 24 month lock suits you."), [])
 
-    def test_deals_closed_after_number_phrasing(self):
-        v = _verify(_lead(deals_closed=4), "Hi Priya,\nYou have 47 deals closed.")
-        self.assertIn("wrong_count", _kinds(v))
+    def test_an_incidental_number_is_flagged_because_nothing_binds_it(self):
+        # The documented cost of dropping per-column nouns: "15 minutes" is not
+        # a claim about the record, but the verifier cannot tell.
+        copy = "Hi Priya,\nDo you have 15 minutes for a call?"
+        self.assertIn("wrong_count", _kinds(_verify(_lead(), copy)))
 
-    def test_wrong_producers(self):
-        v = _verify(_lead(num_producers=4), "Hi Priya,\nYour team of 40 producers is huge.")
-        self.assertIn("wrong_count", _kinds(v))
+    def test_a_currency_amount_is_the_amount_check_not_a_count(self):
+        lead = _lead(estimated_book_size_usd=5_000_000)
+        self.assertEqual(_verify(lead, "Hi Priya,\nYour $5,000,000 book stands out."), [])
 
-    def test_wrong_producers_you_have_phrasing(self):
-        v = _verify(_lead(num_producers=4), "Hi Priya,\nYou have 40 producers on staff.")
-        self.assertIn("wrong_count", _kinds(v))
+    def test_a_year_is_not_a_count(self):
+        self.assertEqual(_verify(_no_figures(), "Hi Priya,\nA good 2026 so far."), [])
 
-    def test_producer_comparison_not_flagged(self):
-        # A comparison, not a claim about this lead's team.
-        v = _verify(_lead(num_producers=4), "Hi Priya,\nEven agencies with 50 producers struggle.")
-        self.assertEqual(v, [])
+    def test_an_iso_date_is_not_a_count(self):
+        lead = _lead(last_login_date=datetime.date(2026, 6, 1))
+        self.assertEqual(_verify(lead, "Hi Priya,\nGreat to see you on 2026-06-01."), [])
 
-    def test_producer_hypothetical_not_flagged(self):
-        # "as you add 2 producers" is a hypothetical, not a record claim.
-        v = _verify(_lead(num_producers=4), "Hi Priya,\nAs you add 2 producers, we can help.")
-        self.assertEqual(v, [])
-
-    def test_year_old_phrasing(self):
-        v = _verify(_lead(years_in_business=12), "Hi Priya,\nYour 30-year-old agency thrives.")
-        self.assertIn("wrong_count", _kinds(v))
-
-    def test_milestone_target_not_flagged(self):
-        lead = _lead(deals_closed=4)
-        copy = "Hi Priya,\nYou're just 1 deal short of the 5-deal milestone — close 3 more deals!"
-        self.assertEqual(_verify(lead, copy), [])
-
-    def test_incidental_numbers_not_flagged(self):
-        copy = "Hi Priya,\nDo you have 15 minutes for a call in the next 2 weeks?"
-        self.assertEqual(_verify(_lead(), copy), [])
+    def test_a_lead_with_no_figures_skips_the_check(self):
+        self.assertEqual(_verify(_no_figures(), "Hi Priya,\nYou've closed 47 deals."), [])
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +244,7 @@ class GoalContextTests(unittest.TestCase):
 
 class AmountTests(unittest.TestCase):
     def test_exact_and_rounded_book_size_pass(self):
-        lead = _lead(estimated_book_size_usd=5_000_000)
+        lead = _no_figures(estimated_book_size_usd=5_000_000)
         for figure in ("$5,000,000", "$5M", "$5 million", "$4.8M", "$5.2M"):
             with self.subTest(figure=figure):
                 copy = f"Hi Priya,\nYour book of {figure} stands out."
@@ -235,12 +252,12 @@ class AmountTests(unittest.TestCase):
 
     def test_wrong_magnitude_flagged(self):
         v = _verify(
-            _lead(estimated_book_size_usd=5_000_000), "Hi Priya,\nYour $500K book is solid."
+            _no_figures(estimated_book_size_usd=5_000_000), "Hi Priya,\nYour $500K book is solid."
         )
         self.assertIn("unsupported_amount", _kinds(v))
 
     def test_event_premium_is_grounded(self):
-        lead = _lead(
+        lead = _no_figures(
             events=_EventSet(
                 [
                     _event(
@@ -256,7 +273,7 @@ class AmountTests(unittest.TestCase):
         self.assertEqual(_verify(lead, copy), [])
 
     def test_premium_as_string_is_grounded(self):
-        lead = _lead(
+        lead = _no_figures(
             events=_EventSet(
                 [_event("deal_closed", datetime.datetime(2026, 5, 1, 9), premium="$12,000")]
             )
@@ -264,8 +281,8 @@ class AmountTests(unittest.TestCase):
         self.assertEqual(_verify(lead, "Hi Priya,\nNice $12K premium there."), [])
 
     def test_no_grounded_amounts_skips_check(self):
-        # A lead with no book size and no premiums has nothing to verify against.
-        v = _verify(_lead(estimated_book_size_usd=None), "Hi Priya,\nA $999,999 figure appears.")
+        # A lead with no number column filled has nothing to verify against.
+        v = _verify(_no_figures(), "Hi Priya,\nA $999,999 figure appears.")
         self.assertNotIn("unsupported_amount", _kinds(v))
 
 
@@ -326,7 +343,9 @@ class OfferTests(unittest.TestCase):
 
     def test_authorized_for_power_user(self):
         v = _verify(
-            _lead(), "Hi Priya,\n20% off as a thank you.", action_type=actions.POWER_USER_REWARD
+            _no_figures(deals_closed=20),
+            "Hi Priya,\n20% off as a thank you.",
+            action_type=actions.POWER_USER_REWARD,
         )
         self.assertEqual(v, [])
 
@@ -338,7 +357,7 @@ class OfferTests(unittest.TestCase):
 
     def test_bare_percent_not_flagged(self):
         v = _verify(
-            _lead(),
+            _no_figures(deals_closed=20),
             "Hi Priya,\nYou saw a 20% jump in submissions.",
             action_type=actions.NUDGE_USAGE,
         )
@@ -439,6 +458,71 @@ class StrictTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# What the shape decides
+# ---------------------------------------------------------------------------
+
+
+class ShapeReadingTests(unittest.TestCase):
+    """Which columns are figures and which are dates comes off the declaration;
+    only the contact and agency columns are named, and only by the copy path."""
+
+    def test_an_amount_grounds_against_any_declared_number_column(self):
+        lead = _no_figures(num_producers=40)
+        self.assertEqual(_verify(lead, "Hi Priya,\nA $40 charge appeared."), [])
+
+    def test_a_date_grounds_against_any_declared_date_column(self):
+        lead = _lead(last_contacted_date="2026-05-15")
+        self.assertEqual(_verify(lead, "Hi Priya,\nWe last spoke on 2026-05-15."), [])
+
+    def test_a_date_stored_as_iso_text_reads_as_a_date(self):
+        # Ingest keeps dates as the raw file's strings.
+        lead = _lead(signed_up_date="2026-04-22")
+        self.assertEqual(_verify(lead, "Hi Priya,\nSince 2026-04-22 you've been with us."), [])
+
+    def test_a_shape_that_declares_no_contact_column_grounds_no_greeting(self):
+        # The copy path names `contact_name`; a shape calling it something else
+        # leaves the greeting ungrounded. That is what #162 removes.
+        renamed = shape(
+            lead_columns=[{"name": "who_we_call", "type": "text", "lead_authored": False}]
+        )
+        lead = SimpleNamespace(
+            id="lead_y", data={"who_we_call": "Priya Nair"}, shape=renamed, events=_EventSet([])
+        )
+        self.assertEqual(_verify(lead, "Hi David,\nHello."), [])
+
+    def test_a_lead_authored_contact_column_grounds_no_greeting(self):
+        # Otherwise the lead writes the name its own copy is checked against.
+        authored = shape(
+            lead_columns=[{"name": "contact_name", "type": "text", "lead_authored": True}]
+        )
+        lead = SimpleNamespace(
+            id="lead_z", data={"contact_name": "Priya Nair"}, shape=authored, events=_EventSet([])
+        )
+        self.assertEqual(_verify(lead, "Hi David,\nHello."), [])
+
+    def test_the_agency_omission_check_reads_the_agency_column(self):
+        lead = _lead(agency_name="Harbor & Main Insurance")
+        strict = verify.verify_copy(
+            lead,
+            "Hi Priya,\nHello there.",
+            actions.NUDGE_USAGE,
+            level=verify.LEVEL_STRICT,
+            today=TODAY,
+        )
+        self.assertIn("agency_name_absent", _kinds(strict))
+
+    def test_a_column_the_shape_does_not_declare_grounds_nothing(self):
+        lead = _no_figures(deals_closed=4)
+        lead.data["secret_total"] = 777
+        self.assertIn("unsupported_amount", _kinds(_verify(lead, "Hi Priya,\nA $777 figure.")))
+
+    def test_a_lead_with_no_shape_has_nothing_to_check_against(self):
+        lead = _lead()
+        lead.shape = None
+        self.assertEqual(_verify(lead, "Hi David,\nYour 47 closed deals and $99 million book."), [])
+
+
+# ---------------------------------------------------------------------------
 # format_violations + de-duplication + internal helper edges
 # ---------------------------------------------------------------------------
 
@@ -459,12 +543,12 @@ class FormatAndEdgeTests(unittest.TestCase):
         self.assertIn("Grounding check failed", text)
 
     def test_repeated_problem_deduped(self):
-        lead = _lead(estimated_book_size_usd=5_000_000)
+        lead = _no_figures(estimated_book_size_usd=5_000_000)
         v = _verify(lead, "Hi Priya,\nYour $47 million book, yes $47 million, is huge.")
         self.assertEqual(len(v), 1)
 
     def test_boolean_premium_ignored(self):
-        lead = _lead(
+        lead = _no_figures(
             estimated_book_size_usd=5_000_000,
             events=_EventSet(
                 [_event("deal_closed", datetime.datetime(2026, 5, 1, 9), premium=True)]
@@ -473,7 +557,7 @@ class FormatAndEdgeTests(unittest.TestCase):
         self.assertEqual(_verify(lead, "Hi Priya,\nYour $5M book is strong."), [])
 
     def test_non_numeric_premium_ignored(self):
-        lead = _lead(
+        lead = _no_figures(
             estimated_book_size_usd=5_000_000,
             events=_EventSet(
                 [_event("deal_closed", datetime.datetime(2026, 5, 1, 9), premium="n/a")]
