@@ -23,7 +23,7 @@ import datetime
 
 from django.core.exceptions import ValidationError
 
-from project.app.models.lead import BOOL, DATE, NUMBER, TEXT, Shape
+from project.app.models.lead import BOOL, DATE, DAYS_SINCE_PREFIX, NUMBER, TEXT, Shape
 
 SCHEMA_VERSION = 1
 
@@ -40,9 +40,6 @@ SOURCES = (SOURCE_LEAD, SOURCE_DERIVED, SOURCE_NOTES, SOURCE_EVENTS)
 # enough to corroborate a branch that also reads CRM text. (An inference
 # rule's predicate is judged separately, and may stand alone.)
 CORROBORATING_SOURCES = frozenset({SOURCE_LEAD, SOURCE_DERIVED})
-
-# The `derived` twin of a date column: how many days ago it was.
-DAYS_SINCE_PREFIX = "days_since_"
 
 # The one event column the shape does not declare, because the table carries it.
 EVENT_TIMESTAMP = "timestamp"

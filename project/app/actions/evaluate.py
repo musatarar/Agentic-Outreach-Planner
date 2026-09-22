@@ -28,33 +28,38 @@ def matches(payload, lead, today):
     shape = getattr(lead, "shape", None)
     if shape is None:
         raise ConditionError("This lead's owner declares no shape, so nothing resolves.")
-    return _group(payload.get("operator"), payload.get("conditions"), lead, shape, today)
+    # Derived once for the whole payload: every leaf asks the same shape.
+    fields = utils.fields_by_source(shape)
+    return _group(payload.get("operator"), payload.get("conditions"), lead, shape, fields, today)
 
 
-def _group(operator, children, lead, shape, today):
+def _group(operator, children, lead, shape, fields, today):
     if not children:
         raise ConditionError(f"A {operator!r} group with no conditions has no verdict.")
     if operator not in utils.GROUP_OPERATORS:
         raise ConditionError(f"Unknown group operator {operator!r}.")
     check = all if operator == "all_of" else any
     return check(
-        _group(child.get("operator"), child.get("conditions"), lead, shape, today)
+        _group(child.get("operator"), child.get("conditions"), lead, shape, fields, today)
         if "field" not in child
-        else _leaf(child, lead, shape, today)
+        else _leaf(child, lead, shape, fields, today)
         for child in children
     )
 
 
-def _leaf(leaf, lead, shape, today):
+def _leaf(leaf, lead, shape, fields, today):
     source = leaf.get("source")
     field = leaf.get("field")
-    field_type = utils.fields_by_source(shape).get(source, {}).get(field)
+    field_type = fields.get(source, {}).get(field)
     if field_type is None:
         raise ConditionError(f"Unknown field {field!r} on source {source!r}.")
+    threshold = leaf.get("threshold")
+    if source == utils.SOURCE_NOTES and field_type == utils.TEXT:
+        threshold = _lowered(threshold)
     return _compare(
         _value(source, field, lead, shape, today),
         leaf.get("operator"),
-        leaf.get("threshold"),
+        threshold,
         field_type,
     )
 
@@ -64,16 +69,30 @@ def _value(source, field, lead, shape, today):
     if source == utils.SOURCE_LEAD:
         return shape.value(data, field)
     if source == utils.SOURCE_NOTES:
-        # Attacker-controlled free text, sanitized before it is matched against;
-        # a phrase match is only a SIGNAL, and `validate_conditions` is what
-        # keeps it from satisfying a rule on its own (see SECURITY.md).
-        return sanitize.sanitize_untrusted(str(shape.value(data, field) or "")).lower()
+        value = shape.value(data, field)
+        if isinstance(value, str):
+            # Attacker-controlled free text, sanitized before it is matched
+            # against; a phrase match is only a SIGNAL, and `validate_conditions`
+            # is what keeps it from satisfying a rule on its own (see SECURITY.md).
+            return sanitize.sanitize_untrusted(value).lower()
+        # A number or flag the lead authored is still a value of its declared
+        # type: it is untrusted, not unreadable.
+        return value
     if source == utils.SOURCE_DERIVED:
         column = field[len(utils.DAYS_SINCE_PREFIX) :]
         return outreach._days_since(shape.value(data, column), today)
     # In the vocabulary, but nothing computes it yet -- the event columns need
     # an "any event where..." semantic first.
     raise ConditionError(f"Nothing resolves {field!r} on source {source!r} yet.")
+
+
+def _lowered(threshold):
+    """A notes-text threshold in the case its stored value is folded to."""
+    if isinstance(threshold, str):
+        return threshold.lower()
+    if isinstance(threshold, list):
+        return [item.lower() if isinstance(item, str) else item for item in threshold]
+    return threshold
 
 
 def _blank(value):

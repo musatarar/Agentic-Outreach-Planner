@@ -15,6 +15,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import RestrictedError
 
+from project.app.rules import utils
 from project.app.rules.models import ActionType, OutreachRule
 
 
@@ -58,6 +59,24 @@ def action_for(owner, pk):
 
 def rule_for(owner, pk):
     return rules_for(owner).filter(pk=pk).first()
+
+
+def rules_refused_by(owner, shape):
+    """``(rule, messages)`` for every stored rule ``shape`` leaves unevaluable.
+
+    A rule is validated against the shape of the moment it was written, so a
+    later shape has to answer for the rules already written against it: this is
+    what a shape write reads before it lands.
+    """
+    refused = []
+    for rule in rules_for(owner):
+        if not rule.conditions:
+            continue
+        try:
+            utils.validate_conditions(rule.conditions, shape)
+        except ValidationError as exc:
+            refused.append((rule, exc.messages))
+    return refused
 
 
 # --------------------------------------------------------------------------

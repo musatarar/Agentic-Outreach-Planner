@@ -25,6 +25,18 @@ _COLUMN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # column may claim the name.
 EVENT_RESERVED_NAMES = frozenset({"timestamp"})
 
+# The `derived` twin of a date column: how many days ago it was. A lead column
+# of this name would shadow the twin, so the prefix is reserved.
+DAYS_SINCE_PREFIX = "days_since_"
+
+
+def _declared(column):
+    """Whether one stored declaration carries the name and type readers index."""
+    if not isinstance(column, dict):
+        return False
+    name = column.get("name")
+    return isinstance(name, str) and bool(name) and column.get("type") in COLUMN_TYPES
+
 
 def _coerce(value, column_type):
     """One stored value as its declared type, or ``None`` when it is not one."""
@@ -87,25 +99,39 @@ class Shape(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def columns(self, kind=LEAD):
-        """The declarations for one kind, as stored."""
+        """The usable declarations for one kind: every reader may index name and type.
+
+        ``clean()`` is what refuses a malformed declaration on the way in; a row
+        that reached the table another way is skipped here rather than raising
+        out of whichever reader met it first.
+        """
         declared = self.lead_columns if kind == self.LEAD else self.event_columns
-        return [column for column in declared or [] if isinstance(column, dict)]
+        return [column for column in declared or [] if _declared(column)]
+
+    @cached_property
+    def _types(self):
+        """``{kind: {name: type}}``, derived once — every value read is a lookup."""
+        return {
+            kind: {column["name"]: column["type"] for column in self.columns(kind)}
+            for kind in (self.LEAD, self.EVENT)
+        }
 
     def types(self, kind=LEAD):
         """``{name: type}`` for one kind — the vocabulary's raw material."""
-        return {
-            column.get("name"): column.get("type")
-            for column in self.columns(kind)
-            if column.get("name")
-        }
+        return self._types[kind]
 
     def trusted(self):
-        """Lead columns the lead did not author, so their text may be relied on."""
-        return [column for column in self.columns() if not column.get("lead_authored")]
+        """Lead columns the lead did not author, so their text may be relied on.
+
+        Trusted is the narrow answer: only a column declaring ``lead_authored``
+        false, so a declaration that never said trusts nothing.
+        """
+        return [column for column in self.columns() if column.get("lead_authored") is False]
 
     def authored(self):
-        """Lead columns the lead authored: untrusted everywhere, prompts included."""
-        return [column for column in self.columns() if column.get("lead_authored")]
+        """Lead columns the lead may have authored: untrusted everywhere, prompts
+        included — the inverse of :meth:`trusted`, so no column is neither."""
+        return [column for column in self.columns() if column.get("lead_authored") is not False]
 
     def value(self, data, column, kind=LEAD):
         """``data[column]`` coerced by its declared type, ``None`` on a mismatch.
@@ -164,6 +190,11 @@ def _column_problems(declared, kind):
             problems.append(f"Column {name!r} is declared twice.")
         elif kind == Shape.EVENT and name in EVENT_RESERVED_NAMES:
             problems.append(f"Column {name!r} is a structural event column and cannot be declared.")
+        elif kind == Shape.LEAD and name.startswith(DAYS_SINCE_PREFIX):
+            problems.append(
+                f"Column {name!r} would shadow the {DAYS_SINCE_PREFIX!r} figure a date "
+                "column of that name is read through, so the prefix is reserved."
+            )
         else:
             seen.add(name)
         if column.get("type") not in COLUMN_TYPES:

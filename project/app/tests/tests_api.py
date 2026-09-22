@@ -1,12 +1,18 @@
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.urls import reverse
 from rest_framework import status
 
 from project.app.models import (
+    ActionType,
     Lead,
     OutreachAction,
+    OutreachRule,
     Shape,
 )
+from project.app.rules import services as rules_services
+from project.app.rules.utils import _all_of, _cond
+from project.app.services import shape as shape_service
 from project.app.tests.tests_auth_utils import AuthenticatedAPITestCase
 
 
@@ -215,3 +221,141 @@ class ShapeViewTests(AuthenticatedAPITestCase):
         resp = self._put(event_columns=[{"name": "timestamp", "type": "date"}])
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("event_columns", resp.data["detail"])
+
+    def test_a_lead_column_shadowing_a_derived_figure_is_refused(self):
+        resp = self._put(
+            lead_columns=[
+                {"name": "last_login_date", "type": "date", "lead_authored": False},
+                {"name": "days_since_last_login_date", "type": "number", "lead_authored": False},
+            ]
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("days_since_last_login_date", resp.data["detail"])
+
+    def test_a_put_that_leaves_out_a_column_list_is_refused_rather_than_patching(self):
+        self._put()
+        resp = self.client.put(
+            reverse("shape"),
+            {"lead_columns": [{"name": "state", "type": "text", "lead_authored": False}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("event_columns", resp.data["detail"])
+        stored = Shape.objects.get(owner=self.user)
+        self.assertEqual(stored.event_columns, [{"name": "kind", "type": "text"}])
+
+    def test_an_empty_put_is_refused_rather_than_answering_that_nothing_changed(self):
+        self._put()
+        resp = self.client.put(reverse("shape"), {}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ShapeAgainstStoredRulesTests(AuthenticatedAPITestCase):
+    """A shape write is a write against the rules already named against it."""
+
+    SHAPE = {
+        "lead_columns": [
+            {"name": "agency_name", "type": "text", "lead_authored": False},
+            {"name": "deals_closed", "type": "number", "lead_authored": False},
+            {"name": "crm_notes", "type": "text", "lead_authored": True},
+        ],
+        "event_columns": [],
+    }
+
+    def setUp(self):
+        super().setUp()
+        # DRF keeps throttle history in the default cache, which outlives a test.
+        cache.clear()
+        self.client.put(reverse("shape"), self.SHAPE, format="json")
+        action = ActionType.objects.create(owner=self.user, key="nudge_usage", label="Nudge")
+        # Saved through the catalog's own path, so it was valid under this shape.
+        self.rule = rules_services.create_rule(
+            self.user,
+            {
+                "action": action,
+                "name": "Modest deal momentum",
+                "kind": OutreachRule.KIND_DETERMINISTIC,
+                "conditions": _all_of(_cond("deals_closed", ">", 2, source="lead")),
+            },
+        )
+
+    def _put(self, lead_columns):
+        return self.client.put(
+            reverse("shape"),
+            {"lead_columns": lead_columns, "event_columns": []},
+            format="json",
+        )
+
+    def test_dropping_a_column_a_rule_names_is_refused_naming_the_rule_and_field(self):
+        resp = self._put([{"name": "agency_name", "type": "text", "lead_authored": False}])
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Modest deal momentum", resp.data["detail"])
+        self.assertIn("deals_closed", resp.data["detail"])
+        self.assertIn("deals_closed", Shape.objects.get(owner=self.user).types())
+
+    def test_retyping_a_column_a_rule_compares_is_refused(self):
+        resp = self._put(
+            [
+                {"name": "agency_name", "type": "text", "lead_authored": False},
+                {"name": "deals_closed", "type": "text", "lead_authored": False},
+            ]
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Modest deal momentum", resp.data["detail"])
+
+    def test_declaring_a_columns_text_lead_authored_is_refused_while_a_rule_trusts_it(self):
+        # The column stays, but under `notes`: the rule's `lead` leaf no longer
+        # resolves, and a rule that read it alone would stop corroborating.
+        resp = self._put(
+            [
+                {"name": "agency_name", "type": "text", "lead_authored": False},
+                {"name": "deals_closed", "type": "number", "lead_authored": True},
+            ]
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Modest deal momentum", resp.data["detail"])
+
+    def test_a_declaration_every_rule_survives_is_stored(self):
+        resp = self._put(
+            [
+                {"name": "deals_closed", "type": "number", "lead_authored": False},
+                {"name": "renamed_notes", "type": "text", "lead_authored": True},
+            ]
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [column["name"] for column in Shape.objects.get(owner=self.user).lead_columns],
+            ["deals_closed", "renamed_notes"],
+        )
+
+    def test_a_rule_carrying_no_conditions_is_not_something_a_shape_can_strand(self):
+        rules_services.update_rule(
+            self.rule,
+            {
+                "kind": OutreachRule.KIND_INFERENCE,
+                "conditions": {},
+                "inference_prompt": "Does this lead sound stuck?",
+            },
+        )
+
+        resp = self._put([{"name": "agency_name", "type": "text", "lead_authored": False}])
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+
+class ShapeWriteRaceTests(AuthenticatedAPITestCase):
+    def test_a_first_declaration_that_lost_the_race_updates_the_row_that_won(self):
+        columns = [{"name": "state", "type": "text", "lead_authored": False}]
+        # Both callers read no shape; the other one's insert lands first.
+        losing = Shape(owner=self.user, lead_columns=columns, event_columns=[])
+        Shape.objects.create(owner=self.user, lead_columns=[], event_columns=[])
+
+        stored = shape_service._store(losing)
+
+        self.assertEqual(Shape.objects.filter(owner=self.user).count(), 1)
+        self.assertEqual(stored.lead_columns, columns)
+        self.assertEqual(Shape.objects.get(owner=self.user).lead_columns, columns)

@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 
 from project.app.models import Lead, Shape
 from project.app.serializers import LeadSerializer, ShapeSerializer
+from project.app.services import shape as shape_service
 
 
 class LeadListView(APIView):
@@ -24,6 +25,12 @@ class ShapeView(APIView):
     One shape per user, so there is no id to address: the session names it.
     A user who has declared nothing reads an empty one rather than a 404,
     because that is what they are about to fill in.
+
+    PUT replaces the declaration whole — both lists are required — and is
+    refused when it would leave one of the owner's stored rules unevaluable.
+    An event column is declared and may be named in a rule, but no condition on
+    the ``events`` source evaluates yet: the engine refuses those until events
+    have an "any event where..." semantic.
     """
 
     throttle_scope = "shape"
@@ -33,14 +40,10 @@ class ShapeView(APIView):
         return Response(ShapeSerializer(shape).data, status=status.HTTP_200_OK)
 
     def put(self, request, *args, **kwargs):
-        shape = Shape.objects.filter(owner=request.user).first() or Shape(owner=request.user)
-        serializer = ShapeSerializer(shape, data=request.data)
+        serializer = ShapeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        for field, value in serializer.validated_data.items():
-            setattr(shape, field, value)
         try:
-            shape.full_clean()
+            shape = shape_service.declare(request.user, serializer.validated_data)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.message_dict)
-        shape.save()
         return Response(ShapeSerializer(shape).data, status=status.HTTP_200_OK)

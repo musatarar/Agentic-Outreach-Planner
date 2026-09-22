@@ -343,6 +343,36 @@ class DeterministicPassTests(EngineTestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ActionJob.STATUS_NO_ACTION)
 
+    def test_a_typed_column_the_lead_authored_decides_the_job_rather_than_failing_it(self):
+        self.shape.lead_columns = self.shape.lead_columns + [
+            {"name": "self_reported_seats", "type": "number", "lead_authored": True}
+        ]
+        self.shape.save()
+        action = self._action("nudge_usage")
+        self._rule(
+            action,
+            "Says they have seats to fill",
+            OutreachRule.WEIGHT_HIGH,
+            conditions=_all_of(
+                _cond("deals_closed", ">", 2),
+                {
+                    "field": "self_reported_seats",
+                    "operator": ">",
+                    "source": "notes",
+                    "threshold": 5,
+                },
+            ),
+        )
+        job = services.enqueue_lead(self._lead(self_reported_seats=7))
+
+        self._run(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ActionJob.STATUS_DETERMINISTIC_ACTION_CHOSEN)
+        self.assertEqual(job.selected_action, action)
+        self.assertEqual(job.decision["unevaluable_rule_ids"], [])
+        self.assertEqual(job.error, "")
+
     def test_a_rule_the_engine_cannot_evaluate_is_recorded_instead_of_firing(self):
         rule = self._rule(self._action("nudge_usage"), "stale vocabulary", OutreachRule.WEIGHT_HIGH)
         # Written before the field it names left the vocabulary.

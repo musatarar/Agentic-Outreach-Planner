@@ -230,6 +230,38 @@ class VocabularyTests(SimpleTestCase):
         with self.assertRaises(ValidationError):
             _validate(_payload(LEAD), renamed)
 
+    def test_an_authored_column_is_nameable_at_the_type_it_was_declared(self):
+        typed = shape(
+            lead_columns=[
+                {"name": "deals_closed", "type": "number", "lead_authored": False},
+                {"name": "self_reported_seats", "type": "number", "lead_authored": True},
+            ]
+        )
+        notes = utils.fields_by_source(typed)[utils.SOURCE_NOTES]
+        self.assertEqual(notes["self_reported_seats"], utils.NUMBER)
+        _validate(
+            _payload(
+                _cond("deals_closed", ">", 1),
+                {
+                    "field": "self_reported_seats",
+                    "operator": ">",
+                    "source": utils.SOURCE_NOTES,
+                    "threshold": 5,
+                },
+            ),
+            typed,
+        )
+
+    def test_a_stored_column_missing_its_name_or_type_names_nothing(self):
+        malformed = shape(
+            lead_columns=[{"type": "text", "lead_authored": False}, {"name": "stage"}],
+            event_columns=[{"name": "premium"}],
+        )
+        fields = utils.fields_by_source(malformed)
+        self.assertEqual(fields[utils.SOURCE_LEAD], {})
+        self.assertEqual(fields[utils.SOURCE_NOTES], {})
+        self.assertEqual(fields[utils.SOURCE_EVENTS], {utils.EVENT_TIMESTAMP: utils.DATE})
+
     def test_a_shape_that_declares_nothing_names_only_the_event_timestamp(self):
         empty = Shape()
         fields = utils.fields_by_source(empty)

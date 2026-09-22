@@ -36,3 +36,9 @@ class ShapeSerializer(serializers.ModelSerializer):
         model = Shape
         fields = ["lead_columns", "event_columns", "created_at", "updated_at"]
         read_only_fields = ["created_at", "updated_at"]
+        # A PUT replaces the declaration whole, so an omitted list is refused
+        # rather than read as "keep the stored one".
+        extra_kwargs = {
+            "lead_columns": {"required": True},
+            "event_columns": {"required": True},
+        }

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils.timezone import is_aware
@@ -151,3 +152,46 @@ class ShapeValueTests(TestCase):
 
     def test_an_undeclared_column_has_no_trusted_value(self):
         self.assertEqual(Shape().trusted_value({"contact_name": "Priya"}, "contact_name"), "")
+
+
+class ShapeDeclarationTests(TestCase):
+    """Which stored declarations a reader may rely on, and what ``clean()``
+    refuses before one is stored."""
+
+    def test_a_column_that_never_said_who_wrote_it_is_not_trusted(self):
+        # Only `full_clean` enforces the key, so a row written any other way
+        # must read as authored rather than as the agency's own record.
+        declared = Shape(lead_columns=[{"name": "pitch", "type": "text"}])
+        self.assertEqual(declared.trusted(), [])
+        self.assertEqual([column["name"] for column in declared.authored()], ["pitch"])
+        self.assertEqual(declared.trusted_value({"pitch": "theirs"}, "pitch"), "")
+
+    def test_a_column_with_a_null_flag_is_not_trusted_either(self):
+        declared = Shape(lead_columns=[{"name": "pitch", "type": "text", "lead_authored": None}])
+        self.assertEqual(declared.trusted(), [])
+
+    def test_a_stored_column_missing_its_name_or_type_is_read_by_nobody(self):
+        declared = Shape(
+            lead_columns=[
+                {"type": "text", "lead_authored": False},
+                {"name": "stage", "lead_authored": False},
+                {"name": "state", "type": "text", "lead_authored": False},
+            ]
+        )
+        self.assertEqual([column["name"] for column in declared.columns()], ["state"])
+        self.assertEqual(declared.types(), {"state": "text"})
+        self.assertIsNone(declared.value({"stage": "active_trial"}, "stage"))
+
+    def test_a_lead_column_cannot_take_the_name_a_derived_figure_answers_to(self):
+        declared = Shape(
+            lead_columns=[
+                {"name": "last_login_date", "type": "date", "lead_authored": False},
+                {"name": "days_since_last_login_date", "type": "number", "lead_authored": False},
+            ]
+        )
+        with self.assertRaises(ValidationError) as caught:
+            declared.clean()
+        self.assertIn("days_since_last_login_date", str(caught.exception))
+
+    def test_the_reserved_prefix_is_a_lead_columns_reservation_only(self):
+        Shape(event_columns=[{"name": "days_since_quote", "type": "number"}]).clean()
