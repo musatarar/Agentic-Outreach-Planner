@@ -10,8 +10,8 @@ function claimClassName(claim: VerificationClaim | null): string | undefined {
 
 function claimTitle(claim: VerificationClaim | null): string | undefined {
   if (!claim) return undefined;
-  if (claim.verified === true) return `Checked against ${claim.field}`;
-  return claim.message || undefined;
+  if (claim.verified !== true) return claim.message || undefined;
+  return claim.field ? `Checked against ${claim.field}` : 'Checked against the lead record';
 }
 
 export interface VerifiedDraftProps {

@@ -2,44 +2,51 @@
 
 export type Priority = 1 | 2 | 3;
 
+/**
+ * The demo shape's columns. The server guarantees none of them — a user
+ * declares what a lead is (`GET /api/shape/`) — so every field is optional.
+ *
+ * `hubspot_notes` is lead-controlled text. It is carried here for completeness
+ * but must never be interpolated into a prompt on this side of the wire — see
+ * SECURITY.md.
+ */
+export interface LeadData {
+  agency_name?: string;
+  contact_name?: string;
+  contact_email?: string;
+  contact_phone?: string;
+  state?: string;
+  stage?: string;
+  num_producers?: number;
+  years_in_business?: number;
+  estimated_book_size_usd?: number;
+  quotes_created?: number;
+  quotes_submitted?: number;
+  deals_closed?: number;
+  /** DRF DateFields: "YYYY-MM-DD", or null when never recorded. */
+  signed_up_date?: string | null;
+  last_login_date?: string | null;
+  last_contacted_date?: string | null;
+  hubspot_notes?: string;
+}
+
 /** Mirrors `LeadSummarySerializer` — the lead nested inside an outreach action. */
 export interface Lead {
   // `Lead.id` is a CharField primary key ("lead_001"), not an integer. It was
   // typed `number` here and never caught, because every use is a Map or React
   // key and both are happy either way.
   id: string;
-  agency_name: string;
-  contact_name: string;
-  contact_email: string;
+  data: LeadData;
 }
 
 /**
  * Mirrors `LeadSerializer` (`fields = "__all__"`) — what `GET /api/leads/`
  * returns. Distinct from `Lead` above, which is the compact nested form.
- *
- * `hubspot_notes` is lead-controlled text. It is carried here for completeness
- * but must never be interpolated into a prompt on this side of the wire — see
- * SECURITY.md.
  */
 export interface LeadRecord {
   id: string;
-  agency_name: string;
-  contact_name: string;
-  contact_email: string;
-  contact_phone: string;
-  state: string;
-  num_producers: number;
-  years_in_business: number;
-  estimated_book_size_usd: number;
-  stage: string;
-  /** DRF DateFields: "YYYY-MM-DD", or null when never recorded. */
-  signed_up_date: string | null;
-  last_login_date: string | null;
-  quotes_created: number;
-  quotes_submitted: number;
-  deals_closed: number;
-  last_contacted_date: string | null;
-  hubspot_notes: string;
+  owner: number | null;
+  data: LeadData;
 }
 
 export type Urgency = 'low' | 'medium' | 'high';
@@ -146,10 +153,7 @@ export type DismissReason =
 
 export type ClaimKind =
   | 'amount'
-  | 'deals_count'
-  | 'quotes_count'
-  | 'producers_count'
-  | 'years_count'
+  | 'count'
   | 'iso_date'
   | 'contact_name'
   | 'goal_reference'
@@ -195,26 +199,13 @@ export interface VerificationReport {
 // ---- review items ----
 
 export interface ReviewLeadEvent {
-  type: string;
   timestamp: string;
-  summary: string;
+  data: Record<string, unknown>;
 }
 
 export interface ReviewLead {
   id: string;
-  agency_name: string;
-  contact_name: string;
-  contact_email: string;
-  state: string;
-  stage: string;
-  num_producers: number;
-  estimated_book_size_usd: number;
-  quotes_created: number;
-  quotes_submitted: number;
-  deals_closed: number;
-  signed_up_date: string | null;
-  last_login_date: string | null;
-  last_contacted_date: string | null;
+  data: LeadData;
   recent_events: ReviewLeadEvent[];   // max 5, newest first
 }
 
