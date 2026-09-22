@@ -117,3 +117,8 @@ git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bun
 
 Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres (Docker) ·
 React 18 · TypeScript · Vite
+
+## Next Steps
+1. Dynamic frontend lead display
+2. Interface for user signup and rules creation
+3. Hubspot OAuth
