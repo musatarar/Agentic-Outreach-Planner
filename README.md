@@ -12,6 +12,8 @@ Signed up, then went dark -> Re-engage dormant account
 Customer is building quotes but never submitting one -> Nudge usage
 ```
 
+<img width="1437" height="666" alt="Screenshot 2026-09-22 at 11 28 48 AM" src="https://github.com/user-attachments/assets/1d6aa46a-ddab-465d-a301-02ffac54cde0" />
+
 ## Demo Quickstart
 ### Docker
 
