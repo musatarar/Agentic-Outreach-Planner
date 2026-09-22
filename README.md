@@ -2,18 +2,29 @@
 
 [![CI](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/musatarar/Agentic-Outreach-Planner/actions/workflows/ci.yml)
 
-Leads come in from a CRM export. Deterministic rules pick who needs outreach today and
-why. An LLM drafts the copy for those leads and nothing else. A grounding verifier checks
-every claim in the draft against the stored record. A human reviews each draft in an
-inbox, edits it, and approves or dismisses it. Approved copy leaves via the reviewer's
-clipboard — **the app sends nothing itself**, and there is no send machinery.
+Sales/BD/Ops track their clients through CRM data, LinkedIn conversations, emails, handwritten notes, and more creating a tangled web of who they are following up with and what the next best action with their lead is. Locked In turns that into a reviewed queue, where users can define what their data looks like and what conditions correspond to what action. 
 
-The judgement is deterministic Python you can read and test. The model only writes prose.
+```
+e.g.
+Sat through the demo, never actually signed up -> Complete onboarding 
+Signed up, then went dark -> Re-engage dormant account
+"Circle back after budget approval" — written in a note 6 weeks ago and forgotten -> Follow up
+Customer is building quotes but never submitting one -> Nudge usage
+```
 
-## Quickstart
+## Demo Quickstart
+### Docker
 
-Python 3.12+.
+```bash
+python scripts/setup_env.py   # then set LOGIN_ALLOWED_EMAILS in .env
+docker compose up
+```
 
+Starts Postgres, builds the image, migrates, seeds the demo pipeline and serves on
+**http://127.0.0.1:8000/**, with the actions engine's cron ticking beside it. It runs
+Django's development server, not a production stack.
+
+### Python 3.12+.
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
@@ -22,13 +33,6 @@ python manage.py migrate
 python scripts/populate_demo_data.py         # seeds demo data (--reset empties first)
 python manage.py runserver      # http://127.0.0.1:8000
 ```
-
-Updating a checkout from before a migration was regenerated in place (`0001_initial` says
-when): the old database still records that migration as applied, so it never picks up the
-new shape and the first query fails on a missing column. Locally, `rm db.sqlite3` and re-run
-`migrate` and `populate_demo_data` above. Under Docker the applied history lives in the
-`postgres_data` volume instead, so it is `docker compose down -v`. Demo data is regenerated,
-not migrated.
 
 Put your address in `LOGIN_ALLOWED_EMAILS` in `.env`, open
 **http://127.0.0.1:8000/signin**, enter it, and the sign-in link is printed to the server
@@ -47,16 +51,7 @@ The demo runs without an LLM key — you just cannot generate copy. For real dra
 the **Generate email** button on the action the engine proposed for it. `groq` is the
 default and has a free tier (https://console.groq.com).
 
-### Docker
 
-```bash
-python scripts/setup_env.py   # then set LOGIN_ALLOWED_EMAILS in .env
-docker compose up
-```
-
-Starts Postgres, builds the image, migrates, seeds the demo pipeline and serves on
-**http://127.0.0.1:8000/**, with the actions engine's cron ticking beside it. It runs
-Django's development server, not a production stack.
 
 `up` reuses the image it already built, so pass `--build` after pulling code. On a column
 that does not exist, the database predates a regenerated migration: `docker compose down -v`
@@ -116,58 +111,7 @@ cd frontend && npm ci && npm run typecheck && npm test && npm run build
 git diff --exit-code -- project/app/static/frontend/   # CI fails on a stale bundle
 ```
 
-CI runs the backend suite on Python 3.12 and 3.13 against both SQLite and Postgres, plus
-lint, mypy, the migration check and the frontend build.
-
-## Architecture
-
-- **Models** (`project/app/models/`): `Lead`, `Event`, `Shape`, `OutreachAction`,
-  `DismissedOutreachKey`, `LoginToken`, `ActionJob`.
-- **Shape** (`GET/PUT /api/shape/`): what one user's leads and events are — which columns
-  exist, their types, and which of them the lead writes. The rules vocabulary is read off
-  it, so a PUT is refused when it would leave one of the owner's stored rules unevaluable.
-  Event columns are declared and may be named in a rule, but no condition on the `events`
-  source evaluates yet: the engine refuses those until events have an "any event
-  where..." semantic.
-- **Actions engine** (`project/app/actions/`): a queue of per-lead jobs, each holding the
-  events it was queued for. `run_action_jobs` claims a job with a conditional UPDATE, runs
-  the deterministic rules of the user whose book the lead is in, sends what is left to the
-  inference pass (stubbed), and records the action the weight tally chose.
-- **Copy generation** (`services/outreach.py`): builds the prompt for a decided action,
-  calls the provider, and runs the two fail-closed output gates (shape, then grounding)
-  before a draft reaches the review inbox.
-- **LLM layer** (`services/llm/`): one adapter per provider behind a shared interface,
-  selected by `LLM_PROVIDER`. Imports no Django, stores nothing.
-- **Verifier** (`services/verify.py`): deterministic, no LLM. Checks numbers, names, dates
-  and unauthorized commercial promises against the record. Fails closed — a missing or
-  blank report blocks approval.
-- **Frontend** (`frontend/`, built into `project/app/static/frontend/`): React 18 + TS,
-  four pages — sign in, consume link, leads, review inbox. The bundle is committed and
-  served by Django, so `manage.py runserver` alone runs the whole app with no Node.
-
-Registries — start here to find anything: `project/app/models/__init__.py`,
-`project/app/views/__init__.py`, `project/app/serializers/__init__.py`,
-`frontend/src/api/endpoints.ts` (every frontend API call, one line each).
-
-### Review flow
-
-`OutreachAction` moves `pending → approved | dismissed`, and either state reopens back to
-`pending`, behind `/api/outreach/<id>/{edit,verify,approve,dismiss,reopen}/`.
-
-- **`suggested_copy` is immutable.** A reviewer's edit lands in `edited_copy`, so what the
-  model wrote and what a human sent can always be diffed.
-- **Approval is a judgement, not a send.** The server re-verifies the copy in play and
-  refuses approval when a claim contradicts the record.
-- **Dismiss is permanent.** It writes a suppression row keyed on
-  `sha256("v1|{lead_id}|{action_type}")`, which the actions engine reads *before*
-  generating, so a re-run neither resurrects the recommendation nor pays for a call to
-  rediscover it.
-  Reopening a dismissal revokes the suppression in the same transaction.
-
 ## Stack
 
 Python 3.12 · Django 4.2 · Django REST Framework · SQLite (local) / Postgres (Docker) ·
 React 18 · TypeScript · Vite
-
-See [SECURITY.md](SECURITY.md) for the threat model, and [CLAUDE.md](CLAUDE.md) for the
-working rules this repo enforces.
